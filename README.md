@@ -1,0 +1,1 @@
+# Megalomania template

@@ -1,0 +1,76 @@
+# kics-scan disable=555ab8f9-2001-455e-a077-f2d0f41e2fb9
+# cspell:ignore mktemp coverprofile covermode
+---
+name: repo test
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  schedule:
+    - cron: "11 11 * * 1"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions: {}
+jobs:
+  tests:
+    name: tests
+    timeout-minutes: 33
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+  linters:
+    name: linters
+    timeout-minutes: 11
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: lint the repo
+        env:
+          BRA: master
+        run: |
+          curl -fsL \
+          https://raw.githubusercontent.com/raven428/container-images/refs/heads/${{
+          env.BRA }}/sources/linters-ubuntu-22_04/check-dir.sh | bash
+          curl -fsL \
+          https://raw.githubusercontent.com/raven428/container-images/refs/heads/${{
+          env.BRA }}/sources/ansible-ubuntu/check-dir.sh | bash
+  MegaLinter:
+    name: MegaLinter
+    timeout-minutes: 11
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Run MegaLinter
+        uses: megalomania428/github-actions/megalinter@master
+  all-green:
+    name: all green
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    needs:
+      - tests
+      - linters
+      - MegaLinter
+    if: github.event_name == 'pull_request'
+    permissions:
+      checks: read
+    steps:
+      - name: waiting for checks success
+        uses: poseidon/wait-for-status-checks@v0.6.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: all green
+          timeout: 111s

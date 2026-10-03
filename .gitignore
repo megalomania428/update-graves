@@ -1,0 +1,5 @@
+# cspell:ignore pycache
+/deps/
+*.pyc
+__pycache__/
+/go-lib/
