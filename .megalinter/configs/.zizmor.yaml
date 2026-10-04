@@ -1,0 +1,9 @@
+---
+rules:
+  unpinned-uses:
+    ignore:
+      - build.yaml
+      - repo-test.yaml
+      - review-simple.yaml
+      - review-pi_dev.yaml
+      - review-opencode.yaml
