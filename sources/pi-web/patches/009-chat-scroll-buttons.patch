@@ -1,0 +1,164 @@
+--- a/src/client/src/components/ChatView.ts
++++ b/src/client/src/components/ChatView.ts
+@@ -125,6 +125,19 @@
+   return `g:${String(endIndex)}`;
+ }
+ 
++export interface ChatScrollButtonsVisibility {
++  up: boolean;
++  down: boolean;
++}
++
++/** Visibility of the scroll-to-top/scroll-to-bottom buttons, reserving their layout slot when hidden. */
++export function chatScrollButtonsState(options: { pinnedToBottom: boolean; atTop: boolean; atBottom: boolean }): ChatScrollButtonsVisibility {
++  return {
++    up: !options.atTop,
++    down: !options.pinnedToBottom && !options.atBottom,
++  };
++}
++
+ /** The CSS class list for an event-group `<details>`, distinguishing the live tail. */
+ export function chatMessageGroupClassName(isLiveTail: boolean): string {
+   return isLiveTail ? "msg event-group live" : "msg event-group";
+@@ -219,6 +232,7 @@
+   @query(".chat") private chat?: HTMLDivElement;
+   @query("dialog.image-zoom") private imageZoomDialog?: HTMLDialogElement;
+   @state() private pinnedToBottom = true;
++  @state() private scrollEdges: { atTop: boolean; atBottom: boolean } = { atTop: true, atBottom: true };
+   @state() private zoomedImage: { src: string; alt: string } | undefined = undefined;
+   @state() private expandedMetaKey: string | undefined;
+   @state() private copiedMessageKey: string | undefined;
+@@ -286,6 +300,13 @@
+   private readonly onImageLoad = (): void => {
+     if (this.pinnedToBottom) this.scrollToBottom();
+   };
++  private readonly onScrollToTopClick = (): void => {
++    this.scrollToTop();
++  };
++  private readonly onScrollToBottomClick = (): void => {
++    this.pinnedToBottom = true;
++    this.scrollToBottom();
++  };
+   private readonly openImageZoom = (src: string, alt: string): void => {
+     this.zoomedImage = { src, alt };
+   };
+@@ -417,6 +438,7 @@
+     this.ensureChatResizeObserver();
+     this.syncChatResizeObserver();
+     this.syncOpenToolResultScrolls();
++    this.updateScrollEdges();
+   }
+ 
+   private syncImageZoomDialog(): void {
+@@ -484,6 +506,7 @@
+           ${this.renderOpenAsk()}
+           ${this.renderExtensionDialogs()}
+         </div>
++        ${this.renderScrollButtons()}
+         ${this.renderActivityDock()}
+       </div>
+       ${this.renderImageZoom()}
+@@ -860,6 +883,17 @@
+     return html`<conversation-meter .positionPercent=${position} .loadedPercent=${loadedPercent}></conversation-meter>`;
+   }
+ 
++  private renderScrollButtons() {
++    if (!this.messages.length) return null;
++    const visibility = chatScrollButtonsState({ pinnedToBottom: this.pinnedToBottom, ...this.scrollEdges });
++    return html`
++      <div class="scroll-buttons">
++        <button type="button" class=${visibility.up ? "scroll-button" : "scroll-button hidden"} ?disabled=${!visibility.up} tabindex=${visibility.up ? "0" : "-1"} aria-hidden=${String(!visibility.up)} aria-label="Scroll to top of loaded history" title="Scroll to top of loaded history" @click=${this.onScrollToTopClick}>⤒</button>
++        <button type="button" class=${visibility.down ? "scroll-button" : "scroll-button hidden"} ?disabled=${!visibility.down} tabindex=${visibility.down ? "0" : "-1"} aria-hidden=${String(!visibility.down)} aria-label="Scroll to latest message" title="Scroll to latest message" @click=${this.onScrollToBottomClick}>⤓</button>
++      </div>
++    `;
++  }
++
+   private conversationDisplayTotal(): number {
+     if (!this.hasMore && this.messageStart === 0) return Math.max(1, this.messages.length);
+     return Math.max(1, this.messageTotal, this.messageStart + this.messages.length);
+@@ -1160,6 +1194,7 @@
+   private onScroll() {
+     this.requestLoadMoreIfNeeded();
+     this.updatePinnedToBottomFromScroll();
++    this.updateScrollEdges();
+     this.scheduleConversationRailUpdate();
+     if (!this.suppressScrollSave) this.scheduleScrollPositionSave();
+   }
+@@ -1256,6 +1291,28 @@
+     return chat !== undefined && chat.scrollTop > 0;
+   }
+ 
++  private updateScrollEdges(): void {
++    const chat = this.chat;
++    if (!chat) return;
++    const atTop = chat.scrollTop <= 1;
++    const atBottom = this.isAtBottom();
++    if (atTop === this.scrollEdges.atTop && atBottom === this.scrollEdges.atBottom) return;
++    this.scrollEdges = { atTop, atBottom };
++  }
++
++  private scrollToTop(): void {
++    if (this.scrollToBottomFrame !== undefined) {
++      cancelAnimationFrame(this.scrollToBottomFrame);
++      this.scrollToBottomFrame = undefined;
++    }
++    const chat = this.chat;
++    if (!chat) return;
++    this.pinnedToBottom = false;
++    chat.scrollTop = 0;
++    this.syncScrollMetrics();
++    this.updateScrollEdges();
++  }
++
+   private scrollToBottom() {
+     if (this.scrollToBottomFrame !== undefined) return;
+     this.scrollToBottomFrame = requestAnimationFrame(() => {
+--- a/src/client/src/components/ChatView.test.ts
++++ b/src/client/src/components/ChatView.test.ts
+@@ -17,6 +17,7 @@
+   chatMessageMetadataLabel,
+   chatQueuedMessageSections,
+   chatQueuedSectionShowsClearAction,
++  chatScrollButtonsState,
+   chatSessionWarningRows,
+ } from "./ChatView";
+ import { templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+@@ -286,6 +287,24 @@
+   });
+ });
+ 
++describe("chatScrollButtonsState", () => {
++  it("hides both buttons at the top of a session pinned to the bottom", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: true, atTop: true, atBottom: true })).toEqual({ up: false, down: false });
++  });
++
++  it("shows only the up button once scrolled away from the top while pinned to the bottom", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: true, atTop: false, atBottom: true })).toEqual({ up: true, down: false });
++  });
++
++  it("shows the down button once the user scrolls away from the bottom", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: false, atTop: false, atBottom: false })).toEqual({ up: true, down: true });
++  });
++
++  it("hides the down button while scrolled up but still resting at the bottom edge", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: false, atTop: true, atBottom: true })).toEqual({ up: false, down: false });
++  });
++});
++
+ describe("ChatView event-group disclosure wiring", () => {
+   const messages: ChatLine[] = [
+     { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
+--- a/src/client/src/components/shared.ts
++++ b/src/client/src/components/shared.ts
+@@ -370,6 +370,11 @@
+     .notification-header { gap: 4px; padding-inline: 8px; }
+     .notification-list { padding-inline: 8px; }
+   }
++  .scroll-buttons { position: absolute; bottom: 38px; right: 28px; z-index: 21; display: flex; gap: 6px; }
++  .scroll-button { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 50%; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 13px system-ui, sans-serif; line-height: 1; opacity: .7; cursor: pointer; }
++  .scroll-button:hover, .scroll-button:focus-visible { opacity: 1; color: var(--pi-text-bright); border-color: var(--pi-accent); }
++  .scroll-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
++  .scroll-button.hidden { visibility: hidden; }
+   .chat { --pi-chat-sticky-top: -26px; height: 100%; min-height: 0; overflow: auto; overflow-anchor: none; padding: 26px 16px 64px; box-sizing: border-box; }
+   .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
+   .activity-dock { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 8px 12px; font-size: 13px; pointer-events: none; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }

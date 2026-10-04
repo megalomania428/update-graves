@@ -1,0 +1,530 @@
+--- a/docs/config.md
++++ b/docs/config.md
+@@ -48,6 +48,7 @@
+ - Pi package install/remove/update: not a PI WEB config key; after a mutation, type `/reload` in each idle PI WEB session on the target machine to refresh ordinary Pi resources such as extensions, skills, prompt templates, themes, and context/system prompt files. For a PI WEB package with `serverModule`, manually restart `pi-web-sessiond.service`, then reload the browser. If a global Pi extension adds or removes a model provider, or changes a provider's connection settings, the same manual sessiond restart is required; `/reload` cannot change either startup snapshot. A known Pi model provider refreshing only its own model list is applied without a restart. See [Pi extension provider baseline](#pi-extension-provider-baseline).
+ - `shortcuts`: saved settings apply in the browser after config refresh/save.
+ - `ui.disclosure`: applies in the browser after settings save/config refresh; no service restart required.
++- `ui.eventsGroupLimit`: applies in the browser after settings save/config refresh; no service restart required.
+ 
+ ## Global config example
+ 
+@@ -183,6 +184,7 @@
+ | Server-plugin safe start | `serverPlugins.safeStart` | — | Global/offline recovery | Not supported locally; manage with `pi-web plugins safe-start ...` | Applied before discovery/import on next sessiond start |
+ | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
+ | Chat card disclosure | `ui.disclosure.<part>` | — | Global | Not supported locally | Applies after settings save/config refresh |
++| Events group chunk limit | `ui.eventsGroupLimit` | — | Global | Not supported locally | Applies after settings save/config refresh |
+ | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
+ | **Runtime-only environment variables** |  |  |  |  |  |
+ | Global config file path | — | `PI_WEB_CONFIG` (`XDG_CONFIG_HOME` affects the default path) | Process/env | Selects the global config file; not a project config | Restart services/processes after changing env |
+@@ -508,6 +510,8 @@
+ 
+ For `eventsGroup`, `last` and `live` target the last group of events in the loaded transcript, not the last entry of the transcript overall. The `live` class and `live events` label are shown only for the most recent group of an active session, independent of the chosen mode. Manual collapsing/expanding is remembered per group in any mode. Because this release also changes the storage key events groups use to persist their disclosure state, every previously saved group disclosure choice resets once after upgrading.
+ 
++`ui.eventsGroupLimit` caps how many events (each thinking block, each tool call together with its result, or another technical entry — the same unit the group's `N events` summary counts) a single events group card can hold before it is cut into consecutive chunks, each its own events group card. It accepts an integer from 0 to 10000; the default is 111, and `0` disables splitting and reproduces the pre-existing single-card behavior. Every chunk of a series split into more than one chunk, including the first, carries a `part N/M` prefix before its summary, for example `part 2/4 · 111 events · 60 assistant · 51 tool`; an unsplit group keeps the plain summary as before. Chunks are governed by `ui.disclosure.eventsGroup` the same way ordinary groups are (only the last chunk is open in `live`/`last`, every chunk is open in `all`), and manual expanding/collapsing is remembered per chunk. Splitting is purely client-side and deterministic from the loaded messages, so a long-running session and its reloaded history always split at the same boundaries. In `live`/`last` mode, a chunk that opened by default as the last chunk of its series and then loses that status because the series continues into a new chunk stays open ("sticky") while the user is scrolled away from the bottom, instead of collapsing immediately; scrolling back to the bottom, or using the scroll-to-latest button, collapses every sticky chunk at once.
++
+ ## Prompt completions
+ 
+ The chat composer opens completion menus on three trigger characters:
+--- a/src/client/src/api/parsers.ts
++++ b/src/client/src/api/parsers.ts
+@@ -1600,14 +1600,21 @@
+   if (value === undefined) return undefined;
+   if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEB ui field");
+   for (const key of Object.keys(value)) {
+-    if (key !== "disclosure") throw new Error("Invalid PI WEB ui field");
++    if (key !== "disclosure" && key !== "eventsGroupLimit") throw new Error("Invalid PI WEB ui field");
+   }
+   const disclosure = value["disclosure"];
+   return {
+     ...optionalField("disclosure", optionalDisclosure(disclosure)),
++    ...optionalField("eventsGroupLimit", optionalEventsGroupLimit(value["eventsGroupLimit"])),
+   };
+ }
+ 
++function optionalEventsGroupLimit(value: unknown): number | undefined {
++  if (value === undefined) return undefined;
++  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 10000) throw new Error("Invalid PI WEB ui field");
++  return value;
++}
++
+ function optionalDisclosure(value: unknown): PiWebDisclosureConfig | undefined {
+   if (value === undefined) return undefined;
+   if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEB ui field");
+--- a/src/client/src/chatGroups.test.ts
++++ b/src/client/src/chatGroups.test.ts
+@@ -1,8 +1,9 @@
+ import { describe, expect, it } from "vitest";
+-import { groupChatMessages, summarizeChatGroup } from "./chatGroups";
++import { chatGroupPartLabel, groupChatMessages, summarizeChatGroup } from "./chatGroups";
+ import type { ChatLine } from "./components/shared";
+ 
+ const text = (role: ChatLine["role"], value: string): ChatLine => ({ role, parts: [{ type: "text", text: value }] });
++const toolEvent = (n: number): ChatLine => ({ role: "tool", parts: [{ type: "toolResult", toolName: "read", text: `event ${String(n)}`, isError: false }] });
+ 
+ describe("groupChatMessages", () => {
+   it("groups technical parts until a readable message is encountered", () => {
+@@ -108,6 +109,64 @@
+   });
+ });
+ 
++describe("groupChatMessages with an eventLimit", () => {
++  it("splits a long series into consecutive chunks of eventLimit events", () => {
++    const events = Array.from({ length: 250 }, (_, index) => toolEvent(index));
++    const groups = groupChatMessages(events, 0, 111);
++
++    expect(groups).toHaveLength(3);
++    expect(groups[0]).toMatchObject({ kind: "group", startIndex: 0, endIndex: 110, part: 1, partCount: 3 });
++    expect(groups[1]).toMatchObject({ kind: "group", startIndex: 111, endIndex: 221, part: 2, partCount: 3 });
++    expect(groups[2]).toMatchObject({ kind: "group", startIndex: 222, endIndex: 249, part: 3, partCount: 3 });
++    expect(groups.map((group) => group.kind === "group" ? group.messages.length : -1)).toEqual([111, 111, 28]);
++  });
++
++  it("keeps a series exactly at the limit as one unsplit group without part/partCount", () => {
++    const events = Array.from({ length: 111 }, (_, index) => toolEvent(index));
++
++    expect(groupChatMessages(events, 0, 111)).toEqual([
++      { kind: "group", startIndex: 0, endIndex: 110, messages: events },
++    ]);
++  });
++
++  it("does not split when eventLimit is 0", () => {
++    const events = Array.from({ length: 250 }, (_, index) => toolEvent(index));
++
++    expect(groupChatMessages(events, 0, 0)).toEqual(groupChatMessages(events));
++  });
++
++  it("resets the split at a readable message that ends the series", () => {
++    const messages: ChatLine[] = [
++      ...Array.from({ length: 5 }, (_, index) => toolEvent(index)),
++      text("assistant", "checkpoint"),
++      ...Array.from({ length: 5 }, (_, index) => toolEvent(index + 5)),
++    ];
++
++    const groups = groupChatMessages(messages, 0, 3);
++
++    expect(groups).toHaveLength(5);
++    expect(groups[0]).toMatchObject({ kind: "group", startIndex: 0, endIndex: 2, part: 1, partCount: 2 });
++    expect(groups[1]).toMatchObject({ kind: "group", startIndex: 3, endIndex: 4, part: 2, partCount: 2 });
++    expect(groups[2]).toMatchObject({ kind: "message", index: 5 });
++    expect(groups[3]).toMatchObject({ kind: "group", startIndex: 6, endIndex: 8, part: 1, partCount: 2 });
++    expect(groups[4]).toMatchObject({ kind: "group", startIndex: 9, endIndex: 10, part: 2, partCount: 2 });
++  });
++
++  it("splits identically regardless of indexOffset", () => {
++    const events = Array.from({ length: 25 }, (_, index) => toolEvent(index));
++    const shapeOf = (groups: ReturnType<typeof groupChatMessages>) => groups.map((group) => group.kind === "group" ? { part: group.part, partCount: group.partCount, length: group.messages.length } : group);
++
++    expect(shapeOf(groupChatMessages(events, 100, 10))).toEqual(shapeOf(groupChatMessages(events, 0, 10)));
++  });
++});
++
++describe("chatGroupPartLabel", () => {
++  it("formats a part label from the chunk position and total chunk count", () => {
++    expect(chatGroupPartLabel(2, 4)).toBe("part 2/4");
++    expect(chatGroupPartLabel(1, 3)).toBe("part 1/3");
++  });
++});
++
+ describe("summarizeChatGroup", () => {
+   it("summarizes special event groups", () => {
+     expect(summarizeChatGroup([{ ...text("assistant", "a"), source: "compaction" }])).toBe("1 history compaction summary");
+--- a/src/client/src/chatGroups.ts
++++ b/src/client/src/chatGroups.ts
+@@ -1,23 +1,47 @@
+ import type { ChatLine, ChatPart } from "./components/shared";
+ 
++/** Default per-chunk event cap for a group card; `0` disables splitting. */
++export const DEFAULT_EVENTS_GROUP_LIMIT = 111;
++
+ export type ChatGroup =
+   | { kind: "message"; message: ChatLine; index: number }
+   | { kind: "tool-image"; message: ChatLine; index: number; toolName?: string }
+-  | { kind: "group"; messages: ChatLine[]; startIndex: number; endIndex: number };
++  | { kind: "group"; messages: ChatLine[]; startIndex: number; endIndex: number; part?: number; partCount?: number };
++
++interface EventChunk {
++  messages: ChatLine[];
++  startIndex: number;
++}
+ 
+-export function groupChatMessages(messages: ChatLine[], indexOffset = 0): ChatGroup[] {
++export function groupChatMessages(messages: ChatLine[], indexOffset = 0, eventLimit = 0): ChatGroup[] {
+   const groups: ChatGroup[] = [];
++  let eventChunks: EventChunk[] = [];
+   let eventMessages: ChatLine[] = [];
+   let eventStartIndex = 0;
+ 
+   const pushEvent = (message: ChatLine, index: number) => {
++    if (eventLimit > 0 && eventMessages.length === eventLimit) {
++      eventChunks.push({ messages: eventMessages, startIndex: eventStartIndex });
++      eventMessages = [];
++    }
+     if (!eventMessages.length) eventStartIndex = index;
+     eventMessages.push(message);
+   };
+   const flushEvents = () => {
+-    if (!eventMessages.length) return;
+-    groups.push({ kind: "group", messages: eventMessages, startIndex: eventStartIndex, endIndex: eventStartIndex + eventMessages.length - 1 });
++    if (eventMessages.length) eventChunks.push({ messages: eventMessages, startIndex: eventStartIndex });
+     eventMessages = [];
++    if (!eventChunks.length) return;
++    const partCount = eventChunks.length;
++    eventChunks.forEach((chunk, chunkIndex) => {
++      groups.push({
++        kind: "group",
++        messages: chunk.messages,
++        startIndex: chunk.startIndex,
++        endIndex: chunk.startIndex + chunk.messages.length - 1,
++        ...(partCount > 1 ? { part: chunkIndex + 1, partCount } : {}),
++      });
++    });
++    eventChunks = [];
+   };
+ 
+   messages.forEach((message, index) => {
+@@ -54,6 +78,11 @@
+   return `${String(messages.length)} ${messages.length === 1 ? "event" : "events"}${details !== "" ? ` · ${details}` : ""}`;
+ }
+ 
++/** The `part N/M` prefix for a group chunk whose series was split into more than one chunk. */
++export function chatGroupPartLabel(part: number, partCount: number): string {
++  return `part ${String(part)}/${String(partCount)}`;
++}
++
+ function isToolImageMessage(message: ChatLine): boolean {
+   return message.role === "tool" && message.parts.length > 0 && message.parts.every((part) => part.type === "image");
+ }
+--- a/src/client/src/components/ChatView.test.ts
++++ b/src/client/src/components/ChatView.test.ts
+@@ -19,6 +19,7 @@
+   chatQueuedSectionShowsClearAction,
+   chatScrollButtonsState,
+   chatSessionWarningRows,
++  nextStickyChunkKeys,
+ } from "./ChatView";
+ import { templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+ 
+@@ -305,6 +306,73 @@
+   });
+ });
+ 
++describe("nextStickyChunkKeys", () => {
++  const transition = (overrides: Partial<Parameters<typeof nextStickyChunkKeys>[0]["transitions"][number]>) => ({
++    chunkKey: "session-1:group:0",
++    wasDefaultOpen: true,
++    isDefaultOpen: false,
++    part: 2,
++    partCount: 3,
++    ...overrides,
++  });
++
++  it("sticks a chunk that lost default-open status to a later part of its own series", () => {
++    const next = nextStickyChunkKeys({ previousSticky: new Set(), pinnedToBottom: false, transitions: [transition({})] });
++
++    expect(next).toEqual(new Set(["session-1:group:0"]));
++  });
++
++  it("leaves the last part of a series alone, since it never loses default-open status", () => {
++    const next = nextStickyChunkKeys({
++      previousSticky: new Set(),
++      pinnedToBottom: false,
++      transitions: [transition({ part: 3, partCount: 3 })],
++    });
++
++    expect(next).toEqual(new Set());
++  });
++
++  it("ignores a chunk that was never default-open", () => {
++    const next = nextStickyChunkKeys({
++      previousSticky: new Set(),
++      pinnedToBottom: false,
++      transitions: [transition({ wasDefaultOpen: false })],
++    });
++
++    expect(next).toEqual(new Set());
++  });
++
++  it("ignores an unsplit group with no part/partCount", () => {
++    const next = nextStickyChunkKeys({
++      previousSticky: new Set(),
++      pinnedToBottom: false,
++      transitions: [{ chunkKey: "session-1:group:0", wasDefaultOpen: true, isDefaultOpen: false }],
++    });
++
++    expect(next).toEqual(new Set());
++  });
++
++  it("clears every sticky key once the user is pinned back to the bottom", () => {
++    const next = nextStickyChunkKeys({
++      previousSticky: new Set(["session-1:group:0", "session-1:group:6"]),
++      pinnedToBottom: true,
++      transitions: [transition({})],
++    });
++
++    expect(next).toEqual(new Set());
++  });
++
++  it("keeps prior sticky keys already tracked while scrolled up", () => {
++    const next = nextStickyChunkKeys({
++      previousSticky: new Set(["session-1:group:0"]),
++      pinnedToBottom: false,
++      transitions: [],
++    });
++
++    expect(next).toEqual(new Set(["session-1:group:0"]));
++  });
++});
++
+ describe("ChatView event-group disclosure wiring", () => {
+   const messages: ChatLine[] = [
+     { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
+--- a/src/client/src/components/ChatView.ts
++++ b/src/client/src/components/ChatView.ts
+@@ -3,7 +3,7 @@
+ import { repeat } from "lit/directives/repeat.js";
+ import { ChatDisclosureController } from "../chatDisclosure";
+ import { chatCardKey, chatCardOpen, eventsGroupDisclosureMode, groupDisclosureOpen, lastDisclosureCards, lastEventsGroupIndex, type PiWebPartDisclosureKind } from "../chatDisclosureModes";
+-import { groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGroups";
++import { chatGroupPartLabel, DEFAULT_EVENTS_GROUP_LIMIT, groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGroups";
+ import { writeClipboardText } from "../clipboard";
+ import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
+ import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
+@@ -148,6 +148,31 @@
+   return isLiveTail ? "live events" : "events";
+ }
+ 
++export interface StickyChunkTransition {
++  chunkKey: string;
++  part?: number;
++  partCount?: number;
++  wasDefaultOpen: boolean;
++  isDefaultOpen: boolean;
++}
++
++/**
++ * The sticky chunk keys that keep a limit-split chunk open after it stops being the
++ * default-open last-of-series chunk, until the user scrolls back to the bottom.
++ */
++export function nextStickyChunkKeys(options: { previousSticky: ReadonlySet<string>; pinnedToBottom: boolean; transitions: readonly StickyChunkTransition[] }): ReadonlySet<string> {
++  if (options.pinnedToBottom) return options.previousSticky.size === 0 ? options.previousSticky : new Set();
++  let next: Set<string> | undefined;
++  for (const transition of options.transitions) {
++    if (!transition.wasDefaultOpen || transition.isDefaultOpen) continue;
++    if (transition.part === undefined || transition.partCount === undefined || transition.part >= transition.partCount) continue;
++    if (options.previousSticky.has(transition.chunkKey)) continue;
++    next ??= new Set(options.previousSticky);
++    next.add(transition.chunkKey);
++  }
++  return next ?? options.previousSticky;
++}
++
+ /** Whether a queued-message section shows the server clear-queue action. */
+ export function chatQueuedSectionShowsClearAction(section: QueuedMessageSection, hasClearHandler: boolean): boolean {
+   return section.source === "server" && hasClearHandler;
+@@ -229,6 +254,7 @@
+   @property({ attribute: false }) onToggleWarnings?: () => void;
+   @property({ attribute: false }) onLoadMore?: () => void;
+   @property({ attribute: false }) disclosureModes: PiWebDisclosureConfig = {};
++  @property({ attribute: false }) eventsGroupLimit = DEFAULT_EVENTS_GROUP_LIMIT;
+   @query(".chat") private chat?: HTMLDivElement;
+   @query("dialog.image-zoom") private imageZoomDialog?: HTMLDialogElement;
+   @state() private pinnedToBottom = true;
+@@ -252,7 +278,10 @@
+   private conversationRailFrame: number | undefined;
+   private groupedMessagesInput?: ChatLine[];
+   private groupedMessagesStart = 0;
++  private groupedMessagesLimit = DEFAULT_EVENTS_GROUP_LIMIT;
+   private groupedMessagesCache: ChatGroup[] = [];
++  private stickyChunkKeys: ReadonlySet<string> = new Set();
++  private previousDefaultOpenChunkKeys: ReadonlySet<string> = new Set();
+   private lastDisclosureCardsCache = new Map<PiWebPartDisclosureKind, string>();
+   private readonly messageMetaCache = new WeakMap<ChatLine, string>();
+   private readonly messageCopyTextCache = new WeakMap<ChatLine, string>();
+@@ -400,6 +429,8 @@
+       cancelAnimationFrame(this.scrollToOpenDialogFrame);
+       this.scrollToOpenDialogFrame = undefined;
+     }
++    this.stickyChunkKeys = new Set();
++    this.previousDefaultOpenChunkKeys = new Set();
+   }
+ 
+   protected override willUpdate(changed: Map<string, unknown>): void {
+@@ -410,6 +441,7 @@
+       this.pendingNotificationFocus = undefined;
+       this.retainedEmptyNotificationTrayTargetKey = undefined;
+     }
++    this.updateStickyChunkKeys();
+   }
+ 
+   protected override update(changed: Map<string, unknown>): void {
+@@ -496,7 +528,7 @@
+             groups,
+             (group) => group.kind === "group" ? this.groupRenderKey(group.startIndex) : this.messageAnchorKey(group.index),
+             (group, index) => {
+-              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, this.groupDisclosureDefaultOpen(index, lastGroupIndex), this.isLiveTailGroup(groups, index));
++              if (group.kind === "group") return this.renderMessageGroup(group.messages, group.startIndex, group.endIndex, this.groupDisclosureDefaultOpen(index, lastGroupIndex), this.isLiveTailGroup(groups, index), group.part, group.partCount);
+               if (group.kind === "tool-image") return this.renderToolImageOutput(group.message, group.index, group.toolName);
+               return this.renderMessage(group.message, group.index);
+             },
+@@ -712,10 +744,11 @@
+   }
+ 
+   private groupedMessages(): ChatGroup[] {
+-    if (this.groupedMessagesInput === this.messages && this.groupedMessagesStart === this.messageStart) return this.groupedMessagesCache;
++    if (this.groupedMessagesInput === this.messages && this.groupedMessagesStart === this.messageStart && this.groupedMessagesLimit === this.eventsGroupLimit) return this.groupedMessagesCache;
+     this.groupedMessagesInput = this.messages;
+     this.groupedMessagesStart = this.messageStart;
+-    this.groupedMessagesCache = groupChatMessages(this.messages, this.messageStart);
++    this.groupedMessagesLimit = this.eventsGroupLimit;
++    this.groupedMessagesCache = groupChatMessages(this.messages, this.messageStart, this.eventsGroupLimit);
+     this.lastDisclosureCardsCache = lastDisclosureCards(this.groupedMessagesCache);
+     return this.groupedMessagesCache;
+   }
+@@ -732,6 +765,26 @@
+     });
+   }
+ 
++  private updateStickyChunkKeys(): void {
++    const groups = this.groupedMessages();
++    const lastGroupIndex = lastEventsGroupIndex(groups);
++    const transitions: StickyChunkTransition[] = [];
++    groups.forEach((group, index) => {
++      if (group.kind !== "group") return;
++      const chunkKey = this.groupDisclosureKey(group.startIndex);
++      const isDefaultOpen = this.groupDisclosureDefaultOpen(index, lastGroupIndex);
++      transitions.push({
++        chunkKey,
++        isDefaultOpen,
++        wasDefaultOpen: this.previousDefaultOpenChunkKeys.has(chunkKey),
++        ...(group.part === undefined ? {} : { part: group.part }),
++        ...(group.partCount === undefined ? {} : { partCount: group.partCount }),
++      });
++    });
++    this.stickyChunkKeys = nextStickyChunkKeys({ previousSticky: this.stickyChunkKeys, pinnedToBottom: this.pinnedToBottom, transitions });
++    this.previousDefaultOpenChunkKeys = new Set(transitions.filter((transition) => transition.isDefaultOpen).map((transition) => transition.chunkKey));
++  }
++
+   private isSessionLive(): boolean {
+     return this.isSendingPrompt
+       || this.status?.isStreaming === true
+@@ -964,15 +1017,17 @@
+     return message.parts.length > 0 && message.parts.every((part) => part.type === "askUserRecord");
+   }
+ 
+-  private renderMessageGroup(messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean, isLiveTail: boolean) {
++  private renderMessageGroup(messages: ChatLine[], startIndex: number, endIndex: number, defaultOpen: boolean, isLiveTail: boolean, part?: number, partCount?: number) {
+     const disclosureKey = this.groupDisclosureKey(startIndex);
+-    const open = this.disclosures.isOpen(disclosureKey, defaultOpen);
++    const effectiveDefaultOpen = defaultOpen || this.stickyChunkKeys.has(disclosureKey);
++    const open = this.disclosures.isOpen(disclosureKey, effectiveDefaultOpen);
++    const partLabel = part === undefined || partCount === undefined || partCount <= 1 ? "" : `${chatGroupPartLabel(part, partCount)} · `;
+     return html`
+       ${this.renderScrollMarker(this.groupScrollMarkerId(endIndex))}
+-      <details class=${chatMessageGroupClassName(isLiveTail)} data-index=${startIndex} data-scroll-anchor-id=${this.groupAnchorKey(startIndex)} ?open=${open} @toggle=${(event: Event) => { this.onGroupToggle(disclosureKey, event, defaultOpen); }}>
++      <details class=${chatMessageGroupClassName(isLiveTail)} data-index=${startIndex} data-scroll-anchor-id=${this.groupAnchorKey(startIndex)} ?open=${open} @toggle=${(event: Event) => { this.onGroupToggle(disclosureKey, event, effectiveDefaultOpen); }}>
+         <summary>
+           <b class="label">${chatMessageGroupLabel(isLiveTail)}</b>
+-          <span>${summarizeChatGroup(messages)}</span>
++          <span>${partLabel}${summarizeChatGroup(messages)}</span>
+         </summary>
+         ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
+       </details>
+--- a/src/client/src/components/PiWebApp.ts
++++ b/src/client/src/components/PiWebApp.ts
+@@ -4,6 +4,7 @@
+ import type { AppAction } from "../actions";
+ import { initialAppState, type AppState, type ModelDialogOrigin } from "../appState";
+ import { browserErrorContext, browserErrorScopeKey, BrowserErrorReporter, clearBrowserError, machineBrowserErrorScope, visibleBrowserErrors, workspaceBrowserErrorScope, type BrowserError, type BrowserErrorScope } from "../browserErrors";
++import { DEFAULT_EVENTS_GROUP_LIMIT } from "../chatGroups";
+ import { isSessionActive } from "../../../shared/activity";
+ import { workspaceDeleteOperation } from "../../../shared/workspaceDeletion";
+ import { PI_WEB_CAPABILITIES, supportsPiWebCapability } from "../../../shared/capabilities";
+@@ -256,6 +257,7 @@
+   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
+   @state() private shortcutConfig: PiWebShortcutConfig = {};
+   @state() private uiDisclosure: PiWebDisclosureConfig = {};
++  @state() private uiEventsGroupLimit: number | undefined;
+   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
+   @state() private workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(undefined);
+   private sessionWarningVisibility = initialSessionWarningVisibilityState();
+@@ -516,6 +518,7 @@
+   private applyClientConfig(config: PiWebConfigValues): void {
+     this.shortcutConfig = config.shortcuts ?? {};
+     this.uiDisclosure = config.ui?.disclosure ?? {};
++    this.uiEventsGroupLimit = config.ui?.eventsGroupLimit;
+     this.workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(config);
+     this.workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(config);
+   }
+@@ -2241,7 +2244,7 @@
+ 
+   private renderChatView(state: AppState, session: SessionInfo) {
+     return html`
+-      <chat-view .sessionId=${session.id} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .activity=${state.activity} .pendingAsk=${state.pendingAsk} .pendingDialogs=${state.pendingDialogs} .closedDialogs=${state.closedDialogs} .onAnswerDialog=${this.handleAnswerDialog} .onCancelDialog=${this.handleCancelDialog} .onDismissClosedDialog=${this.handleDismissClosedDialog} .askDraftSessionId=${machineSessionKey(selectedMachineId(state), session.id)} .onSubmitAsk=${this.handleSubmitAsk} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .onClearServerQueue=${this.handleClearServerQueue} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())} .disclosureModes=${this.uiDisclosure}></chat-view>
++      <chat-view .sessionId=${session.id} .messages=${state.messages} .messageStart=${state.messagePageStart} .messageEnd=${state.messagePageEnd} .messageTotal=${state.messagePageTotal} .hasMore=${state.messagePageStart > 0} .loadingMore=${state.isLoadingEarlierMessages} .isSendingPrompt=${state.sendingPrompts[session.id] === true} .isCompacting=${state.status?.isCompacting === true} .pendingMessageCount=${state.status?.pendingMessageCount ?? 0} .clientQueuedMessages=${state.clientQueuedSessionMessages[session.id] ?? []} .status=${state.status} .activity=${state.activity} .pendingAsk=${state.pendingAsk} .pendingDialogs=${state.pendingDialogs} .closedDialogs=${state.closedDialogs} .onAnswerDialog=${this.handleAnswerDialog} .onCancelDialog=${this.handleCancelDialog} .onDismissClosedDialog=${this.handleDismissClosedDialog} .askDraftSessionId=${machineSessionKey(selectedMachineId(state), session.id)} .onSubmitAsk=${this.handleSubmitAsk} .notificationInbox=${selectedNotificationView(state.selectedNotificationInbox)} .onClearServerQueue=${this.handleClearServerQueue} .onDismissWarning=${this.handleDismissWarning} .onDismissNotification=${this.handleDismissNotification} .onDismissAllNotifications=${this.handleDismissAllNotifications} .warningsVisible=${!this.sessionWarningVisibility.collapsed} .onToggleWarnings=${this.handleToggleWarnings} .onLoadMore=${() => this.withChatPrependTransition(() => this.sessions.loadEarlierMessages())} .disclosureModes=${this.uiDisclosure} .eventsGroupLimit=${this.uiEventsGroupLimit ?? DEFAULT_EVENTS_GROUP_LIMIT}></chat-view>
+     `;
+   }
+ 
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -586,14 +586,23 @@
+ function parseUiConfig(value: unknown, path: string): PiWebUiConfig {
+   if (!isRecord(value)) throw new Error(`PI WEB config ui must be an object: ${path}`);
+   for (const key of Object.keys(value)) {
+-    if (key !== "disclosure") throw new Error(`PI WEB config ui key is not allowed: ${key}: ${path}`);
++    if (key !== "disclosure" && key !== "eventsGroupLimit") throw new Error(`PI WEB config ui key is not allowed: ${key}: ${path}`);
+   }
+   const disclosure = value["disclosure"];
++  const eventsGroupLimit = value["eventsGroupLimit"];
+   return {
+     ...(disclosure !== undefined ? { disclosure: parseDisclosureConfig(disclosure, path) } : {}),
++    ...(eventsGroupLimit !== undefined ? { eventsGroupLimit: parseEventsGroupLimit(eventsGroupLimit, path) } : {}),
+   };
+ }
+ 
++function parseEventsGroupLimit(value: unknown, path: string): number {
++  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 10000) {
++    throw new Error(`PI WEB config ui.eventsGroupLimit must be an integer from 0 to 10000: ${path}`);
++  }
++  return value;
++}
++
+ function parseDisclosureConfig(value: unknown, path: string): PiWebDisclosureConfig {
+   if (!isRecord(value)) throw new Error(`PI WEB config ui.disclosure must be an object: ${path}`);
+   const result: PiWebDisclosureConfig = {};
+--- a/src/server/configRoutes.ts
++++ b/src/server/configRoutes.ts
+@@ -227,14 +227,23 @@
+ function parseUiRequest(value: unknown): PiWebUiConfig {
+   if (!isRecord(value)) throw new Error("PI WEB config ui must be an object");
+   for (const key of Object.keys(value)) {
+-    if (key !== "disclosure") throw new Error(`PI WEB config ui key is not allowed: ${key}`);
++    if (key !== "disclosure" && key !== "eventsGroupLimit") throw new Error(`PI WEB config ui key is not allowed: ${key}`);
+   }
+   const disclosure = value["disclosure"];
++  const eventsGroupLimit = value["eventsGroupLimit"];
+   return {
+     ...(disclosure !== undefined ? { disclosure: parseDisclosureRequest(disclosure) } : {}),
++    ...(eventsGroupLimit !== undefined ? { eventsGroupLimit: parseEventsGroupLimitRequest(eventsGroupLimit) } : {}),
+   };
+ }
+ 
++function parseEventsGroupLimitRequest(value: unknown): number {
++  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 10000) {
++    throw new Error("PI WEB config ui.eventsGroupLimit must be an integer from 0 to 10000");
++  }
++  return value;
++}
++
+ function parseDisclosureRequest(value: unknown): PiWebDisclosureConfig {
+   if (!isRecord(value)) throw new Error("PI WEB config ui.disclosure must be an object");
+   const result: PiWebDisclosureConfig = {};
+--- a/src/shared/apiTypes.ts
++++ b/src/shared/apiTypes.ts
+@@ -136,6 +136,7 @@
+ 
+ export interface PiWebUiConfig {
+   disclosure?: PiWebDisclosureConfig;
++  eventsGroupLimit?: number;
+ }
+ 
+ export type PiWebPluginSettings = Record<string, unknown>;

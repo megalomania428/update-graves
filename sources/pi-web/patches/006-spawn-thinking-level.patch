@@ -1,0 +1,295 @@
+--- a/src/server/sessions/spawnSubsessionTool.ts
++++ b/src/server/sessions/spawnSubsessionTool.ts
+@@ -1,5 +1,7 @@
+ import { Type } from "typebox";
++import { StringEnum } from "@earendil-works/pi-ai";
+ import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { KNOWN_THINKING_LEVELS, type ThinkingLevel } from "../../shared/thinkingLevels.js";
+ import type { TranscriptContentKind, TranscriptEntry, TranscriptRole, TranscriptView } from "./subsessionTranscript.js";
+ 
+ /** Lifecycle phase of a tracked subsession as seen by its parent. */
+@@ -10,6 +12,14 @@
+   cwd: string;
+   /** Model the child session runs with, as `provider/id`; absent when unknown. */
+   model?: string;
++  /** Thinking level the child session actually runs with; absent when unknown. */
++  thinkingLevel?: ThinkingLevel;
++  /**
++   * Explicitly requested thinking level (via the `model` suffix or the
++   * `thinkingLevel` parameter), present only when pi clamped it to a
++   * different level the child model actually supports.
++   */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export type SpawnSubsessionModel = NonNullable<ExtensionContext["model"]>;
+@@ -35,8 +45,14 @@
+   model?: SpawnSubsessionModel;
+   /** Strict `provider/model-id` requested by the parent; overrides {@link model} when set. */
+   modelSpec?: string;
+-  /** Parent's current thinking level, inherited by the child session (pi clamps it to the child model's capabilities). */
++  /**
++   * Parent's current thinking level. Used as the child's default only when
++   * neither a model nor an explicit {@link requestedThinkingLevel} is
++   * requested; otherwise pi's own default for the resolved model applies.
++   */
+   thinkingLevel?: SpawnSubsessionThinkingLevel;
++  /** Thinking level explicitly requested via the `thinkingLevel` tool parameter; overridden by a `model` suffix when both are set. */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export interface SubsessionSummary {
+@@ -84,7 +100,10 @@
+     description: "Initial instruction for the tracked child.",
+   }),
+   model: Type.Optional(Type.String({
+-    description: 'Model for the child session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5". When the user references a model as #provider/model-id in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++    description: 'Model for the child session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5", optionally suffixed with ":<thinking level>" (e.g. "anthropic/claude-sonnet-4-5:high"); the suffix overrides thinkingLevel. When the user references a model as #provider/model-id[:level] in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++  })),
++  thinkingLevel: Type.Optional(StringEnum(KNOWN_THINKING_LEVELS, {
++    description: "Thinking level for the child session. Pick it to match the subtask's difficulty, but if the user named a specific level (in words, or via a #provider/model-id:level reference), use exactly that one. Omit to inherit this session's thinking level, or, when model is set, to use pi's default for that model. An unsupported level is clamped to the nearest one the child model supports; the actual level is reported in the result.",
+   })),
+ });
+ 
+@@ -212,10 +231,13 @@
+         ...(ctx.model === undefined ? {} : { model: ctx.model }),
+         ...(params.model === undefined ? {} : { modelSpec: params.model }),
+         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
++        ...(params.thinkingLevel === undefined ? {} : { requestedThinkingLevel: params.thinkingLevel }),
+       });
+       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
++      const thinkingNote = result.thinkingLevel === undefined ? "" : ` with thinking level ${result.thinkingLevel}`;
++      const clampNote = result.requestedThinkingLevel === undefined ? "" : ` Requested thinking level ${result.requestedThinkingLevel} is not supported by ${result.model ?? "the model"}; using ${result.thinkingLevel ?? "a different level"}.`;
+       return {
+-        content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}${modelNote}. Continue other work, then join with yield_to_subsessions; do not poll.` }],
++        content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}${modelNote}${thinkingNote}.${clampNote} Continue other work, then join with yield_to_subsessions; do not poll.` }],
+         details: result,
+       };
+     },
+--- a/src/server/sessions/spawnSessionTool.ts
++++ b/src/server/sessions/spawnSessionTool.ts
+@@ -1,11 +1,21 @@
+ import { Type } from "typebox";
++import { StringEnum } from "@earendil-works/pi-ai";
+ import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { KNOWN_THINKING_LEVELS, type ThinkingLevel } from "../../shared/thinkingLevels.js";
+ 
+ export interface SpawnSessionResult {
+   sessionId: string;
+   cwd: string;
+   /** Model the spawned session runs with, as `provider/id`; absent when unknown. */
+   model?: string;
++  /** Thinking level the spawned session actually runs with; absent when unknown. */
++  thinkingLevel?: ThinkingLevel;
++  /**
++   * Explicitly requested thinking level (via the `model` suffix or the
++   * `thinkingLevel` parameter), present only when pi clamped it to a
++   * different level the spawned model actually supports.
++   */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export type SpawnSessionModel = NonNullable<ExtensionContext["model"]>;
+@@ -21,8 +31,15 @@
+   model?: SpawnSessionModel;
+   /** Strict `provider/model-id` requested by the dispatcher; overrides {@link model} when set. */
+   modelSpec?: string;
+-  /** Dispatching session's current thinking level, inherited by the spawned session (pi clamps it to the spawned model's capabilities). */
++  /**
++   * Dispatching session's current thinking level. Used as the spawned
++   * session's default only when neither a model nor an explicit
++   * {@link requestedThinkingLevel} is requested; otherwise pi's own default
++   * for the resolved model applies.
++   */
+   thinkingLevel?: SpawnSessionThinkingLevel;
++  /** Thinking level explicitly requested via the `thinkingLevel` tool parameter; overridden by a `model` suffix when both are set. */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export interface SpawnSessionToolDeps {
+@@ -39,7 +56,10 @@
+     description: "Working directory for the new session. Must be a workspace (worktree, or root) of the same project as this session. Defaults to this session's working directory.",
+   })),
+   model: Type.Optional(Type.String({
+-    description: 'Model for the new session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5". When the user references a model as #provider/model-id in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++    description: 'Model for the new session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5", optionally suffixed with ":<thinking level>" (e.g. "anthropic/claude-sonnet-4-5:high"); the suffix overrides thinkingLevel. When the user references a model as #provider/model-id[:level] in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++  })),
++  thinkingLevel: Type.Optional(StringEnum(KNOWN_THINKING_LEVELS, {
++    description: "Thinking level for the new session. Pick it to match the task's difficulty, but if the user named a specific level (in words, or via a #provider/model-id:level reference), use exactly that one. Omit to inherit this session's thinking level, or, when model is set, to use pi's default for that model. An unsupported level is clamped to the nearest one the new model supports; the actual level is reported in the result.",
+   })),
+ });
+ 
+@@ -68,10 +88,13 @@
+         ...(ctx.model === undefined ? {} : { model: ctx.model }),
+         ...(params.model === undefined ? {} : { modelSpec: params.model }),
+         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
++        ...(params.thinkingLevel === undefined ? {} : { requestedThinkingLevel: params.thinkingLevel }),
+       });
+       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
++      const thinkingNote = result.thinkingLevel === undefined ? "" : ` with thinking level ${result.thinkingLevel}`;
++      const clampNote = result.requestedThinkingLevel === undefined ? "" : ` Requested thinking level ${result.requestedThinkingLevel} is not supported by ${result.model ?? "the model"}; using ${result.thinkingLevel ?? "a different level"}.`;
+       return {
+-        content: [{ type: "text", text: `Started independent session ${result.sessionId} in ${result.cwd}${modelNote}.` }],
++        content: [{ type: "text", text: `Started independent session ${result.sessionId} in ${result.cwd}${modelNote}${thinkingNote}.${clampNote}` }],
+         details: result,
+       };
+     },
+--- a/src/server/sessions/piSessionService.ts
++++ b/src/server/sessions/piSessionService.ts
+@@ -43,6 +43,7 @@
+ import type { PiWebConfigService } from "../configRoutes.js";
+ import { parsePromptAttachments } from "../../shared/promptAttachments.js";
+ import { ASK_USER_ANSWERS_CUSTOM_TYPE, SESSION_TREE_CUSTOM_INSTRUCTIONS_MAX_LENGTH, SESSION_UNREAD_LIMIT } from "../../shared/apiTypes.js";
++import { isKnownThinkingLevel } from "../../shared/thinkingLevels.js";
+ import type {
+   AskUserCloseResponse,
+   AskUserOutcome,
+@@ -171,6 +172,21 @@
+   return new Error(`Unknown model "${modelSpec}". Pass an exact "provider/model-id".`);
+ }
+ 
++/**
++ * Split an optional pi CLI-style `:<thinking level>` suffix off a spawn-tool
++ * model spec. Model ids may themselves contain `:` (e.g. an OpenRouter
++ * `:free` variant), so the suffix is only recognized when the text after the
++ * last `:` is a known thinking level; anything else is left as part of the
++ * model spec and reported back unchanged.
++ */
++function parseThinkingLevelSuffix(spec: string): { modelSpec: string; thinkingLevel?: ClientThinkingLevel } {
++  const colon = spec.lastIndexOf(":");
++  if (colon < 0) return { modelSpec: spec };
++  const suffix = spec.slice(colon + 1);
++  if (!isKnownThinkingLevel(suffix)) return { modelSpec: spec };
++  return { modelSpec: spec.slice(0, colon), thinkingLevel: suffix };
++}
++
+ function authLossWarningKey(sessionId: string, provider: string, modelId: string): string {
+   return `${sessionId}:${provider}/${modelId}`;
+ }
+@@ -1487,25 +1503,21 @@
+     if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
+     const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, input.cwd);
+     if (!decision.allowed) throw spawnTargetError(decision);
+-    // A model spec overrides the inherited model. Only a spec resolves
+-    // against the spawning session; the default path must not depend on it.
+-    const model = input.modelSpec === undefined
+-      ? input.model
+-      : await this.resolveSpawnModel({ id: input.spawningSessionId, cwd: input.spawningCwd }, input.modelSpec);
++    const resolved = await this.resolveSpawnModelAndThinking({ id: input.spawningSessionId, cwd: input.spawningCwd }, input);
+     const created = await this.start(decision.cwd, {
+-      ...(model === undefined ? {} : { initialModel: model }),
+-      ...(input.thinkingLevel === undefined ? {} : { initialThinkingLevel: input.thinkingLevel }),
++      ...(resolved.model === undefined ? {} : { initialModel: resolved.model }),
++      ...(resolved.initialThinkingLevel === undefined ? {} : { initialThinkingLevel: resolved.initialThinkingLevel }),
+     });
+-    const modelUsed = this.active.get(created.id)?.runtime.session.model;
++    const runtimeSession = this.active.get(created.id)?.runtime.session;
+     await this.prompt(created, input.prompt);
+     this.logger.info(
+-      { spawningCwd: input.spawningCwd, sessionId: created.id, cwd: decision.cwd, promptLength: input.prompt.length },
++      { spawningCwd: input.spawningCwd, sessionId: created.id, cwd: decision.cwd, promptLength: input.prompt.length, thinkingLevel: runtimeSession?.thinkingLevel },
+       "spawn_session started a new session",
+     );
+     return {
+       sessionId: created.id,
+       cwd: decision.cwd,
+-      ...(modelUsed === undefined ? {} : { model: modelSpecOf(modelUsed) }),
++      ...this.spawnOutcomeFields(runtimeSession, resolved.requestedThinkingLevel),
+     };
+   }
+ 
+@@ -1526,18 +1538,14 @@
+     // from an unregistered directory, which keeps the child visible in the UI.
+     const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, undefined);
+     if (!decision.allowed) throw spawnTargetError(decision);
+-    // A model spec overrides the inherited model and is resolved against the
+-    // parent's model runtime; only a spec resolves against the parent.
+-    const model = input.modelSpec === undefined
+-      ? input.model
+-      : await this.resolveSpawnModel({ id: input.parentSessionId, cwd: input.spawningCwd }, input.modelSpec);
++    const resolved = await this.resolveSpawnModelAndThinking({ id: input.parentSessionId, cwd: input.spawningCwd }, input);
+     const created = await this.startSession(decision.cwd, {
+       ...(input.parentSessionFile === undefined ? {} : { parentSession: input.parentSessionFile }),
+-      ...(model === undefined ? {} : { initialModel: model }),
+-      ...(input.thinkingLevel === undefined ? {} : { initialThinkingLevel: input.thinkingLevel }),
++      ...(resolved.model === undefined ? {} : { initialModel: resolved.model }),
++      ...(resolved.initialThinkingLevel === undefined ? {} : { initialThinkingLevel: resolved.initialThinkingLevel }),
+       creationProvenance: "tracked-subsession",
+     });
+-    const modelUsed = this.active.get(created.id)?.runtime.session.model;
++    const runtimeSession = this.active.get(created.id)?.runtime.session;
+     const parentSessionFile = nonEmptyString(input.parentSessionFile);
+     const link: TrackedSubsessionLink = {
+       parentSessionId: input.parentSessionId,
+@@ -1551,13 +1559,13 @@
+     this.persistSubsessionChildMarker(input.parentSessionId, created.id);
+     await this.prompt(created, input.prompt);
+     this.logger.info(
+-      { parentSessionId: input.parentSessionId, sessionId: created.id, cwd: decision.cwd, promptLength: input.prompt.length },
++      { parentSessionId: input.parentSessionId, sessionId: created.id, cwd: decision.cwd, promptLength: input.prompt.length, thinkingLevel: runtimeSession?.thinkingLevel },
+       "spawn_subsession started a tracked child session",
+     );
+     return {
+       sessionId: created.id,
+       cwd: decision.cwd,
+-      ...(modelUsed === undefined ? {} : { model: modelSpecOf(modelUsed) }),
++      ...this.spawnOutcomeFields(runtimeSession, resolved.requestedThinkingLevel),
+     };
+   }
+ 
+@@ -1700,6 +1708,55 @@
+   }
+ 
+   /**
++   * Resolve both the model and initial thinking level shared by
++   * {@link spawnSession} and {@link spawnSubsession}. A `model` suffix
++   * (`provider/model-id:level`) takes priority over the tool's own
++   * `thinkingLevel` parameter, silently. The child's default:
++   *  - an explicit level (suffix or parameter) is passed through as-is; pi
++   *    clamps it to whatever the resolved model supports;
++   *  - otherwise, if a model was explicitly requested via `modelSpec`, no
++   *    level is passed at all, so pi applies its own default for that model;
++   *  - otherwise, the parent's current level is inherited unchanged.
++   */
++  private async resolveSpawnModelAndThinking(
++    spawningRef: PiSessionRef,
++    input: { model?: AgentModel; modelSpec?: string; thinkingLevel?: ClientThinkingLevel; requestedThinkingLevel?: ClientThinkingLevel },
++  ): Promise<{ model?: AgentModel; initialThinkingLevel?: ClientThinkingLevel; requestedThinkingLevel?: ClientThinkingLevel }> {
++    const { modelSpec: baseModelSpec, thinkingLevel: suffixLevel } = input.modelSpec === undefined
++      ? { modelSpec: undefined, thinkingLevel: undefined }
++      : parseThinkingLevelSuffix(input.modelSpec);
++    // A model spec overrides the inherited model and is resolved against the
++    // spawning session; only a spec resolves against it.
++    const model = baseModelSpec === undefined ? input.model : await this.resolveSpawnModel(spawningRef, baseModelSpec);
++    const modelFields = model === undefined ? {} : { model };
++    const explicit = suffixLevel ?? input.requestedThinkingLevel;
++    if (explicit !== undefined) return { ...modelFields, initialThinkingLevel: explicit, requestedThinkingLevel: explicit };
++    if (input.modelSpec !== undefined) return modelFields;
++    return input.thinkingLevel === undefined ? modelFields : { ...modelFields, initialThinkingLevel: input.thinkingLevel };
++  }
++
++  /**
++   * Build the model/thinking-level fields shared by {@link SpawnSessionResult}
++   * and {@link SpawnSubsessionResult}. `requestedThinkingLevel` is only
++   * surfaced when the caller explicitly asked for a level and pi clamped it
++   * to something else; an inherited or model-defaulted level is never noted.
++   */
++  private spawnOutcomeFields(
++    runtimeSession: Pick<PiAgentSession, "model" | "thinkingLevel"> | undefined,
++    requestedThinkingLevel: ClientThinkingLevel | undefined,
++  ): { model?: string; thinkingLevel?: ClientThinkingLevel; requestedThinkingLevel?: ClientThinkingLevel } {
++    const modelUsed = runtimeSession?.model;
++    const thinkingLevelUsed = runtimeSession?.thinkingLevel;
++    return {
++      ...(modelUsed === undefined ? {} : { model: modelSpecOf(modelUsed) }),
++      ...(thinkingLevelUsed === undefined ? {} : { thinkingLevel: thinkingLevelUsed }),
++      ...(requestedThinkingLevel === undefined || thinkingLevelUsed === undefined || requestedThinkingLevel === thinkingLevelUsed
++        ? {}
++        : { requestedThinkingLevel }),
++    };
++  }
++
++  /**
+    * Register the question set an agent wants the user to answer as the session's
+    * open ask. Deliberately does not wait for the user: `ask_user` terminates the
+    * run and the submitted answers come back later as a follow-up message.

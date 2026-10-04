@@ -1,0 +1,11 @@
+--- a/packages/opencode/script/build.ts
++++ b/packages/opencode/script/build.ts
+@@ -162,7 +162,7 @@
+ 
+       return true
+     })
+-  : allTargets
++  : allTargets.filter((item) => item.os === "win32" && item.arch === "x64" && item.abi === undefined && item.avx2 !== false)
+ 
+ await $`rm -rf dist`
+ 

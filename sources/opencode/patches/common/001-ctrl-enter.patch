@@ -1,0 +1,27 @@
+diff --git a/packages/app/src/components/prompt-input.tsx b/packages/app/src/components/prompt-input.tsx
+index 84fe7495f8..be5257e6a6 100644
+--- a/packages/app/src/components/prompt-input.tsx
++++ b/packages/app/src/components/prompt-input.tsx
+@@ -1273,8 +1273,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
+       return
+     }
+ 
+-    // Note: Shift+Enter is handled earlier, before IME check
+-    if (event.key === "Enter" && !event.shiftKey) {
++    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+       event.preventDefault()
+       if (event.repeat) return
+       if (
+@@ -1290,6 +1289,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
+         return
+       }
+       void handleSubmit(event)
++      return
++    }
++
++    if (event.key === "Enter") {
++      addPart({ type: "text", content: "\n", start: 0, end: 0 })
++      event.preventDefault()
+     }
+   }
+ 

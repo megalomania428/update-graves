@@ -1,0 +1,554 @@
+--- a/packages/opencode/src/mcp/index.ts
++++ b/packages/opencode/src/mcp/index.ts
+@@ -34,6 +34,36 @@
+ 
+ const log = Log.create({ service: "mcp" })
+ const DEFAULT_TIMEOUT = 30_000
++const RECONNECT_INITIAL_DELAY = 1_000
++const RECONNECT_MAX_DELAY = 11_000
++const RECONNECT_STEP_ATTEMPTS = 3
++const RECONNECT_CYCLE = 36
++const LIST_TOOLS_TTL = 60 * 60 * 1000
++
++function reconnectDelay(attempt: number): number {
++  const effectiveAttempt = ((attempt - 1) % RECONNECT_CYCLE) + 1
++  return Math.min(
++    (Math.floor((effectiveAttempt - 1) / RECONNECT_STEP_ATTEMPTS) + 1) * RECONNECT_INITIAL_DELAY,
++    RECONNECT_MAX_DELAY,
++  )
++}
++
++function isSessionExpired(error: unknown): boolean {
++  if (!error) return false
++  const message = error instanceof Error ? error.message : String(error)
++  if (/session terminated|session expired|invalid session|session not found/i.test(message)) return true
++  if (/\bHTTP\s+404\b/i.test(message)) return true
++  const value = error as { code?: unknown; status?: unknown; statusCode?: unknown }
++  return [value.code, value.status, value.statusCode].some((item) => item === 404)
++}
++
++function reconnectReason(error: unknown): "sessionExpired" | "networkError" | "rateLimit" | "unknown" {
++  if (isSessionExpired(error)) return "sessionExpired"
++  const message = error instanceof Error ? error.message : String(error)
++  if (/rate.?limit|too many requests|429/i.test(message)) return "rateLimit"
++  if (/timeout|timed out|econnrefused|enotfound|eai_again|fetch failed|network/i.test(message)) return "networkError"
++  return "unknown"
++}
+ 
+ const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
+   tools: ToolSchema.omit({ outputSchema: true }).array(),
+@@ -154,11 +184,14 @@
+   )
+ }
+ 
+-// Convert MCP tool definition to AI SDK Tool type
+-function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number): Tool {
++function convertMcpTool(
++  mcpTool: MCPToolDef,
++  client: MCPClient,
++  timeout: number | undefined,
++  reconnect: (error: unknown, immediate: boolean, failed: MCPClient) => Promise<MCPClient | undefined>,
++): Tool {
+   const inputSchema = mcpTool.inputSchema
+ 
+-  // Spread first, then override type to ensure it's always "object"
+   const schema: JSONSchema7 = {
+     ...(inputSchema as JSONSchema7),
+     type: "object",
+@@ -170,28 +203,30 @@
+     description: mcpTool.description ?? "",
+     inputSchema: jsonSchema(schema),
+     execute: async (args: unknown) => {
+-      return client.callTool(
+-        {
+-          name: mcpTool.name,
+-          arguments: (args || {}) as Record<string, unknown>,
+-        },
+-        CallToolResultSchema,
+-        {
+-          resetTimeoutOnProgress: true,
+-          timeout,
+-        },
+-      )
++      const callArgs = {
++        name: mcpTool.name,
++        arguments: (args || {}) as Record<string, unknown>,
++      }
++      const callOpts = { resetTimeoutOnProgress: true, timeout }
++      try {
++        return await client.callTool(callArgs, CallToolResultSchema, callOpts)
++      } catch (error) {
++        const expired = isSessionExpired(error)
++        const fresh = await reconnect(error, expired, client)
++        if (!expired || !fresh || fresh === client) throw error
++        try {
++          return await fresh.callTool(callArgs, CallToolResultSchema, callOpts)
++        } catch (retryError) {
++          await reconnect(retryError, isSessionExpired(retryError), fresh)
++          throw retryError
++        }
++      }
+     },
+   })
+ }
+ 
+ function defs(key: string, client: MCPClient, timeout?: number) {
+-  return listTools(key, client, timeout ?? DEFAULT_TIMEOUT).pipe(
+-    Effect.catch((err) => {
+-      log.error("failed to get tools from client", { key, error: err })
+-      return Effect.succeed(undefined)
+-    }),
+-  )
++  return listTools(key, client, timeout ?? DEFAULT_TIMEOUT)
+ }
+ 
+ function fetchFromClient<T extends { name: string }>(
+@@ -233,14 +268,29 @@
+ 
+ // --- Effect Service ---
+ 
++type ReconnectState = {
++  attempt: number
++  cancelled: boolean
++  inFlight?: Promise<void>
++  wakeup?: () => void
++  timer?: ReturnType<typeof setTimeout>
++}
++
++type ToolsCacheEntry = { tools: MCPToolDef[]; expiresAt: number }
++
+ interface State {
+   config: Record<string, ConfigMCP.Info>
+   status: Record<string, Status>
+   clients: Record<string, MCPClient>
+-  defs: Record<string, MCPToolDef[]>
++  defs: Record<string, ToolsCacheEntry>
++  reconnect: Record<string, ReconnectState>
++  activeSteps: number
+ }
+ 
+ export interface Interface {
++  readonly beginStep?: () => Effect.Effect<void>
++  readonly endStep?: () => Effect.Effect<void>
++  readonly ensureConnected?: (name: string) => Effect.Effect<void>
+   readonly status: () => Effect.Effect<Record<string, Status>>
+   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
+   readonly tools: () => Effect.Effect<Record<string, Tool>>
+@@ -471,14 +521,19 @@
+         return { status } satisfies CreateResult
+       }
+ 
+-      const listed = yield* defs(key, mcpClient, mcp.timeout)
+-      if (!listed) {
++      const listed = yield* defs(key, mcpClient, mcp.timeout).pipe(
++        Effect.match({
++          onFailure: (error) => ({ ok: false as const, error }),
++          onSuccess: (tools) => ({ ok: true as const, tools }),
++        }),
++      )
++      if (!listed.ok) {
+         yield* Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore)
+-        return { status: { status: "failed", error: "Failed to get tools" } } satisfies CreateResult
++        return { status: { status: "failed", error: listed.error.message } } satisfies CreateResult
+       }
+ 
+-      log.info("create() successfully created client", { key, toolCount: listed.length })
+-      return { mcpClient, status, defs: listed } satisfies CreateResult
++      log.info("create() successfully created client", { key, toolCount: listed.tools.length })
++      return { mcpClient, status, defs: listed.tools } satisfies CreateResult
+     })
+     const cfgSvc = yield* Config.Service
+ 
+@@ -510,16 +565,147 @@
+       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+         log.info("tools list changed notification received", { server: name })
+         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
++        delete s.defs[name]
++        try {
++          const listed = await bridge.promise(defs(name, client, timeout))
++          if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
++          s.defs[name] = { tools: listed, expiresAt: Date.now() + LIST_TOOLS_TTL }
++          await bridge.promise(bus.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
++        } catch (error) {
++          if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
++          s.status[name] = {
++            status: "failed",
++            error: error instanceof Error ? error.message : String(error),
++          }
++          scheduleReconnect(s, name, bridge, isSessionExpired(error))
++        }
++      })
++    }
+ 
+-        const listed = await bridge.promise(defs(name, client, timeout))
+-        if (!listed) return
+-        if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
++    function setClient(
++      s: State,
++      name: string,
++      client: MCPClient,
++      listed: MCPToolDef[],
++      clientStatus: Status,
++      timeout: number | undefined,
++      bridge: EffectBridge.Shape,
++    ) {
++      const existing = s.clients[name]
++      s.clients[name] = client
++      s.status[name] = clientStatus
++      s.defs[name] = { tools: listed, expiresAt: Date.now() + LIST_TOOLS_TTL }
++      watch(s, name, client, bridge, timeout)
++      if (existing && existing !== client) {
++        void existing.close().catch((error) => {
++          log.error("Failed to close existing MCP client", { name, error })
++        })
++      }
++    }
+ 
+-        s.defs[name] = listed
+-        await bridge.promise(bus.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
++    function cancelReconnect(s: State, name: string) {
++      const entry = s.reconnect[name]
++      if (!entry) return
++      entry.cancelled = true
++      entry.wakeup?.()
++    }
++
++    function reconnectSleep(entry: ReconnectState, ms: number): Promise<void> {
++      return new Promise((resolve) => {
++        entry.wakeup = () => {
++          if (entry.timer) clearTimeout(entry.timer)
++          entry.timer = undefined
++          entry.wakeup = undefined
++          resolve()
++        }
++        entry.timer = setTimeout(() => {
++          entry.timer = undefined
++          entry.wakeup = undefined
++          resolve()
++        }, Math.min(ms, 2_147_483_647))
++        entry.timer.unref?.()
+       })
+     }
+ 
++    function configuredMcp(s: State, name: string) {
++      if (s.config[name]) return Effect.succeed(s.config[name])
++      return cfgSvc.get().pipe(
++        Effect.map((cfg) => {
++          const mcp = cfg.mcp?.[name]
++          return mcp && isMcpConfigured(mcp) ? mcp : undefined
++        }),
++      )
++    }
++
++    async function reconnectLoop(s: State, name: string, entry: ReconnectState, bridge: EffectBridge.Shape) {
++      try {
++        while (!entry.cancelled && s.reconnect[name] === entry && s.activeSteps > 0) {
++          const mcp = await bridge.promise(configuredMcp(s, name))
++          if (!mcp || mcp.enabled === false) break
++          const current = s.status[name]?.status
++          if (current === "disabled" || current === "needs_auth" || current === "needs_client_registration") break
++          let failure: unknown
++          try {
++            const result = await bridge.promise(create(name, mcp))
++            if (result.mcpClient) {
++              if (entry.cancelled || s.reconnect[name] !== entry || s.activeSteps === 0) {
++                await result.mcpClient.close().catch(() => undefined)
++                break
++              }
++              entry.attempt = 0
++              log.info("mcp reconnected", { key: name })
++              setClient(s, name, result.mcpClient, result.defs!, result.status, mcp.timeout, bridge)
++              break
++            }
++            if (
++              result.status.status === "needs_auth" ||
++              result.status.status === "needs_client_registration"
++            ) {
++              s.status[name] = result.status
++              log.info("mcp reconnect stopped: manual intervention required", {
++                key: name,
++                status: result.status.status,
++              })
++              break
++            }
++            if (result.status.status === "failed") failure = result.status.error
++          } catch (error) {
++            failure = error
++          }
++          const expired = isSessionExpired(failure)
++          entry.attempt = expired ? 0 : entry.attempt + 1
++          const delay = expired ? RECONNECT_INITIAL_DELAY : reconnectDelay(entry.attempt)
++          log.warn("mcp reconnect failed", {
++            key: name,
++            attempt: entry.attempt,
++            delay,
++            reason: reconnectReason(failure),
++          })
++          await reconnectSleep(entry, delay)
++        }
++      } finally {
++        if (s.reconnect[name] === entry) entry.inFlight = undefined
++      }
++    }
++
++    function scheduleReconnect(s: State, name: string, bridge: EffectBridge.Shape, immediate = false) {
++      if (s.activeSteps === 0) return
++      const current = s.status[name]?.status
++      if (current === "disabled" || current === "needs_auth" || current === "needs_client_registration") return
++      let entry = s.reconnect[name]
++      if (!entry || entry.cancelled) {
++        entry = { attempt: 0, cancelled: false }
++        s.reconnect[name] = entry
++        log.info("mcp reconnect scheduled", { key: name, attempt: entry.attempt })
++      }
++      if (immediate) {
++        entry.attempt = 0
++        entry.wakeup?.()
++      }
++      if (!entry.inFlight) entry.inFlight = reconnectLoop(s, name, entry, bridge).catch(() => undefined)
++      return entry.inFlight
++    }
++
+     const state = yield* InstanceState.make<State>(
+       Effect.fn("MCP.state")(function* () {
+         const cfg = yield* cfgSvc.get()
+@@ -530,6 +716,8 @@
+           status: {},
+           clients: {},
+           defs: {},
++          reconnect: {},
++          activeSteps: 0,
+         }
+ 
+         yield* Effect.forEach(
+@@ -552,7 +740,7 @@
+               s.status[key] = result.status
+               if (result.mcpClient) {
+                 s.clients[key] = result.mcpClient
+-                s.defs[key] = result.defs!
++                s.defs[key] = { tools: result.defs!, expiresAt: Date.now() + LIST_TOOLS_TTL }
+                 watch(s, key, result.mcpClient, bridge, mcp.timeout)
+               }
+             }),
+@@ -561,6 +749,10 @@
+ 
+         yield* Effect.addFinalizer(() =>
+           Effect.gen(function* () {
++            for (const entry of Object.values(s.reconnect)) {
++              entry.cancelled = true
++              entry.wakeup?.()
++            }
+             yield* Effect.forEach(
+               Object.values(s.clients),
+               (client) =>
+@@ -601,11 +793,7 @@
+       timeout?: number,
+     ) {
+       const bridge = yield* EffectBridge.make()
+-      yield* closeClient(s, name)
+-      s.status[name] = { status: "connected" }
+-      s.clients[name] = client
+-      s.defs[name] = listed
+-      watch(s, name, client, bridge, timeout)
++      setClient(s, name, client, listed, { status: "connected" }, timeout, bridge)
+       return s.status[name]
+     })
+ 
+@@ -635,21 +823,26 @@
+ 
+     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCP.Info) {
+       const s = yield* InstanceState.get(state)
++      const bridge = yield* EffectBridge.make()
++      cancelReconnect(s, name)
+       const result = yield* create(name, mcp)
+ 
+       s.status[name] = result.status
+       if (!result.mcpClient) {
+         yield* closeClient(s, name)
+         delete s.clients[name]
++        if (result.status.status === "failed") scheduleReconnect(s, name, bridge)
+         return result.status
+       }
+ 
++      cancelReconnect(s, name)
+       return yield* storeClient(s, name, result.mcpClient, result.defs!, mcp.timeout)
+     })
+ 
+     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCP.Info) {
+       const s = yield* InstanceState.get(state)
+       s.config[name] = mcp
++      if (mcp.enabled === false) cancelReconnect(s, name)
+       yield* createAndStore(name, mcp)
+       return { status: s.status }
+     })
+@@ -662,14 +855,55 @@
+     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
+       yield* requireMcpConfig(name)
+       const s = yield* InstanceState.get(state)
+-      yield* closeClient(s, name)
+-      delete s.clients[name]
++      cancelReconnect(s, name)
++      const client = s.clients[name]
+       s.status[name] = { status: "disabled" }
++      delete s.defs[name]
++      delete s.clients[name]
++      if (client) yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
++    })
++
++    const ensureConnected = Effect.fn("MCP.ensureConnected")(function* (name: string) {
++      const s = yield* InstanceState.get(state)
++      if (s.status[name]?.status === "connected" && s.clients[name]) return
++      if (s.activeSteps === 0) return
++      const current = s.status[name]?.status
++      if (current === "disabled" || current === "needs_auth" || current === "needs_client_registration") return
++      const bridge = yield* EffectBridge.make()
++      const mcp = yield* configuredMcp(s, name)
++      if (!mcp || mcp.enabled === false) return
++      const promise = scheduleReconnect(s, name, bridge, true)
++      if (!promise) return
++      yield* Effect.tryPromise({
++        try: () => withTimeout(promise, DEFAULT_TIMEOUT),
++        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
++      }).pipe(Effect.ignore)
++    })
++
++    const beginStep = Effect.fn("MCP.beginStep")(function* () {
++      const s = yield* InstanceState.get(state)
++      const bridge = yield* EffectBridge.make()
++      s.activeSteps++
++      for (const [name, current] of Object.entries(s.status)) {
++        if (current.status === "failed") scheduleReconnect(s, name, bridge)
++      }
++    })
++
++    const endStep = Effect.fn("MCP.endStep")(function* () {
++      const s = yield* InstanceState.get(state)
++      if (s.activeSteps > 0) s.activeSteps--
++      if (s.activeSteps > 0) return
++      for (const entry of Object.values(s.reconnect)) entry.wakeup?.()
+     })
+ 
+     const tools = Effect.fn("MCP.tools")(function* () {
+       const result: Record<string, Tool> = {}
+       const s = yield* InstanceState.get(state)
++      const bridge = yield* EffectBridge.make()
++
++      for (const [name, current] of Object.entries(s.status)) {
++        if (current.status === "failed") scheduleReconnect(s, name, bridge)
++      }
+ 
+       const cfg = yield* cfgSvc.get()
+       const config = cfg.mcp ?? {}
+@@ -684,17 +918,46 @@
+         ([clientName, client]) =>
+           Effect.gen(function* () {
+             const mcpConfig = config[clientName]
+-            const entry = mcpConfig && isMcpConfigured(mcpConfig) ? mcpConfig : s.config[clientName]
+-
+-            const listed = s.defs[clientName]
+-            if (!listed) {
+-              log.warn("missing cached tools for connected server", { clientName })
+-              return
++            const entry = s.config[clientName] ?? (mcpConfig && isMcpConfigured(mcpConfig) ? mcpConfig : undefined)
++            const timeout = entry?.timeout ?? defaultTimeout
++            let cached = s.defs[clientName]
++            if (!cached || Date.now() >= cached.expiresAt) {
++              const refreshed = yield* defs(clientName, client, timeout).pipe(
++                Effect.match({
++                  onFailure: (error) => ({ ok: false as const, error }),
++                  onSuccess: (tools) => ({ ok: true as const, tools }),
++                }),
++              )
++              if (!refreshed.ok) {
++                if (s.clients[clientName] !== client) return
++                delete s.defs[clientName]
++                s.status[clientName] = { status: "failed", error: refreshed.error.message }
++                scheduleReconnect(s, clientName, bridge, isSessionExpired(refreshed.error))
++                return
++              }
++              if (s.clients[clientName] !== client || s.status[clientName]?.status !== "connected") return
++              cached = { tools: refreshed.tools, expiresAt: Date.now() + LIST_TOOLS_TTL }
++              s.defs[clientName] = cached
+             }
+ 
+-            const timeout = entry?.timeout ?? defaultTimeout
+-            for (const mcpTool of listed) {
+-              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(mcpTool, client, timeout)
++            for (const mcpTool of cached.tools) {
++              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(
++                mcpTool,
++                client,
++                timeout,
++                async (error, immediate, failed) => {
++                  if (s.clients[clientName] !== failed || s.status[clientName]?.status !== "connected") return undefined
++                  delete s.defs[clientName]
++                  s.status[clientName] = {
++                    status: "failed",
++                    error: error instanceof Error ? error.message : String(error),
++                  }
++                  scheduleReconnect(s, clientName, bridge, immediate)
++                  if (!immediate) return undefined
++                  await bridge.promise(ensureConnected(clientName))
++                  return s.clients[clientName]
++                },
++              )
+             }
+           }),
+         { concurrency: "unbounded" },
+@@ -847,15 +1110,23 @@
+           Effect.tapError(() => Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)),
+         )
+ 
+-        const listed = client ? yield* defs(mcpName, client, mcpConfig.timeout) : undefined
+-        if (!client || !listed) {
++        const listed = client
++          ? yield* defs(mcpName, client, mcpConfig.timeout).pipe(
++              Effect.match({
++                onFailure: (error) => ({ ok: false as const, error }),
++                onSuccess: (tools) => ({ ok: true as const, tools }),
++              }),
++            )
++          : undefined
++        if (!client || !listed || !listed.ok) {
+           yield* Effect.tryPromise(() => client?.close() ?? Promise.resolve()).pipe(Effect.ignore)
+-          return { status: "failed", error: "Failed to get tools" } as Status
++          const error = listed && !listed.ok ? listed.error.message : "Failed to get tools"
++          return { status: "failed", error } as Status
+         }
+ 
+         const s = yield* InstanceState.get(state)
+         yield* auth.clearOAuthState(mcpName)
+-        return yield* storeClient(s, mcpName, client, listed, mcpConfig.timeout)
++        return yield* storeClient(s, mcpName, client, listed.tools, mcpConfig.timeout)
+       }
+ 
+       log.info("opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
+@@ -945,6 +1216,9 @@
+     })
+ 
+     return Service.of({
++      beginStep,
++      endStep,
++      ensureConnected,
+       status,
+       clients,
+       tools,
+--- a/packages/opencode/src/session/prompt.ts
++++ b/packages/opencode/src/session/prompt.ts
+@@ -1243,6 +1243,8 @@
+ 
+     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
+       function* (sessionID: SessionID) {
++        yield* (mcp.beginStep?.() ?? Effect.void)
++        yield* Effect.addFinalizer(() => (mcp.endStep?.() ?? Effect.void).pipe(Effect.ignore))
+         const ctx = yield* InstanceState.context
+         const slog = elog.with({ sessionID })
+         let structured: unknown
+@@ -1495,6 +1497,7 @@
+         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
+         return yield* lastAssistant(sessionID)
+       },
++      Effect.scoped,
+     )
+ 
+     const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (

@@ -1,0 +1,886 @@
+--- a/package.json
++++ b/package.json
+@@ -90,6 +90,7 @@
+     "@fastify/compress": "^9.0.0",
+     "@fastify/static": "^10.1.2",
+     "@fastify/websocket": "^11.3.0",
++    "@lezer/highlight": "^1.2.3",
+     "@xterm/addon-fit": "^0.11.0",
+     "@xterm/xterm": "^6.0.0",
+     "diff": "^9.0.0",
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -25,6 +25,7 @@
+         "@fastify/compress": "^9.0.0",
+         "@fastify/static": "^10.1.2",
+         "@fastify/websocket": "^11.3.0",
++        "@lezer/highlight": "^1.2.3",
+         "@xterm/addon-fit": "^0.11.0",
+         "@xterm/xterm": "^6.0.0",
+         "diff": "^9.0.0",
+--- a/src/client/src/components/ToolExecutionView.ts
++++ b/src/client/src/components/ToolExecutionView.ts
+@@ -1,15 +1,55 @@
+ import { LitElement, css, html } from "lit";
+ import { customElement, property, state } from "lit/decorators.js";
+ import { writeClipboardText } from "../clipboard";
++import { toolArgsCardVisible, toolContentCardVisible } from "../chatDisclosureModes";
++import type { CodeHighlightLine } from "../codeHighlight";
++import { languageForPath } from "../codeLanguage";
++import type { CodeLanguage } from "../codeLanguage";
+ import type { ToolExecutionPart } from "./shared";
+ 
+ const MAX_COLLAPSED_DIFF_LINES = 180;
++let codeHighlightModulePromise: Promise<typeof import("../codeHighlight")> | undefined;
+ 
+ interface ToolTarget {
+   label: "Command" | "File" | "Input";
+   text: string;
+ }
+ 
++type ToolScroller = "details" | "args" | "content" | "diff" | "result";
++
++interface ToolScrollerState {
++  pinned: boolean;
++  initialized: boolean;
++}
++
++interface InputCardOptions {
++  scroller: "args" | "content";
++  label: string;
++  text: string;
++  copyText: string;
++  language: CodeLanguage | undefined;
++  numbered: boolean;
++  open: boolean;
++  showFull: boolean;
++  copied: boolean;
++  live: boolean;
++  fullLabel: string;
++  copyLabel: string;
++  onToggle: (event: Event) => void;
++  onCopy: (value: string) => Promise<void>;
++  onShowAll: () => void;
++}
++
++const TOOL_SCROLLERS: ToolScroller[] = ["details", "args", "content", "diff", "result"];
++const TOOL_SCROLLER_SELECTORS: Record<ToolScroller, string> = {
++  details: ".text-body .detail-target-value",
++  args: '[data-scroller="args"]',
++  content: '[data-scroller="content"]',
++  diff: ".diff-details .diff",
++  result: ".result-body .detail-result pre",
++};
++const MAX_LIVE_HIGHLIGHT_TEXT_LENGTH = 65_536;
++
+ @customElement("tool-execution-view")
+ export class ToolExecutionView extends LitElement {
+   @property({ attribute: false }) execution: ToolExecutionPart | undefined;
+@@ -19,7 +59,173 @@
+   @property({ attribute: false }) argsOpen = false;
+   @property({ attribute: false }) contentOpen = true;
+   @state() private showFullDiff = false;
++  @state() private showFullArgs = false;
++  @state() private showFullContent = false;
+   @state() private copied = false;
++  @state() private copiedArgs = false;
++  @state() private copiedContent = false;
++  private codeHighlightModule: typeof import("../codeHighlight") | undefined;
++  private codeHighlightLoadStarted = false;
++  private scrollerListenersAttached = false;
++  private callIdentityToolCallId: string | undefined;
++  private callIdentityToolName: string | undefined;
++  private callIdentityStatus: ToolExecutionPart["status"] | undefined;
++  private pendingInputScrollRestore: { scroller: "args" | "content"; scrollTop: number } | undefined;
++  private sawLiveExecution = false;
++  private readonly scrollerStates: Record<ToolScroller, ToolScrollerState> = {
++    details: { pinned: true, initialized: false },
++    args: { pinned: true, initialized: false },
++    content: { pinned: true, initialized: false },
++    diff: { pinned: true, initialized: false },
++    result: { pinned: true, initialized: false },
++  };
++
++  override connectedCallback(): void {
++    super.connectedCallback();
++    this.attachScrollerListeners();
++  }
++
++  override willUpdate(changed: Map<PropertyKey, unknown>): void {
++    if (changed.has("execution")) this.syncCallIdentity(this.execution);
++  }
++
++  override updated(): void {
++    this.attachScrollerListeners();
++    const execution = this.execution;
++    if (execution === undefined) return;
++    const live = isLiveExecution(execution);
++    const wasLive = this.sawLiveExecution;
++    if (live) this.sawLiveExecution = true;
++    for (const scroller of TOOL_SCROLLERS) {
++      const element = this.findScroller(scroller);
++      if (element === undefined || !this.isScrollerOpen(element)) continue;
++      const state = this.scrollerStates[scroller];
++      if (!state.initialized) {
++        this.scrollScrollerToBottom(scroller, element);
++        continue;
++      }
++      if (state.pinned && (live || wasLive)) this.scrollScrollerToBottom(scroller, element);
++    }
++    this.restorePendingInputScroll();
++    if (!live && wasLive) this.sawLiveExecution = false;
++  }
++
++  override disconnectedCallback(): void {
++    this.detachScrollerListeners();
++    super.disconnectedCallback();
++  }
++
++  private attachScrollerListeners(): void {
++    if (this.scrollerListenersAttached) return;
++    this.renderRoot.addEventListener("scroll", this.onScrollerScroll, true);
++    this.renderRoot.addEventListener("toggle", this.onScrollerToggle, true);
++    this.scrollerListenersAttached = true;
++  }
++
++  private detachScrollerListeners(): void {
++    if (!this.scrollerListenersAttached) return;
++    this.renderRoot.removeEventListener("scroll", this.onScrollerScroll, true);
++    this.renderRoot.removeEventListener("toggle", this.onScrollerToggle, true);
++    this.scrollerListenersAttached = false;
++  }
++
++  private syncCallIdentity(execution: ToolExecutionPart | undefined): void {
++    if (execution === undefined) {
++      if (this.callIdentityStatus !== undefined) this.resetPerCallState();
++      this.callIdentityToolCallId = undefined;
++      this.callIdentityToolName = undefined;
++      this.callIdentityStatus = undefined;
++      return;
++    }
++    const toolCallId = execution.toolCallId === "" ? undefined : execution.toolCallId;
++    const previousStatus = this.callIdentityStatus;
++    const returnedToLive = (previousStatus === "success" || previousStatus === "error")
++      && isLiveExecution(execution);
++    const identityChanged = previousStatus === undefined
++      || this.callIdentityToolCallId !== toolCallId
++      || (toolCallId === undefined
++        && (this.callIdentityToolName !== execution.toolName || returnedToLive));
++    if (identityChanged) this.resetPerCallState();
++    this.callIdentityToolCallId = toolCallId;
++    this.callIdentityToolName = execution.toolName;
++    this.callIdentityStatus = execution.status;
++  }
++
++  private resetPerCallState(): void {
++    for (const scroller of TOOL_SCROLLERS) {
++      this.scrollerStates[scroller].pinned = true;
++      this.scrollerStates[scroller].initialized = false;
++    }
++    this.sawLiveExecution = false;
++    this.showFullArgs = false;
++    this.showFullContent = false;
++    this.pendingInputScrollRestore = undefined;
++    this.copiedArgs = false;
++    this.copiedContent = false;
++  }
++
++  private readonly onScrollerScroll = (event: Event): void => {
++    const target = event.target;
++    if (!(target instanceof HTMLElement)) return;
++    for (const scroller of TOOL_SCROLLERS) {
++      if (!target.matches(TOOL_SCROLLER_SELECTORS[scroller])) continue;
++      const distanceFromBottom = target.scrollHeight - target.clientHeight - target.scrollTop;
++      this.scrollerStates[scroller].pinned = distanceFromBottom <= 4;
++      return;
++    }
++  };
++
++  private readonly onScrollerToggle = (event: Event): void => {
++    const details = event.target;
++    if (!(details instanceof HTMLDetailsElement)) return;
++    let scroller: ToolScroller | undefined;
++    if (details.matches(".text-body")) scroller = "details";
++    else if (details.matches(".input-card") && details.querySelector('[data-scroller="args"]') !== null) scroller = "args";
++    else if (details.matches(".input-card") && details.querySelector('[data-scroller="content"]') !== null) scroller = "content";
++    else if (details.matches(".diff-details")) scroller = "diff";
++    else if (details.matches(".result-body")) {
++      scroller = "result";
++      this.resultOpen = details.open;
++    }
++    if (scroller === undefined || !details.open) return;
++    const element = this.findScroller(scroller);
++    if (element === undefined) return;
++    this.scrollerStates[scroller].pinned = true;
++    if (!this.scrollScrollerToBottom(scroller, element)) this.requestUpdate();
++  };
++
++  private findScroller(scroller: ToolScroller): HTMLElement | undefined {
++    return this.renderRoot.querySelector<HTMLElement>(TOOL_SCROLLER_SELECTORS[scroller]) ?? undefined;
++  }
++
++  private isScrollerOpen(element: HTMLElement): boolean {
++    return element.closest("details")?.open === true;
++  }
++
++  private scrollScrollerToBottom(scroller: ToolScroller, element: HTMLElement): boolean {
++    if (element.clientHeight <= 0) return false;
++    element.scrollTop = element.scrollHeight;
++    this.scrollerStates[scroller].initialized = true;
++    return true;
++  }
++
++  private showAllInput(scroller: "args" | "content"): void {
++    const element = this.findScroller(scroller);
++    if (element !== undefined) {
++      this.pendingInputScrollRestore = { scroller, scrollTop: element.scrollTop };
++    }
++    if (scroller === "args") this.showFullArgs = true;
++    else this.showFullContent = true;
++  }
++
++  private restorePendingInputScroll(): void {
++    const pending = this.pendingInputScrollRestore;
++    if (pending === undefined) return;
++    const element = this.findScroller(pending.scroller);
++    if (element === undefined || element.clientHeight <= 0) return;
++    element.scrollTop = pending.scrollTop;
++    this.pendingInputScrollRestore = undefined;
++  }
+ 
+   override render() {
+     const execution = this.execution;
+@@ -52,6 +258,8 @@
+ 
+         ${previewMismatch ? html`<p class="notice">Applied diff differs from the preview.</p>` : null}
+         ${this.renderTargetBody(target)}
++        ${this.renderArgsBody(execution)}
++        ${this.renderContentBody(execution)}
+         ${visibleDiff === undefined ? null : this.renderDiffBody(visibleDiff, actualDiff === undefined ? "Preview diff" : "Applied diff")}
+         ${this.renderResultBody(previewError ?? execution.resultText, execution.status === "error" || previewError !== undefined)}
+       </section>
+@@ -84,6 +292,152 @@
+     `;
+   }
+ 
++  private renderArgsBody(execution: ToolExecutionPart) {
++    if (!toolArgsCardVisible(execution)) return null;
++    let serialized: unknown;
++    try {
++      serialized = JSON.stringify(execution.args, null, 2);
++    } catch {
++      return null;
++    }
++    if (typeof serialized !== "string") return null;
++    const text = serialized;
++    return this.renderInputCard({
++      scroller: "args",
++      label: "Arguments",
++      text,
++      copyText: text,
++      language: "json",
++      numbered: false,
++      open: this.argsOpen,
++      showFull: isLiveExecution(execution) || this.showFullArgs,
++      copied: this.copiedArgs,
++      live: isLiveExecution(execution),
++      fullLabel: "Full JSON",
++      copyLabel: "Copy JSON",
++      onToggle: (event) => { this.onInputToggle("args", event); },
++      onCopy: (value) => this.copyInput("args", value),
++      onShowAll: () => { this.showAllInput("args"); },
++    });
++  }
++
++  private renderContentBody(execution: ToolExecutionPart) {
++    if (!toolContentCardVisible(execution)) return null;
++    const text = getString(execution.args, "content");
++    if (text === undefined) return null;
++    const displayText = text.endsWith("\n") ? text.slice(0, -1) : text;
++    const language = languageForPath(pathFromArgs(execution.args));
++    return this.renderInputCard({
++      scroller: "content",
++      label: "Written content",
++      text: displayText,
++      copyText: text,
++      language,
++      numbered: true,
++      open: this.contentOpen,
++      showFull: isLiveExecution(execution) || this.showFullContent,
++      copied: this.copiedContent,
++      live: isLiveExecution(execution),
++      fullLabel: "Full content",
++      copyLabel: "Copy content",
++      onToggle: (event) => { this.onInputToggle("content", event); },
++      onCopy: (value) => this.copyInput("content", value),
++      onShowAll: () => { this.showAllInput("content"); },
++    });
++  }
++
++  private renderInputCard(options: InputCardOptions) {
++    const {
++      scroller,
++      label,
++      text,
++      copyText,
++      language,
++      numbered,
++      open,
++      showFull,
++      copied,
++      live,
++      fullLabel,
++      copyLabel,
++      onToggle,
++      onCopy,
++      onShowAll,
++    } = options;
++    const lines = text.split("\n");
++    const truncated = !showFull && lines.length > MAX_COLLAPSED_DIFF_LINES;
++    const visibleLines = truncated ? lines.slice(0, MAX_COLLAPSED_DIFF_LINES) : lines;
++    return html`
++      <details class="input-card" ?open=${open} @toggle=${onToggle}>
++        <summary>
++          <span>${label}</span>
++          <small>${String(lines.length)} ${lines.length === 1 ? "line" : "lines"}</small>
++        </summary>
++        <div class="diff-toolbar">
++          <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : fullLabel}</span>
++          <button type="button" @click=${() => { void onCopy(copyText); }}>${copied ? "Copied" : copyLabel}</button>
++        </div>
++        <pre class="input-card-pre" data-scroller=${scroller} aria-label=${label}>${this.renderCodeLines(visibleLines, language, numbered, live, text.length)}</pre>
++        ${truncated ? html`
++          <button class="show-more" type="button" @click=${onShowAll}>
++            Show all ${String(lines.length)} lines
++          </button>
++        ` : null}
++      </details>
++    `;
++  }
++
++  private renderCodeLines(
++    lines: string[],
++    language: CodeLanguage | undefined,
++    numbered: boolean,
++    live: boolean,
++    textLength: number,
++  ) {
++    const shouldHighlight = language !== undefined
++      && (!live || textLength <= MAX_LIVE_HIGHLIGHT_TEXT_LENGTH);
++    if (shouldHighlight && this.codeHighlightModule === undefined) this.loadCodeHighlightModule();
++    const highlightedLines: CodeHighlightLine[] = !shouldHighlight || this.codeHighlightModule === undefined
++      ? lines.map((text) => text === "" ? [] : [{ text }])
++      : this.codeHighlightModule.highlightCode(lines.join("\n"), language, { cache: !live });
++    if (shouldHighlight && this.codeHighlightModule !== undefined) {
++      const root = this.renderRoot;
++      if (root instanceof ShadowRoot) this.codeHighlightModule.installCodeHighlightStyles(root);
++    }
++    const lineCount = highlightedLines.length;
++    const lineNumberDigits = String(lineCount).length;
++    const lineNumberStyle = numbered ? `--line-number-width: ${String(lineNumberDigits)}ch` : "";
++    return html`<code class=${numbered ? "input-code numbered" : "input-code"} style=${lineNumberStyle}>${highlightedLines.map((line, index) => html`<span class="code-line">${numbered ? html`<span class="line-number" aria-hidden="true">${String(index + 1)}</span>` : null}<span class="line-content">${line.map((segment) => segment.className === undefined ? segment.text : html`<span class=${segment.className}>${segment.text}</span>`)}</span></span>`)}</code>`;
++  }
++
++  private loadCodeHighlightModule(): void {
++    if (this.codeHighlightLoadStarted) return;
++    this.codeHighlightLoadStarted = true;
++    codeHighlightModulePromise ??= import("../codeHighlight");
++    void codeHighlightModulePromise.then((module) => {
++      this.codeHighlightModule = module;
++      if (this.isConnected) this.requestUpdate();
++    }).catch(() => { return; });
++  }
++
++  private onInputToggle(kind: "args" | "content", event: Event): void {
++    const details = event.currentTarget;
++    if (!(details instanceof HTMLDetailsElement)) return;
++    if (kind === "args") this.argsOpen = details.open;
++    else this.contentOpen = details.open;
++  }
++
++  private async copyInput(kind: "args" | "content", text: string): Promise<void> {
++    const copied = await writeClipboardText(text);
++    if (kind === "args") this.copiedArgs = copied;
++    else this.copiedContent = copied;
++    if (!copied) return;
++    window.setTimeout(() => {
++      if (kind === "args") this.copiedArgs = false;
++      else this.copiedContent = false;
++    }, 1200);
++  }
++
+   private renderResultBody(text: string | undefined, isError: boolean) {
+     if (text === undefined || text === "") return null;
+     return html`
+@@ -176,9 +530,25 @@
+     .diff .added { background: color-mix(in srgb, var(--pi-success) 12%, transparent); }
+     .diff .removed { background: color-mix(in srgb, var(--pi-danger) 12%, transparent); }
+     .show-more { justify-self: start; }
++    .input-card { min-width: 0; max-width: 100%; border-top: 1px solid var(--pi-border-muted); padding-top: 6px; }
++    .input-card > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; color: var(--pi-muted); cursor: pointer; }
++    .input-card > summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++    .input-card > summary small { flex: 0 0 auto; color: var(--pi-dim); }
++    .input-card-pre { box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0; max-height: 50vh; max-height: 50dvh; margin: 6px 0 0; overflow-x: auto; overflow-y: auto; border: 1px solid var(--pi-border-muted); border-radius: 7px; background: var(--pi-bg); padding: 8px; color: var(--pi-text); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
++    .input-code { display: block; width: max-content; min-width: 100%; font: inherit; }
++    .code-line { display: flex; min-height: 1.45em; white-space: pre; }
++    .line-content { flex: 0 0 auto; white-space: pre; }
++    .line-number { box-sizing: border-box; flex: 0 0 var(--line-number-width); width: var(--line-number-width); margin-right: 1em; color: var(--pi-dim); text-align: right; user-select: none; -webkit-user-select: none; }
++    .tool-card .text-body .detail-target-value { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
++    .tool-card .result-body .detail-result pre { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
++    .tool-card .diff { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
+   `;
+ }
+ 
++function isLiveExecution(execution: ToolExecutionPart): boolean {
++  return execution.status === "pending" || execution.status === "running";
++}
++
+ function toolTarget(execution: ToolExecutionPart, path: string | undefined): ToolTarget | undefined {
+   if (path !== undefined && path !== "") return { label: "File", text: path };
+   const command = getString(execution.args, "command");
+--- a/src/client/src/components/shared.ts
++++ b/src/client/src/components/shared.ts
+@@ -462,6 +462,7 @@
+   .summary { color: var(--pi-muted); margin-left: 6px; }
+   .part:is(details) { border-top: 1px solid var(--pi-border); padding-top: 8px; }
+   .part > formatted-text { display: block; max-width: 100%; min-width: 0; overflow: visible; }
++  details.part.tool-result > formatted-text { display: block; max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
+   .skill-invocation, .skill-read { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); padding: 8px 10px; }
+   .skill-invocation > summary, .skill-read > strong { color: var(--pi-purple); }
+   .skill-invocation > small, .skill-read > small { display: block; margin: 6px 0 0; color: var(--pi-muted); }
+--- a/src/client/src/codeLanguage.ts
++++ b/src/client/src/codeLanguage.ts
+@@ -0,0 +1,22 @@
++export type CodeLanguage = "typescript" | "javascript" | "json" | "markdown" | "css" | "html" | "python" | "rust" | "go";
++
++export function languageForPath(path: string | undefined): CodeLanguage | undefined {
++  if (path === undefined) return undefined;
++  const ext = path.split(".").pop()?.toLowerCase();
++  const languages: Record<string, CodeLanguage | undefined> = {
++    ts: "typescript",
++    tsx: "typescript",
++    js: "javascript",
++    jsx: "javascript",
++    json: "json",
++    md: "markdown",
++    markdown: "markdown",
++    css: "css",
++    htm: "html",
++    html: "html",
++    py: "python",
++    rs: "rust",
++    go: "go",
++  };
++  return ext === undefined ? undefined : languages[ext];
++}
+--- a/src/client/src/codeHighlight.ts
++++ b/src/client/src/codeHighlight.ts
+@@ -0,0 +1,123 @@
++import { css as cssLang } from "@codemirror/lang-css";
++import { go } from "@codemirror/lang-go";
++import { html as htmlLang } from "@codemirror/lang-html";
++import { javascript } from "@codemirror/lang-javascript";
++import { json } from "@codemirror/lang-json";
++import { markdown } from "@codemirror/lang-markdown";
++import { python } from "@codemirror/lang-python";
++import { rust } from "@codemirror/lang-rust";
++import { defaultHighlightStyle } from "@codemirror/language";
++import { highlightTree } from "@lezer/highlight";
++import type { CodeLanguage } from "./codeLanguage";
++
++export interface CodeHighlightSegment {
++  text: string;
++  className?: string;
++}
++
++export type CodeHighlightLine = CodeHighlightSegment[];
++
++const MAX_HIGHLIGHT_CACHE_ENTRIES = 100;
++const MAX_HIGHLIGHT_TEXT_LENGTH = 500_000;
++const highlightCache = new Map<string, CodeHighlightLine[]>();
++const parsers = {
++  typescript: javascript({ typescript: true }).language.parser,
++  javascript: javascript().language.parser,
++  json: json().language.parser,
++  markdown: markdown().language.parser,
++  css: cssLang().language.parser,
++  html: htmlLang().language.parser,
++  python: python().language.parser,
++  rust: rust().language.parser,
++  go: go().language.parser,
++};
++let sharedStyleSheet: CSSStyleSheet | undefined;
++
++export function highlightCode(
++  text: string,
++  language: CodeLanguage,
++  options: { cache?: boolean } = {},
++): CodeHighlightLine[] {
++  if (text.length > MAX_HIGHLIGHT_TEXT_LENGTH) return plainCodeLines(text);
++  const useCache = options.cache !== false;
++  const key = `${language}\u0000${text}`;
++  const cached = useCache ? highlightCache.get(key) : undefined;
++  if (cached !== undefined) return cached;
++  const runs: { from: number; to: number; className: string }[] = [];
++  highlightTree(parsers[language].parse(text), defaultHighlightStyle, (from, to, className) => {
++    runs.push({ from, to, className });
++  });
++  const lines = splitHighlightedLines(text, runs);
++  if (useCache) {
++    highlightCache.set(key, lines);
++    if (highlightCache.size > MAX_HIGHLIGHT_CACHE_ENTRIES) {
++      const oldest = highlightCache.keys().next().value;
++      if (oldest !== undefined) highlightCache.delete(oldest);
++    }
++  }
++  return lines;
++}
++
++export function installCodeHighlightStyles(root: ShadowRoot): void {
++  if (!("adoptedStyleSheets" in root) || typeof CSSStyleSheet === "undefined") return;
++  try {
++    sharedStyleSheet ??= createHighlightStyleSheet();
++    if (!root.adoptedStyleSheets.includes(sharedStyleSheet)) {
++      root.adoptedStyleSheets = [...root.adoptedStyleSheets, sharedStyleSheet];
++    }
++  } catch {
++    return;
++  }
++}
++
++function createHighlightStyleSheet(): CSSStyleSheet {
++  const sheet = new CSSStyleSheet();
++  sheet.replaceSync(defaultHighlightStyle.module?.getRules() ?? "");
++  return sheet;
++}
++
++function splitHighlightedLines(
++  text: string,
++  runs: readonly { from: number; to: number; className: string }[],
++): CodeHighlightLine[] {
++  const lines: CodeHighlightLine[] = [];
++  let lineStart = 0;
++  let runIndex = 0;
++  while (lineStart <= text.length) {
++    const newline = text.indexOf("\n", lineStart);
++    const lineEnd = newline < 0 ? text.length : newline;
++    const line: CodeHighlightLine = [];
++    let cursor = lineStart;
++    while (runIndex < runs.length && (runs[runIndex]?.to ?? 0) <= lineStart) runIndex++;
++    let currentRun = runIndex;
++    while (currentRun < runs.length) {
++      const run = runs[currentRun];
++      if (run === undefined || run.from >= lineEnd) break;
++      const from = Math.max(cursor, lineStart, run.from);
++      const to = Math.min(lineEnd, run.to);
++      if (from > cursor) appendSegment(line, text.slice(cursor, from));
++      if (to > from) appendSegment(line, text.slice(from, to), run.className);
++      cursor = Math.max(cursor, to);
++      currentRun++;
++    }
++    if (cursor < lineEnd) appendSegment(line, text.slice(cursor, lineEnd));
++    lines.push(line);
++    if (newline < 0) break;
++    lineStart = newline + 1;
++  }
++  return lines;
++}
++
++function appendSegment(line: CodeHighlightLine, text: string, className?: string): void {
++  if (text === "") return;
++  const previous = line[line.length - 1];
++  if (previous !== undefined && previous.className === className) {
++    previous.text += text;
++    return;
++  }
++  line.push(className === undefined ? { text } : { text, className });
++}
++
++function plainCodeLines(text: string): CodeHighlightLine[] {
++  return text.split("\n").map((line) => line === "" ? [] : [{ text: line }]);
++}
+--- a/src/client/src/components/ChatView.ts
++++ b/src/client/src/components/ChatView.ts
+@@ -7,7 +7,7 @@
+ import { writeClipboardText } from "../clipboard";
+ import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
+ import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
+-import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
++import { ChatScrollController, distanceFromScrollBottom, findFirstVisibleArticle, hasScrollableAncestorInEventPath, isNearScrollBottom, type ChatAnchorScrollPosition, type ChatScrollRestoreResult } from "../chatScrollPosition";
+ import type { AskUserSubmission, PendingAskUser, PendingExtensionDialog, PiWebDisclosureConfig, QueuedSessionMessage, SessionActivity, SessionStatus, SessionWarningSeverity } from "../api";
+ import type { ClosedExtensionDialog } from "../appState";
+ import {
+@@ -27,6 +27,7 @@
+   type SessionNotificationTarget,
+ } from "../sessionNotifications";
+ import type { ChatLine, ChatPart } from "./shared";
++import type { FormattedText } from "./FormattedText";
+ import { chatStyles, renderSessionWarningIcon } from "./shared";
+ import "./AskUserCard";
+ import "./ExtensionDialogCard";
+@@ -248,7 +249,36 @@
+   private pendingScrollRestorePosition: ChatAnchorScrollPosition | undefined;
+   private restoreScrollFrame: number | undefined;
+   private prependRestoreToken = 0;
++  private chatResizeObserver: ResizeObserver | undefined;
++  private readonly observedChatChildren = new Set<Element>();
++  private readonly observedChatChildHeights = new Map<Element, number>();
++  private toolResultToggleListenerAttached = false;
++  private readonly initializedToolResultScrolls = new WeakSet<FormattedText>();
++  private readonly pendingToolResultScrolls = new WeakSet<FormattedText>();
++  private suppressResizeObserverUntilNextFrame = false;
++  private resizeObserverResumeFrame: number | undefined;
+   @state() private loadMoreRequested = false;
++  private readonly onChatResize = (entries: ResizeObserverEntry[]): void => {
++    let contentGrew = false;
++    for (const entry of entries) {
++      const element = entry.target;
++      const previousHeight = this.observedChatChildHeights.get(element);
++      const currentHeight = element.getBoundingClientRect().height;
++      this.observedChatChildHeights.set(element, currentHeight);
++      if (previousHeight !== undefined && currentHeight > previousHeight) contentGrew = true;
++    }
++    if (contentGrew && this.pinnedToBottom && !this.isResizeObserverScrollSuppressed()) {
++      this.scrollToBottom();
++    }
++  };
++  private readonly onStandaloneToolResultToggle = (event: Event): void => {
++    const details = event.target;
++    if (!(details instanceof HTMLDetailsElement)
++      || !details.matches("details.part.tool-result")
++      || !details.open) return;
++    const formattedText = details.querySelector<FormattedText>("formatted-text");
++    if (formattedText !== null) this.scheduleToolResultScroll(formattedText, true);
++  };
+   private readonly onViewportResize = () => {
+     if (this.pinnedToBottom) this.scrollToBottom();
+     else this.lastClientHeight = this.chat?.clientHeight ?? 0;
+@@ -280,6 +310,9 @@
+     window.addEventListener("resize", this.onViewportResize);
+     window.addEventListener("pagehide", this.onPageHide);
+     window.visualViewport?.addEventListener("resize", this.onViewportResize);
++    this.attachToolResultToggleListener();
++    this.ensureChatResizeObserver();
++    this.syncChatResizeObserver();
+   }
+ 
+   protected override firstUpdated(): void {
+@@ -290,6 +323,16 @@
+     this.saveScrollPosition();
+     this.scrollController.dispose();
+     this.releaseImageZoomModal();
++    this.detachToolResultToggleListener();
++    this.chatResizeObserver?.disconnect();
++    this.chatResizeObserver = undefined;
++    this.observedChatChildren.clear();
++    this.observedChatChildHeights.clear();
++    if (this.resizeObserverResumeFrame !== undefined) {
++      cancelAnimationFrame(this.resizeObserverResumeFrame);
++      this.resizeObserverResumeFrame = undefined;
++      this.suppressResizeObserverUntilNextFrame = false;
++    }
+     this.prependRestoreToken += 1;
+     if (this.restoreScrollFrame !== undefined) cancelAnimationFrame(this.restoreScrollFrame);
+     if (this.loadMoreCheckFrame !== undefined) cancelAnimationFrame(this.loadMoreCheckFrame);
+@@ -346,7 +389,6 @@
+       this.pendingNotificationFocus = undefined;
+       this.retainedEmptyNotificationTrayTargetKey = undefined;
+     }
+-    if (changed.has("messages") || changed.has("pendingAsk") || changed.has("pendingDialogs") || changed.has("closedDialogs")) this.pinnedToBottom = this.pinnedToBottom && (this.didChatHeightChange() || this.isNearBottom());
+   }
+ 
+   protected override update(changed: Map<string, unknown>): void {
+@@ -371,6 +413,10 @@
+     if (changed.has("messages") || changed.has("hasMore") || changed.has("loadingMore")) this.requestLoadMoreIfNeeded();
+     if (changed.has("notificationInbox") && this.pendingNotificationFocus !== undefined) this.focusPendingNotificationTarget();
+     if (changed.has("zoomedImage")) this.syncImageZoomDialog();
++    this.attachToolResultToggleListener();
++    this.ensureChatResizeObserver();
++    this.syncChatResizeObserver();
++    this.syncOpenToolResultScrolls();
+   }
+ 
+   private syncImageZoomDialog(): void {
+@@ -1032,6 +1078,85 @@
+     if (this.disclosures.applyToggle(key, details.open, defaultOpen)) this.requestUpdate();
+   }
+ 
++  private attachToolResultToggleListener(): void {
++    if (this.toolResultToggleListenerAttached) return;
++    this.renderRoot.addEventListener("toggle", this.onStandaloneToolResultToggle, true);
++    this.toolResultToggleListenerAttached = true;
++  }
++
++  private detachToolResultToggleListener(): void {
++    if (!this.toolResultToggleListenerAttached) return;
++    this.renderRoot.removeEventListener("toggle", this.onStandaloneToolResultToggle, true);
++    this.toolResultToggleListenerAttached = false;
++  }
++
++  private ensureChatResizeObserver(): void {
++    if (this.chatResizeObserver !== undefined || typeof ResizeObserver === "undefined") return;
++    this.chatResizeObserver = new ResizeObserver(this.onChatResize);
++  }
++
++  private syncChatResizeObserver(): void {
++    this.ensureChatResizeObserver();
++    const observer = this.chatResizeObserver;
++    const chat = this.chat;
++    if (observer === undefined || !chat) return;
++    const children = new Set(Array.from(chat.children));
++    for (const child of this.observedChatChildren) {
++      if (children.has(child)) continue;
++      observer.unobserve(child);
++      this.observedChatChildren.delete(child);
++      this.observedChatChildHeights.delete(child);
++    }
++    for (const child of children) {
++      if (this.observedChatChildren.has(child)) continue;
++      this.observedChatChildren.add(child);
++      this.observedChatChildHeights.set(child, child.getBoundingClientRect().height);
++      observer.observe(child);
++    }
++  }
++
++  private isResizeObserverScrollSuppressed(): boolean {
++    return this.restoreScrollFrame !== undefined
++      || this.pendingScrollRestoreSessionId !== undefined
++      || this.pendingScrollRestorePosition !== undefined
++      || this.suppressLoadMoreRequests
++      || this.scrollToOpenAskFrame !== undefined
++      || this.scrollToOpenDialogFrame !== undefined
++      || this.suppressResizeObserverUntilNextFrame;
++  }
++
++  private suspendResizeObserverForFrame(): void {
++    this.suppressResizeObserverUntilNextFrame = true;
++    if (this.resizeObserverResumeFrame !== undefined) cancelAnimationFrame(this.resizeObserverResumeFrame);
++    this.resizeObserverResumeFrame = requestAnimationFrame(() => {
++      this.resizeObserverResumeFrame = undefined;
++      this.suppressResizeObserverUntilNextFrame = false;
++    });
++  }
++
++  private syncOpenToolResultScrolls(): void {
++    const formattedTexts = this.renderRoot.querySelectorAll<FormattedText>(
++      "details.part.tool-result[open] > formatted-text",
++    );
++    for (const formattedText of formattedTexts) this.scheduleToolResultScroll(formattedText, false);
++  }
++
++  private scheduleToolResultScroll(formattedText: FormattedText, force: boolean): void {
++    if (!force && this.initializedToolResultScrolls.has(formattedText)) return;
++    if (this.pendingToolResultScrolls.has(formattedText)) return;
++    this.pendingToolResultScrolls.add(formattedText);
++    void formattedText.updateComplete.then(() => {
++      requestAnimationFrame(() => {
++        this.pendingToolResultScrolls.delete(formattedText);
++        if (!this.isConnected || !formattedText.isConnected) return;
++        const details = formattedText.parentElement;
++        if (!(details instanceof HTMLDetailsElement) || !details.open || formattedText.clientHeight <= 0) return;
++        formattedText.scrollTop = formattedText.scrollHeight;
++        this.initializedToolResultScrolls.add(formattedText);
++      });
++    });
++  }
++
+   private onScroll() {
+     this.requestLoadMoreIfNeeded();
+     this.updatePinnedToBottomFromScroll();
+@@ -1040,7 +1165,10 @@
+   }
+ 
+   private onWheel(event: WheelEvent) {
+-    if (event.deltaY < 0 && this.canScrollUp()) this.pinnedToBottom = false;
++    if (event.deltaY >= 0 || !this.canScrollUp()) return;
++    const chat = this.chat;
++    if (chat !== undefined && hasScrollableAncestorInEventPath(event.composedPath(), chat)) return;
++    this.pinnedToBottom = false;
+   }
+ 
+   private onTouchStart(event: TouchEvent) {
+@@ -1049,7 +1177,10 @@
+ 
+   private onTouchMove(event: TouchEvent) {
+     const y = event.touches[0]?.clientY;
+-    if (this.touchStartY !== undefined && y !== undefined && y > this.touchStartY && this.canScrollUp()) this.pinnedToBottom = false;
++    if (this.touchStartY === undefined || y === undefined || y <= this.touchStartY || !this.canScrollUp()) return;
++    const chat = this.chat;
++    if (chat !== undefined && hasScrollableAncestorInEventPath(event.composedPath(), chat)) return;
++    this.pinnedToBottom = false;
+   }
+ 
+   private updatePinnedToBottomFromScroll() {
+@@ -1065,7 +1196,10 @@
+     }
+     if (this.isAtBottom()) this.pinnedToBottom = true;
+     else if (scrollingUp) this.pinnedToBottom = false;
+-    else this.pinnedToBottom = this.isNearBottom();
++    else if (wasPinnedToBottom) {
++      this.pinnedToBottom = true;
++      this.scrollToBottom();
++    } else this.pinnedToBottom = this.isNearBottom();
+     this.lastScrollTop = chat.scrollTop;
+     this.lastClientHeight = chat.clientHeight;
+   }
+@@ -1158,6 +1292,7 @@
+     this.scrollToOpenAskFrame = requestAnimationFrame(() => {
+       this.scrollToOpenAskFrame = undefined;
+       this.withSuppressedScrollSave(() => { this.alignOpenAskToTop(); });
++      this.suspendResizeObserverForFrame();
+     });
+   }
+ 
+@@ -1180,6 +1315,7 @@
+     this.scrollToOpenDialogFrame = requestAnimationFrame(() => {
+       this.scrollToOpenDialogFrame = undefined;
+       this.withSuppressedScrollSave(() => { this.alignOpenDialogToTop(); });
++      this.suspendResizeObserverForFrame();
+     });
+   }
+ 
+@@ -1205,6 +1341,7 @@
+         const result = this.scrollController.restorePosition(sessionId, this.chat, this.scrollAnchorElements(), { fallbackToBottom: this.shouldFallbackToBottomForMissingAnchor() });
+         this.handleScrollRestoreResult(sessionId, result);
+       });
++      this.suspendResizeObserverForFrame();
+     });
+   }
+ 
+@@ -1219,6 +1356,7 @@
+         const result = this.scrollController.restoreExplicitPosition(position, this.chat, this.scrollAnchorElements(), { fallbackToBottom: this.shouldFallbackToBottomForMissingAnchor() });
+         this.handleScrollRestoreResult(sessionId, result);
+       });
++      this.suspendResizeObserverForFrame();
+     });
+   }
+ 
+@@ -1294,6 +1432,7 @@
+       }
+       requestAnimationFrame(() => {
+         if (token !== this.prependRestoreToken) return;
++        this.suspendResizeObserverForFrame();
+         this.suppressScrollSave = false;
+         this.suppressLoadMoreRequests = false;
+       });
+--- a/src/client/src/chatScrollPosition.ts
++++ b/src/client/src/chatScrollPosition.ts
+@@ -179,6 +179,18 @@
+   return distanceFromScrollBottom(scroller) < threshold;
+ }
+ 
++export function hasScrollableAncestorInEventPath(eventPath: readonly EventTarget[], boundary: Element): boolean {
++  for (const target of eventPath) {
++    if (target === boundary) return false;
++    if (!(target instanceof HTMLElement)) continue;
++    const overflowY = getComputedStyle(target).overflowY;
++    if ((overflowY === "auto" || overflowY === "scroll")
++      && target.scrollHeight > target.clientHeight + 1
++      && target.scrollTop > 0) return true;
++  }
++  return false;
++}
++
+ export function captureScrollPosition(scroller: ChatScrollViewport, anchor: ChatScrollElement): ChatAnchorScrollPosition {
+   const chatTop = scroller.getBoundingClientRect().top;
+   return {

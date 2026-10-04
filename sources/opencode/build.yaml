@@ -1,0 +1,33 @@
+---
+upstream:
+  url: https://github.com/anomalyco/opencode.git
+  ref: v1.15.13
+  patch: 0
+shared: [_shared/_all/prepare.sh]
+targets:
+  - name: linux
+    patches: [patches/common, patches/linux]
+    cache:
+      paths:
+        - ~/.cache/electron
+        - ~/.cache/electron-builder
+        - .graves/upstream/packages/desktop
+      key_files: [scripts/**, patches/common/**, patches/linux/**]
+    steps:
+      - bash ../../_shared/_all/prepare.sh
+      - bash scripts/prepare.sh
+      - bash scripts/build-cli.sh
+      - bash scripts/build-desktop.sh
+  - name: windows
+    patches: [patches/common, patches/windows]
+    cache:
+      paths:
+        - ~/.cache/electron
+        - ~/.cache/electron-builder
+        - .graves/upstream/packages/desktop
+      key_files: [scripts/**, patches/common/**, patches/windows/**]
+    steps:
+      - bash ../../_shared/_all/prepare.sh
+      - bash scripts/prepare.sh
+      - bash scripts/build-cli.sh
+      - bash scripts/build-desktop.sh

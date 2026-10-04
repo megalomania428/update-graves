@@ -1,0 +1,39 @@
+--- a/packages/ui/src/components/message-part.tsx
++++ b/packages/ui/src/components/message-part.tsx
+@@ -614,6 +614,12 @@
+   return !!PART_MAPPING[part.type]
+ }
+ 
++function formatTimestamp(value: number): string {
++  const date = new Date(value)
++  const pad = (part: number) => String(part).padStart(2, "0")
++  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
++}
++
+ function toolDefaultOpen(tool: string, shell = false, edit = false) {
+   if (tool === "bash") return shell
+   if (tool === "edit" || tool === "write" || tool === "apply_patch") return edit
+@@ -1068,12 +1074,10 @@
+     const match = data.store.provider?.all?.get(providerID)
+     return match?.models?.[modelID]?.name ?? modelID
+   })
+-  const timefmt = createMemo(() => new Intl.DateTimeFormat(i18n.locale(), { timeStyle: "short" }))
+-
+   const stamp = createMemo(() => {
+     const created = props.message.time?.created
+     if (typeof created !== "number") return ""
+-    return timefmt().format(created)
++    return formatTimestamp(created)
+   })
+ 
+   const metaHead = createMemo(() => {
+@@ -1466,6 +1470,9 @@
+       agent ? agent[0]?.toUpperCase() + agent.slice(1) : "",
+       model(),
+       duration(),
++      typeof (props.message as AssistantMessage).time?.created === "number"
++        ? formatTimestamp((props.message as AssistantMessage).time.created)
++        : "",
+       interrupted() ? i18n.t("ui.message.interrupted") : "",
+     ]
+     return items.filter((x) => !!x).join(" \u00B7 ")

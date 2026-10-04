@@ -1,0 +1,139 @@
+--- a/packages/ui/src/components/message-part.css
++++ b/packages/ui/src/components/message-part.css
+@@ -126,24 +126,42 @@
+   }
+ 
+   [data-slot="user-message-text"] {
+-    display: inline-block;
+-    white-space: pre-wrap;
++    display: block;
+     word-break: break-word;
+     overflow: hidden;
+     background: var(--surface-base);
+     border: 1px solid var(--border-weak-base);
+     padding: 8px 12px;
+     border-radius: 6px;
++    max-width: 100%;
+ 
+-    [data-highlight="file"] {
+-      color: var(--syntax-property);
+-    }
++    [data-component="markdown"] {
++      font-size: inherit;
++      line-height: inherit;
+ 
+-    [data-highlight="agent"] {
+-      color: var(--syntax-type);
+-    }
++      > *:last-child {
++        margin-bottom: 0;
++      }
+ 
+-    max-width: 100%;
++      p {
++        margin-bottom: 0.5rem;
++      }
++
++      ul,
++      ol {
++        margin-top: 0.25rem;
++        margin-bottom: 0.5rem;
++      }
++
++      li {
++        margin-bottom: 0.25rem;
++      }
++
++      pre {
++        margin-top: 0.5rem;
++        margin-bottom: 0.5rem;
++      }
++    }
+   }
+ 
+   [data-slot="user-message-copy-wrapper"] {
+--- a/packages/ui/src/components/message-part.tsx
++++ b/packages/ui/src/components/message-part.tsx
+@@ -16,7 +16,6 @@
+ import stripAnsi from "strip-ansi"
+ import { Dynamic } from "solid-js/web"
+ import {
+-  AgentPart,
+   AssistantMessage,
+   FilePart,
+   Message as MessageType,
+@@ -56,7 +55,7 @@
+ import { patchFiles } from "./apply-patch-file"
+ import { animate } from "motion"
+ import { useLocation } from "@solidjs/router"
+-import { attached, inline, kind } from "./message-file"
++import { attached, kind } from "./message-file"
+ import { readPartText } from "./message-part-text"
+ 
+ async function writeClipboard(text: string): Promise<boolean> {
+@@ -1062,10 +1061,6 @@
+ 
+   const attachments = createMemo(() => files().filter(attached))
+ 
+-  const inlineFiles = createMemo(() => files().filter(inline))
+-
+-  const agents = createMemo(() => (props.parts?.filter((p) => p.type === "agent") as AgentPart[]) ?? [])
+-
+   const model = createMemo(() => {
+     const providerID = props.message.model?.providerID
+     const modelID = props.message.model?.modelID
+@@ -1156,7 +1151,7 @@
+         <>
+           <div data-slot="user-message-body">
+             <div data-slot="user-message-text">
+-              <HighlightedText text={text()} references={inlineFiles()} agents={agents()} />
++              <Markdown text={text()} cacheKey={textPart()?.id} />
+             </div>
+           </div>
+           <div data-slot="user-message-copy-wrapper">
+@@ -1219,45 +1214,6 @@
+   )
+ }
+ 
+-type HighlightSegment = { text: string; type?: "file" | "agent" }
+-
+-function HighlightedText(props: { text: string; references: FilePart[]; agents: AgentPart[] }) {
+-  const segments = createMemo(() => {
+-    const text = props.text
+-
+-    const allRefs: { start: number; end: number; type: "file" | "agent" }[] = [
+-      ...props.references
+-        .filter((r) => r.source?.text?.start !== undefined && r.source?.text?.end !== undefined)
+-        .map((r) => ({ start: r.source!.text!.start, end: r.source!.text!.end, type: "file" as const })),
+-      ...props.agents
+-        .filter((a) => a.source?.start !== undefined && a.source?.end !== undefined)
+-        .map((a) => ({ start: a.source!.start, end: a.source!.end, type: "agent" as const })),
+-    ].sort((a, b) => a.start - b.start)
+-
+-    const result: HighlightSegment[] = []
+-    let lastIndex = 0
+-
+-    for (const ref of allRefs) {
+-      if (ref.start < lastIndex) continue
+-
+-      if (ref.start > lastIndex) {
+-        result.push({ text: text.slice(lastIndex, ref.start) })
+-      }
+-
+-      result.push({ text: text.slice(ref.start, ref.end), type: ref.type })
+-      lastIndex = ref.end
+-    }
+-
+-    if (lastIndex < text.length) {
+-      result.push({ text: text.slice(lastIndex) })
+-    }
+-
+-    return result
+-  })
+-
+-  return <For each={segments()}>{(segment) => <span data-highlight={segment.type}>{segment.text}</span>}</For>
+-}
+-
+ export function Part(props: MessagePartProps) {
+   const component = createMemo(() => PART_MAPPING[props.part.type])
+   return (

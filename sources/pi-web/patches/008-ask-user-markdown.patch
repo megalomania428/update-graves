@@ -1,0 +1,105 @@
+--- a/src/client/src/components/AskUserCard.ts
++++ b/src/client/src/components/AskUserCard.ts
+@@ -1,6 +1,7 @@
+ import { LitElement, css, html, type PropertyValues, type TemplateResult } from "lit";
+ import { customElement, property, state } from "lit/decorators.js";
+ import { ifDefined } from "lit/directives/if-defined.js";
++import { unsafeHTML } from "lit/directives/unsafe-html.js";
+ import {
+   ASK_USER_OTHER_TEXT_MAX_LENGTH,
+   type AskUserOutcome,
+@@ -9,6 +10,7 @@
+   type AskUserSubmission,
+   type PendingAskUser,
+ } from "../../../shared/apiTypes";
++import { toSafeMarkdownHtml, toSafeInlineMarkdownHtml } from "../formatting/markdown";
+ import {
+   answeredCount,
+   loadAskDraft,
+@@ -109,9 +111,9 @@
+       >
+         <legend>
+           <span class="question-number">${String(index + 1)}.</span>
+-          <span>${question.question}</span>
++          <span class="question-copy" dir="auto">${unsafeHTML(toSafeInlineMarkdownHtml(question.question))}</span>
+         </legend>
+-        ${question.detail === undefined ? null : html`<p class="question-detail" id=${detailId}>${question.detail}</p>`}
++        ${question.detail === undefined ? null : html`<div class="question-detail markdown-block" dir="auto" id=${detailId}>${unsafeHTML(toSafeMarkdownHtml(question.detail).trim())}</div>`}
+         <div class="options">
+           ${question.options.map((option) => html`
+             <label class="option">
+@@ -208,15 +210,15 @@
+       <section class="record-question" aria-labelledby=${this.recordQuestionHeadingId(index)}>
+         <h3 id=${this.recordQuestionHeadingId(index)}>
+           <span class="question-number">${String(index + 1)}.</span>
+-          <span>${record.question.question}</span>
++          <span class="question-copy" dir="auto">${unsafeHTML(toSafeInlineMarkdownHtml(record.question.question))}</span>
+         </h3>
+-        ${record.question.detail === undefined ? null : html`<p class="question-detail">${record.question.detail}</p>`}
++        ${record.question.detail === undefined ? null : html`<div class="question-detail markdown-block" dir="auto">${unsafeHTML(toSafeMarkdownHtml(record.question.detail).trim())}</div>`}
+         ${answer === undefined
+           ? html`<p class="unanswered-record">Unanswered</p>`
+           : html`
+               <ul class="record-answers">
+                 ${answer.values.map((value) => html`<li>${this.optionLabel(record.question, value)}</li>`)}
+-                ${answer.otherText === undefined ? null : html`<li><strong>Custom:</strong> <span class="other-record-text">${answer.otherText}</span></li>`}
++                ${answer.otherText === undefined ? null : html`<li><strong>Custom:</strong><div class="other-record-text markdown-block" dir="auto">${unsafeHTML(toSafeMarkdownHtml(answer.otherText).trim())}</div></li>`}
+               </ul>
+               ${answer.fromDraft ? html`<p class="draft-note">Draft answer · not sent</p>` : null}
+             `}
+@@ -466,6 +468,17 @@
+       white-space: pre-wrap;
+       overflow-wrap: anywhere;
+     }
++    .markdown-block { white-space: normal; overflow-wrap: anywhere; }
++    .markdown-block p, .markdown-block ul, .markdown-block ol, .markdown-block pre, .markdown-block blockquote, .markdown-block .table-scroll { margin: 0 0 10px; }
++    .markdown-block :is(p, ul, ol, pre, blockquote, .table-scroll):last-child { margin-bottom: 0; }
++    .markdown-block ul, .markdown-block ol { padding-left: 22px; }
++    .markdown-block li + li { margin-top: 3px; }
++    .question-copy code, .markdown-block code { border: 1px solid var(--pi-border); border-radius: 4px; background: var(--pi-bg); padding: 1px 4px; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; direction: ltr; text-align: left; unicode-bidi: isolate; }
++    .markdown-block pre { overflow-x: auto; overflow-y: hidden; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-bg); padding: 10px; direction: ltr; text-align: left; unicode-bidi: isolate; }
++    .markdown-block pre code { border: 0; padding: 0; background: transparent; }
++    .markdown-block blockquote { border-left: 3px solid var(--pi-border); padding-left: 10px; color: var(--pi-muted); }
++    .question-copy a, .markdown-block a { color: var(--pi-accent); }
++    .markdown-block .table-scroll { max-width: 100%; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+     fieldset.question > .question-detail, .record-question > .question-detail {
+       padding-inline-start: calc(var(--question-number-column) + var(--question-copy-gap));
+     }
+@@ -543,6 +556,7 @@
+     .record-question h3 { display: grid; grid-template-columns: var(--question-number-column) minmax(0, 1fr); align-items: start; gap: var(--question-copy-gap); margin-bottom: 8px; font-size: 14px; line-height: 1.35; }
+     .record-answers { display: grid; gap: 4px; margin: 0; padding-left: 22px; line-height: 1.4; }
+     .other-record-text { white-space: pre-wrap; overflow-wrap: anywhere; }
++    .other-record-text.markdown-block { white-space: normal; }
+     .unanswered-record { margin: 0; color: var(--pi-muted); font-style: italic; }
+     .draft-note { margin: 7px 0 0; color: var(--pi-warning); font-size: 11px; }
+     @container (max-width: 580px) {
+--- a/src/client/src/formatting/markdown.ts
++++ b/src/client/src/formatting/markdown.ts
+@@ -5,6 +5,7 @@
+ 
+ const MAX_MARKDOWN_CACHE_ENTRIES = 300;
+ const markdownHtmlCache = new Map<string, string>();
++const inlineMarkdownHtmlCache = new Map<string, string>();
+ 
+ export function toSafeMarkdownHtml(text: string): string {
+   const cached = markdownHtmlCache.get(text);
+@@ -18,6 +19,19 @@
+   }
+   return safeHtml;
+ }
++
++export function toSafeInlineMarkdownHtml(text: string): string {
++  const cached = inlineMarkdownHtmlCache.get(text);
++  if (cached !== undefined) return cached;
++  const html = marked.parseInline(text, { async: false, breaks: true, gfm: true, renderer });
++  const safeHtml = sanitizeHtml(html);
++  inlineMarkdownHtmlCache.set(text, safeHtml);
++  if (inlineMarkdownHtmlCache.size > MAX_MARKDOWN_CACHE_ENTRIES) {
++    const oldest = inlineMarkdownHtmlCache.keys().next().value;
++    if (oldest !== undefined) inlineMarkdownHtmlCache.delete(oldest);
++  }
++  return safeHtml;
++}
+ 
+ function escapeHtml(text: string): string {
+   return text

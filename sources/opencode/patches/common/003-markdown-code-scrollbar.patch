@@ -1,0 +1,74 @@
+diff --git a/packages/ui/src/components/markdown.css b/packages/ui/src/components/markdown.css
+index 26c9efd475..21df1009d6 100644
+--- a/packages/ui/src/components/markdown.css
++++ b/packages/ui/src/components/markdown.css
+@@ -203,11 +203,20 @@
+   pre {
+     margin-top: 12px;
+     margin-bottom: 32px;
+-    overflow: auto;
++    overflow-x: auto;
++    overflow-y: hidden;
+ 
+-    scrollbar-width: none;
++    scrollbar-width: thin;
++    scrollbar-color: var(--border-weak-base) transparent;
+     &::-webkit-scrollbar {
+-      display: none;
++      height: 6px;
++    }
++    &::-webkit-scrollbar-track {
++      background: transparent;
++    }
++    &::-webkit-scrollbar-thumb {
++      background: var(--border-weak-base);
++      border-radius: 3px;
+     }
+   }
+ 
+diff --git a/packages/ui/src/components/message-part.css b/packages/ui/src/components/message-part.css
+index 78d574d8a1..a6fd9c2c6c 100644
+--- a/packages/ui/src/components/message-part.css
++++ b/packages/ui/src/components/message-part.css
+@@ -342,11 +342,19 @@
+     height: auto;
+     max-height: 240px;
+     overflow-y: auto;
+-    scrollbar-width: none;
++    scrollbar-width: thin;
++    scrollbar-color: var(--border-weak-base) transparent;
+     -ms-overflow-style: none;
+ 
+     &::-webkit-scrollbar {
+-      display: none;
++      width: 6px;
++    }
++    &::-webkit-scrollbar-track {
++      background: transparent;
++    }
++    &::-webkit-scrollbar-thumb {
++      background: var(--border-weak-base);
++      border-radius: 3px;
+     }
+ 
+     [data-component="markdown"] {
+@@ -393,9 +401,17 @@
+     overflow-x: hidden;
+     max-height: 240px;
+ 
+-    scrollbar-width: none;
++    scrollbar-width: thin;
++    scrollbar-color: var(--border-weak-base) transparent;
+     &::-webkit-scrollbar {
+-      display: none;
++      width: 6px;
++    }
++    &::-webkit-scrollbar-track {
++      background: transparent;
++    }
++    &::-webkit-scrollbar-thumb {
++      background: var(--border-weak-base);
++      border-radius: 3px;
+     }
+   }
+ 
