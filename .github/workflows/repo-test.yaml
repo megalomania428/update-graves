@@ -1,5 +1,5 @@
 # kics-scan disable=555ab8f9-2001-455e-a077-f2d0f41e2fb9
-# cspell:ignore mktemp coverprofile covermode
+# cspell:ignore mktemp coverprofile covermode dependabot
 ---
 name: repo test
 on:
@@ -16,27 +16,64 @@ permissions: {}
 jobs:
   tests:
     name: tests
+    # jscpd:ignore-start
+    if: github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
+    permissions:
+      contents: read
     timeout-minutes: 33
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # jscpd:ignore-end
     steps:
+      # jscpd:ignore-start
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: megalomania428/go-lib-ci
+          ref: updates-005
+          path: go-lib/ci
+          persist-credentials: false
+      - name: setup go
+        uses: actions/setup-go@v7
+        with:
+          cache: false
+          check-latest: false
+          go-version-file: golang/go.mod
+      # jscpd:ignore-end
+      - name: go test
+        run: |
+          go -C golang mod verify
+          go -C golang build ./...
+          go -C golang vet ./...
+          go -C golang test -race -count=1 -timeout=300s ./...
   linters:
     name: linters
+    # jscpd:ignore-start
+    if: github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
+    permissions:
+      contents: read
     timeout-minutes: 11
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # jscpd:ignore-end
     steps:
+      # jscpd:ignore-start
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      # jscpd:ignore-end
       - name: lint the repo
         env:
           BRA: master
+          USE_LINTIGNORE: 1
         run: |
           curl -fsL \
           https://raw.githubusercontent.com/raven428/container-images/refs/heads/${{
@@ -46,31 +83,30 @@ jobs:
           env.BRA }}/sources/ansible-ubuntu/check-dir.sh | bash
   MegaLinter:
     name: MegaLinter
+    # jscpd:ignore-start
+    if: github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
+    permissions:
+      contents: read
     timeout-minutes: 11
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # jscpd:ignore-end
     steps:
+      # jscpd:ignore-start
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
-      - name: Run MegaLinter
-        uses: megalomania428/github-actions/megalinter@master
-  all-green:
-    name: all green
-    timeout-minutes: 5
-    runs-on: ubuntu-latest
-    needs:
-      - tests
-      - linters
-      - MegaLinter
-    if: github.event_name == 'pull_request'
-    permissions:
-      checks: read
-    steps:
-      - name: waiting for checks success
-        uses: poseidon/wait-for-status-checks@v0.6.0
+      - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: all green
-          timeout: 111s
+          repository: megalomania428/go-lib-ci
+          ref: updates-005
+          path: go-lib/ci
+          persist-credentials: false
+      # jscpd:ignore-end
+      - name: Run MegaLinter
+        with:
+          override_dir: .megalinter/configs
+        uses: megalomania428/github-actions/megalinter@master

@@ -1,0 +1,191 @@
+# cspell:ignore dependabot
+---
+name: build
+on:
+  pull_request:
+  push:
+    tags:
+      - "*-*"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "space separated names of sources/ to build into the draft"
+        type: string
+        required: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+permissions: {}
+jobs:
+  prepare:
+    name: define matrix
+    if: github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
+    timeout-minutes: 33
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      has_jobs: ${{ steps.prepare.outputs.has_jobs }}
+      mode: ${{ steps.prepare.outputs.mode }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      release_id: ${{ steps.prepare.outputs.release_id }}
+      telegram: ${{ steps.prepare.outputs.telegram }}
+    steps:
+      # jscpd:ignore-start
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: megalomania428/go-lib-ci
+          ref: updates-005
+          path: go-lib/ci
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          cache: false
+          check-latest: false
+          go-version-file: golang/go.mod
+      # jscpd:ignore-end
+      - name: prepare matrix, releases and notes
+        id: prepare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GRAVES_SOURCES: ${{ inputs.sources }}
+          LLM_URL: ${{ secrets.LLM_API_URL }} # gitleaks:allow
+          LLM_NAME: ${{ secrets.LLM_API_MDL2PI }} # gitleaks:allow
+          LLM_KEY: ${{ secrets.LLM_API_KEY }}
+          SEARCH_MCP_URL: ${{ secrets.SEARCH_MCP_URL }}
+          SEARCH_MCP_KEY: ${{ secrets.SEARCH_MCP_KEY }}
+          FETCH_MCP_URL: ${{ secrets.FETCH_MCP_URL }}
+          FETCH_MCP_KEY: ${{ secrets.FETCH_MCP_KEY }}
+        run: go -C golang run ./cmd/graves prepare
+      - name: keep release notes for telegram
+        if: steps.prepare.outputs.telegram == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: .graves/notes/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+  build:
+    name: build ${{ matrix.source }}/${{ matrix.target }}
+    needs: prepare
+    if: needs.prepare.outputs.has_jobs == 'true'
+    timeout-minutes: 111
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    env:
+      GRAVES_SOURCE: ${{ matrix.source }}
+      GRAVES_TARGET: ${{ matrix.target }}
+      GRAVES_MODE: ${{ needs.prepare.outputs.mode }}
+      GRAVES_TAG: ${{ needs.prepare.outputs.tag }}
+      GRAVES_RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+    steps:
+      # jscpd:ignore-start
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: megalomania428/go-lib-ci
+          ref: updates-005
+          path: go-lib/ci
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          cache: false
+          check-latest: false
+          go-version-file: golang/go.mod
+      # jscpd:ignore-end
+      - name: build graves
+        run: go -C golang build -o "${RUNNER_TEMP}/graves" ./cmd/graves
+      - name: clone and patch upstream
+        id: fetch
+        run: |
+          "${RUNNER_TEMP}/graves" fetch
+          echo "sha=$(git -C .graves/upstream rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+      - name: restore cache
+        if: matrix.cache_key != ''
+        id: cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ matrix.cache_paths }}
+          key: ${{ matrix.cache_key }}-${{ steps.fetch.outputs.sha }}
+      - name: build and package
+        run: '"${RUNNER_TEMP}/graves" build'
+      - name: save cache
+        if: matrix.cache_key != '' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ matrix.cache_paths }}
+          key: ${{ matrix.cache_key }}-${{ steps.fetch.outputs.sha }}
+      - name: upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: '"${RUNNER_TEMP}/graves" upload'
+      - name: keep assets for telegram
+        if: needs.prepare.outputs.telegram == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: out-${{ matrix.source }}-${{ matrix.target }}
+          path: .graves/out/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+  telegram:
+    name: telegram
+    needs:
+      - prepare
+      - build
+    if: always() && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.telegram == 'true'
+    timeout-minutes: 33
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # jscpd:ignore-start
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: megalomania428/go-lib-ci
+          ref: updates-005
+          path: go-lib/ci
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          cache: false
+          check-latest: false
+          go-version-file: golang/go.mod
+      # jscpd:ignore-end
+      - uses: actions/download-artifact@v8
+        with:
+          name: notes
+          path: .graves/notes/
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: out-*
+          merge-multiple: true
+          path: .graves/out/
+      - name: post release to telegram
+        env:
+          GRAVES_TAG: ${{ needs.prepare.outputs.tag }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: go -C golang run ./cmd/graves telegram
