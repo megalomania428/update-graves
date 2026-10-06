@@ -3,7 +3,7 @@ module github.com/megalomania428/update-graves/golang
 go 1.25.13
 
 require (
-	github.com/megalomania428/go-lib-ci v1.0.4
+	github.com/megalomania428/go-lib-ci v1.0.5
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -18,5 +18,3 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 )
-
-replace github.com/megalomania428/go-lib-ci => ../go-lib/ci

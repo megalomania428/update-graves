@@ -40,12 +40,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          repository: megalomania428/go-lib-ci
-          ref: updates-005
-          path: go-lib/ci
-          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           cache: false
@@ -98,12 +92,6 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          repository: megalomania428/go-lib-ci
-          ref: updates-005
-          path: go-lib/ci
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
@@ -162,12 +150,6 @@ jobs:
       # jscpd:ignore-start
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          repository: megalomania428/go-lib-ci
-          ref: updates-005
-          path: go-lib/ci
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
