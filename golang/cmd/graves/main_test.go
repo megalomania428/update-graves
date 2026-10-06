@@ -237,20 +237,17 @@ func TestWorkflowContract(t *testing.T) {
 			!strings.Contains(guard, "head.repo.full_name == github.repository") {
 			t.Fatal("untrusted PR guard missing")
 		}
-		if name == "linters" {
-			continue
-		}
-		found := false
-		for _, raw := range job["steps"].([]any) {
-			step := raw.(map[string]any)
-			settings, ok := step["with"].(map[string]any)
-			if ok && settings["repository"] == "megalomania428/go-lib-ci" &&
-				settings["ref"] == "updates-005" && settings["path"] == "go-lib/ci" {
-				found = true
+	}
+	for _, workflowJobs := range []map[string]any{jobs, tests} {
+		for name, rawJob := range workflowJobs {
+			job := rawJob.(map[string]any)
+			for _, raw := range job["steps"].([]any) {
+				step := raw.(map[string]any)
+				settings, ok := step["with"].(map[string]any)
+				if ok && settings["repository"] == "megalomania428/go-lib-ci" {
+					t.Fatalf("%s checks out go-lib-ci instead of using the Go module", name)
+				}
 			}
-		}
-		if !found {
-			t.Fatalf("%s cannot resolve the local Go replace", name)
 		}
 	}
 }
