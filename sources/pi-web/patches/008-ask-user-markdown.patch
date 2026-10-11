@@ -8,15 +8,25 @@
  import {
    ASK_USER_OTHER_TEXT_MAX_LENGTH,
    type AskUserOutcome,
-@@ -9,6 +10,7 @@
+@@ -9,6 +10,8 @@
    type AskUserSubmission,
    type PendingAskUser,
  } from "../../../shared/apiTypes";
 +import { toSafeMarkdownHtml, toSafeInlineMarkdownHtml } from "../formatting/markdown";
++import { selectInlineCodeOnDoubleClick } from "../formatting/inlineCodeSelection";
  import {
    answeredCount,
    loadAskDraft,
-@@ -109,9 +111,9 @@
+@@ -68,7 +71,7 @@
+     const count = answeredCount(ask.questions, this.answers);
+     const unanswered = unansweredQuestions(ask.questions, this.answers);
+     return html`
+-      <article class="card open-card" aria-labelledby="ask-user-heading">
++      <article class="card open-card" aria-labelledby="ask-user-heading" @dblclick=${selectInlineCodeOnDoubleClick}>
+         <header class="card-header">
+           <h2 id="ask-user-heading">Questions</h2>
+           <span class="header-status" role="status" aria-live="polite" aria-atomic="true">
+@@ -109,9 +112,9 @@
        >
          <legend>
            <span class="question-number">${String(index + 1)}.</span>
@@ -28,7 +38,16 @@
          <div class="options">
            ${question.options.map((option) => html`
              <label class="option">
-@@ -208,15 +210,15 @@
+@@ -185,7 +188,7 @@
+         ? "Superseded"
+         : "Cancelled";
+     return html`
+-      <article class="card record-card" aria-labelledby="ask-user-record-heading">
++      <article class="card record-card" aria-labelledby="ask-user-record-heading" @dblclick=${selectInlineCodeOnDoubleClick}>
+         <header class="card-header">
+           <h2 id="ask-user-record-heading">Questions</h2>
+           <span class=${`header-status ${outcome.reason}`}>${recordLabel}</span>
+@@ -208,15 +211,15 @@
        <section class="record-question" aria-labelledby=${this.recordQuestionHeadingId(index)}>
          <h3 id=${this.recordQuestionHeadingId(index)}>
            <span class="question-number">${String(index + 1)}.</span>
@@ -47,7 +66,7 @@
                </ul>
                ${answer.fromDraft ? html`<p class="draft-note">Draft answer · not sent</p>` : null}
              `}
-@@ -466,6 +468,17 @@
+@@ -466,6 +469,17 @@
        white-space: pre-wrap;
        overflow-wrap: anywhere;
      }
@@ -65,7 +84,7 @@
      fieldset.question > .question-detail, .record-question > .question-detail {
        padding-inline-start: calc(var(--question-number-column) + var(--question-copy-gap));
      }
-@@ -543,6 +556,7 @@
+@@ -543,6 +557,7 @@
      .record-question h3 { display: grid; grid-template-columns: var(--question-number-column) minmax(0, 1fr); align-items: start; gap: var(--question-copy-gap); margin-bottom: 8px; font-size: 14px; line-height: 1.35; }
      .record-answers { display: grid; gap: 4px; margin: 0; padding-left: 22px; line-height: 1.4; }
      .other-record-text { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -73,6 +92,37 @@
      .unanswered-record { margin: 0; color: var(--pi-muted); font-style: italic; }
      .draft-note { margin: 7px 0 0; color: var(--pi-warning); font-size: 11px; }
      @container (max-width: 580px) {
+--- a/src/client/src/components/FormattedText.ts
++++ b/src/client/src/components/FormattedText.ts
+@@ -3,6 +3,7 @@
+ import { unsafeHTML } from "lit/directives/unsafe-html.js";
+ import { writeClipboardText } from "../clipboard";
+ import { toSafeMarkdownHtml } from "../formatting/markdown";
++import { selectInlineCodeOnDoubleClick } from "../formatting/inlineCodeSelection";
+ import { formattedTextStyles } from "./shared";
+ 
+ @customElement("formatted-text")
+@@ -10,7 +11,7 @@
+   @property() text = "";
+ 
+   override render() {
+-    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick}>${unsafeHTML(toSafeMarkdownHtml(this.text))}</div>`;
++    return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick} @dblclick=${selectInlineCodeOnDoubleClick}>${unsafeHTML(toSafeMarkdownHtml(this.text))}</div>`;
+   }
+ 
+   override updated(): void {
+--- a/src/client/src/formatting/inlineCodeSelection.ts
++++ b/src/client/src/formatting/inlineCodeSelection.ts
+@@ -0,0 +1,9 @@
++// Select the whole inline code span; code blocks keep the native word selection.
++export function selectInlineCodeOnDoubleClick(event: MouseEvent): void {
++  if (!(event.target instanceof Element)) return;
++  const code = event.target.closest("code");
++  if (code === null || code.closest("pre") !== null) return;
++  const selection = window.getSelection();
++  if (selection === null) return;
++  selection.setBaseAndExtent(code, 0, code, code.childNodes.length);
++}
 --- a/src/client/src/formatting/markdown.ts
 +++ b/src/client/src/formatting/markdown.ts
 @@ -5,6 +5,7 @@

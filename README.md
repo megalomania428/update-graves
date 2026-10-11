@@ -94,7 +94,7 @@ git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
 `pi-web`:
 
 ```bash
-git checkout master && git pull; TAG4REL='pi-web-v1.202609.0p1'
+git checkout master && git pull; TAG4REL='pi-web-v1.202609.0p2'
 git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
 ```
 
