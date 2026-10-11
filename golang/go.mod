@@ -1,6 +1,6 @@
 module github.com/megalomania428/update-graves/golang
 
-go 1.25.13
+go 1.26.9
 
 require (
 	github.com/megalomania428/go-lib-ci v1.0.5
