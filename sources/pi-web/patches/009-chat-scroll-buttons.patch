@@ -162,3 +162,711 @@
    .chat { --pi-chat-sticky-top: -26px; height: 100%; min-height: 0; overflow: auto; overflow-anchor: none; padding: 26px 16px 64px; box-sizing: border-box; }
    .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
    .activity-dock { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 8px 12px; font-size: 13px; pointer-events: none; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }
+--- a/src/client/src/appShell/navigationState.ts
++++ b/src/client/src/appShell/navigationState.ts
+@@ -1,7 +1,7 @@
+ import type { ReactiveController, ReactiveControllerHost } from "lit";
+ import { readStoredPanelCollapse, writeStoredPanelCollapse, type PanelCollapseStorage } from "./panelCollapseController";
+ 
+-export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "workspaces", "sessions"] as const;
++export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "sessions"] as const;
+ export type NavigationSection = (typeof NAVIGATION_SECTION_ORDER)[number];
+ export type ExpandedNavigationSection = NavigationSection | "none" | undefined;
+ 
+@@ -12,7 +12,6 @@
+ 
+ export function defaultNavigationSection(state: NavigationSelectionState): NavigationSection {
+   if (state.selectedProject === undefined) return "projects";
+-  if (state.selectedWorkspace === undefined) return "workspaces";
+   return "sessions";
+ }
+ 
+--- a/src/client/src/appShell/navigationState.test.ts
++++ b/src/client/src/appShell/navigationState.test.ts
+@@ -4,14 +4,14 @@
+ describe("navigationState", () => {
+   it("defaults to the first incomplete selection section", () => {
+     expect(defaultNavigationSection({ selectedProject: undefined, selectedWorkspace: undefined })).toBe("projects");
+-    expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: undefined })).toBe("workspaces");
++    expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: undefined })).toBe("sessions");
+     expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: {} })).toBe("sessions");
+   });
+ 
+   it("expands the default section until the user explicitly toggles a section", () => {
+     const state = { selectedProject: {}, selectedWorkspace: undefined };
+ 
+-    expect(expandedNavigationSection(undefined, state)).toBe("workspaces");
++    expect(expandedNavigationSection(undefined, state)).toBe("sessions");
+     expect(expandedNavigationSection("sessions", state)).toBe("sessions");
+     expect(expandedNavigationSection("none", state)).toBeUndefined();
+   });
+@@ -36,7 +36,7 @@
+ 
+     expect(toggleNavigationSection(undefined, "projects", { isMobileLayout: true, state })).toBe("none");
+     expect(toggleNavigationSection("none", "projects", { isMobileLayout: true, state })).toBe("projects");
+-    expect(toggleNavigationSection("projects", "workspaces", { isMobileLayout: true, state })).toBe("workspaces");
++    expect(toggleNavigationSection("projects", "sessions", { isMobileLayout: true, state })).toBe("sessions");
+   });
+ 
+   it("does not mutate expanded section on desktop layouts", () => {
+--- a/src/client/src/components/PiWebApp.ts
++++ b/src/client/src/components/PiWebApp.ts
+@@ -50,10 +50,9 @@
+ import { readSettingsSection, writeSettingsSection, type SettingsSection } from "../settingsRoute";
+ import { applyActiveShortcutPreferences } from "../shortcutPreferences";
+ import { createTerminalCommandRunsRuntime } from "../runtime/terminalRuntime";
+-import { canDeleteWorkspace, isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorkspaceDeletionRuns, pendingWorkspaceDeletionIds, targetWorkspaceIdForRun, workspaceDeletionRunFilter, workspaceRemovalConfirmation } from "../workspaceDeletion";
++import { canDeleteWorkspace, isWorkspaceDeletionPending, isWorkspaceDeletionRunPending, latestWorkspaceDeletionRuns, targetWorkspaceIdForRun, workspaceDeletionRunFilter, workspaceRemovalConfirmation } from "../workspaceDeletion";
+ import "./MachineList";
+ import "./ProjectList";
+-import "./WorkspaceList";
+ import { unreadSessionCount } from "./SessionList";
+ import "./SessionCleanupDialog";
+ import "./SessionTreeNavigator";
+@@ -1272,9 +1271,7 @@
+         .onRemoveMachine=${(machine: Machine) => { void this.removeMachine(machine); }}
+         .projects=${this.state.projects}
+         .selectedProject=${this.state.selectedProject}
+-        .workspaces=${this.state.workspaces}
+         .selectedWorkspace=${this.state.selectedWorkspace}
+-        .deletingWorkspaceIds=${pendingWorkspaceDeletionIds(this.state.workspaceDeletionRuns)}
+         .sessions=${this.state.sessions}
+         .sessionStatuses=${this.state.sessionStatuses}
+         .sessionActivities=${this.state.sessionActivities}
+@@ -1286,18 +1283,14 @@
+         .collapsible=${true}
+         .compact=${this.appShell.isMobileNavigationLayout}
+         .projectsCollapsed=${this.navigationSections.isCollapsed("projects")}
+-        .workspacesCollapsed=${this.navigationSections.isCollapsed("workspaces")}
+         .sessionsCollapsed=${this.navigationSections.isCollapsed("sessions")}
+         .workspaceLabelItems=${(workspace: Workspace) => this.workspaceLabelItems(workspace)}
+         .refreshControl=${this.appShell.shouldShowAppRefreshInHeader() ? this.renderAppRefresh() : undefined}
+         .onShowActions=${() => { this.setState({ actionPaletteOpen: true }); }}
+         .onToggleProjects=${() => { this.navigationSections.toggle("projects"); }}
+-        .onToggleWorkspaces=${() => { this.navigationSections.toggle("workspaces"); }}
+         .onToggleSessions=${() => { this.navigationSections.toggle("sessions"); }}
+-        .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "workspaces", () => this.workspaces.selectProject(project))}
++        .onSelectProject=${(project: Project) => this.selectNavigationItem("projects", "sessions", () => this.workspaces.selectProject(project))}
+         .onCloseProject=${(project: Project) => this.projects.closeProject(project.id)}
+-        .onSelectWorkspace=${(workspace: Workspace) => this.selectNavigationItem("workspaces", "sessions", () => this.workspaces.selectWorkspace(workspace))}
+-        .onDeleteWorkspace=${(workspace: Workspace) => { void this.deleteWorkspace(workspace); }}
+         .onArchivedCollapsed=${() => { this.sessions.clearSelectionAfterArchivedCollapse(); }}
+         .onStartSession=${() => this.startSessionFromNavigation()}
+         .onSelectSession=${(session: SessionInfo) => this.selectNavigationItem("sessions", "chat", () => this.sessions.selectSession(session))}
+@@ -1445,11 +1438,11 @@
+       return this.state.projects.length === 0
+         ? {
+             title: "No projects yet",
+-            body: "Use Actions → Add Project to add a folder. Workspace tools will appear here after you choose a workspace.",
++            body: "Use Actions → Add Project to add a folder. Workspace tools will appear here after you choose a project.",
+           }
+         : {
+             title: "Select a project",
+-            body: "Choose a project from the sidebar, then select a workspace to use its tools.",
++            body: "Choose a project from the sidebar to use its tools.",
+           };
+     }
+     if (this.state.isLoadingWorkspaces) {
+@@ -1465,17 +1458,17 @@
+       };
+     }
+     return {
+-      title: "Select a workspace",
+-      body: `Choose a workspace in ${project.name} to use its tools.`,
++      title: "Loading the project workspace…",
++      body: `Preparing workspace tools for ${project.name}.`,
+     };
+   }
+ 
+   private sessionEmptyMessage(): string {
+     if (this.state.isLoadingProjects) return "Loading projects…";
+     if (this.state.selectedWorkspace !== undefined) return "Select or start a session.";
+-    if (this.state.selectedProject !== undefined) return "Select a workspace to start a session.";
++    if (this.state.selectedProject !== undefined) return this.state.isLoadingWorkspaces ? "Loading the project workspace…" : "No workspace available for this project.";
+     if (this.state.projects.length === 0) return "Add a project to start a session.";
+-    return "Select a project and workspace to start a session.";
++    return "Select a project to start a session.";
+   }
+ 
+   private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
+@@ -1638,14 +1631,6 @@
+         run: () => this.focusNavigationSection("projects"),
+       },
+       {
+-        id: "app.navigation.focus-workspaces",
+-        title: "Focus Workspaces",
+-        description: "Move keyboard focus to the workspaces list",
+-        shortcut: "mod+g w",
+-        group: "Navigation",
+-        run: () => this.focusNavigationSection("workspaces"),
+-      },
+-      {
+         id: "app.navigation.focus-sessions",
+         title: "Focus Sessions",
+         description: "Move keyboard focus to the sessions list",
+@@ -2260,7 +2245,6 @@
+         .machine=${this.state.selectedMachine}
+         .locationIndicator=${this.appShell.isPwaDisplayMode}
+         .project=${this.state.selectedProject}
+-        .workspace=${this.state.selectedWorkspace}
+         .session=${this.state.selectedSession}
+         .refreshControl=${this.appShell.shouldShowAppRefreshInContextBar() ? this.renderAppRefresh() : undefined}
+         .onOpenSection=${(section: NavigationSection) => { this.openNavigationSection(section); }}
+--- a/src/client/src/components/ProjectList.ts
++++ b/src/client/src/components/ProjectList.ts
+@@ -1,17 +1,34 @@
+-import { LitElement, html, type PropertyValues } from "lit";
++import { LitElement, css, html, noChange, type PropertyValues, type TemplateResult } from "lit";
+ import { customElement, property, state } from "lit/decorators.js";
+-import type { Project } from "../api";
++import { live } from "lit/directives/live.js";
++import { trustApi } from "../api";
++import type { Project, Workspace } from "../api";
+ import type { MachineStatusSnapshot } from "../../../shared/machineStatus";
++import { writeClipboardText } from "../clipboard";
++import type { WorkspaceLabelItem } from "../plugins/types";
+ import { actionMenuPanelStyle } from "./actionMenu";
+ import { hasStatusUnread, renderActionActivityIndicator, statusActivityKind } from "./activityBadge";
+ import type { KeyboardNavigableSection } from "./navigationFocus";
+ import { activateSelectableRow, focusSelectedOrFirstSelectableRow, handleSelectableRowKeyboard } from "./selectableRow";
+ import { listStyles } from "./shared";
++import { renderWorkspaceLabelInlineItems } from "./workspaceLabel";
++
++interface WorkspaceTrustState {
++  loading?: boolean;
++  saving?: boolean;
++  trusted?: boolean;
++  error?: string;
++}
+ 
+ @customElement("project-list")
+ export class ProjectList extends LitElement implements KeyboardNavigableSection {
+   @property({ attribute: false }) projects: Project[] = [];
+   @property({ attribute: false }) selected?: Project;
++  /** Default workspace of the selected project; the project menu shows its trust and details. */
++  @property({ attribute: false }) selectedWorkspace?: Workspace;
++  /** Machine the listed projects belong to; targets the trust API. */
++  @property({ attribute: false }) machineId = "local";
++  @property({ attribute: false }) workspaceLabelItems: (workspace: Workspace) => WorkspaceLabelItem[] = () => [];
+   /** Status tree of the machine these projects belong to; absent means no indicators. */
+   @property({ attribute: false }) statusSnapshot: MachineStatusSnapshot | undefined;
+   @property({ type: Boolean, reflect: true }) collapsible = false;
+@@ -24,6 +41,8 @@
+   @property({ attribute: false }) onCancelKeyboardNavigation?: () => void | Promise<void>;
+   @state() private openMenuProjectId: string | undefined;
+   @state() private menuStyle = "";
++  @state() private copiedDetailKey: string | undefined;
++  @state() private trustByWorkspaceId: Record<string, WorkspaceTrustState> = {};
+   private readonly onDocumentClick = (event: MouseEvent) => {
+     if (event.composedPath().includes(this)) return;
+     this.openMenuProjectId = undefined;
+@@ -42,6 +61,11 @@
+   protected override updated(changed: PropertyValues<this>): void {
+     if (changed.has("projects") && this.openMenuProjectId !== undefined && !this.projects.some((project) => project.id === this.openMenuProjectId)) this.openMenuProjectId = undefined;
+     if (changed.has("collapsed") && this.collapsed) this.openMenuProjectId = undefined;
++    // The default workspace can arrive while the selected project's menu is already open.
++    if (changed.has("selectedWorkspace") && this.openMenuProjectId !== undefined) {
++      const workspace = this.menuWorkspace(this.openMenuProjectId);
++      if (workspace !== undefined && this.trustByWorkspaceId[workspace.id] === undefined) void this.loadTrust(workspace);
++    }
+   }
+ 
+   async focusSelectedOrFirst(): Promise<boolean> {
+@@ -67,14 +91,7 @@
+                   <span class="workspace-primary"><span class="workspace-primary-label">${project.name}</span></span><small>${project.path}</small>
+                   ${this.renderActivity(project)}
+                 </div>
+-                <div class="action-menu">
+-                  <button class="action-menu-toggle" title="Project actions" aria-label=${`Actions for ${project.name}`} @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}>⋯</button>
+-                  ${this.openMenuProjectId === project.id ? html`
+-                    <div class="action-menu-panel" style=${this.menuStyle}>
+-                      <button title="Close project" @click=${() => { this.close(project); }}>Close</button>
+-                    </div>
+-                  ` : null}
+-                </div>
++                ${this.renderProjectMenu(project)}
+               </div>
+             `)}
+           </div>
+@@ -84,6 +101,12 @@
+   }
+ 
+   private handleProjectKeydown(event: KeyboardEvent, project: Project): void {
++    if (event.key === "Escape" && this.openMenuProjectId === project.id) {
++      event.preventDefault();
++      event.stopPropagation();
++      this.openMenuProjectId = undefined;
++      return;
++    }
+     handleSelectableRowKeyboard(event, {
+       activate: () => this.onSelect?.(project),
+       previousSection: this.onFocusPreviousSection === undefined ? undefined : () => { void this.onFocusPreviousSection?.(); },
+@@ -106,6 +129,145 @@
+     return renderActionActivityIndicator(kind, kind === "terminal" ? "Project terminal active" : "Project active", unreadLabel);
+   }
+ 
++  private renderProjectMenu(project: Project): TemplateResult {
++    const open = this.openMenuProjectId === project.id;
++    const menuId = projectMenuId(project.id);
++    const workspace = this.menuWorkspace(project.id);
++    return html`
++      <div class="action-menu">
++        <button
++          class="action-menu-toggle"
++          title="Project actions"
++          aria-label=${`Actions for ${project.name}`}
++          aria-expanded=${String(open)}
++          aria-controls=${menuId}
++          @click=${(event: MouseEvent) => { event.stopPropagation(); this.toggleMenu(project.id, event.currentTarget); }}
++        >⋯</button>
++        ${open ? html`
++          <div class=${workspace === undefined ? "action-menu-panel" : "action-menu-panel workspace-menu-panel"} id=${menuId} style=${this.menuStyle} @click=${(event: MouseEvent) => { event.stopPropagation(); }}>
++            ${workspace === undefined ? this.renderCloseButton(project) : html`
++              <div class="workspace-menu-actions">
++                ${this.renderTrustToggle(workspace)}
++                ${this.renderCloseButton(project)}
++              </div>
++              ${this.renderWorkspaceDetails(workspace)}
++            `}
++          </div>
++        ` : null}
++      </div>
++    `;
++  }
++
++  private renderCloseButton(project: Project): TemplateResult {
++    return html`<button title="Close project" @click=${() => { this.close(project); }}>Close</button>`;
++  }
++
++  /** Only the selected project has a loaded default workspace; other projects show just Close. */
++  private menuWorkspace(projectId: string): Workspace | undefined {
++    if (this.selected?.id !== projectId || this.selectedWorkspace?.projectId !== projectId) return undefined;
++    return this.selectedWorkspace;
++  }
++
++  private renderTrustToggle(workspace: Workspace): TemplateResult {
++    const trust = this.trustByWorkspaceId[workspace.id];
++    const busy = trust?.loading === true || trust?.saving === true;
++    const inputId = `${projectMenuId(workspace.projectId)}-trusted`;
++    return html`
++      <div class="workspace-menu-trust">
++        <div class="workspace-menu-trust-row">
++          <label for=${inputId}>
++            <input
++              id=${inputId}
++              type="checkbox"
++              .checked=${trust?.saving === true ? noChange : live(trust?.trusted === true)}
++              ?disabled=${busy || trust?.trusted === undefined}
++              @change=${(event: Event) => { if (event.target instanceof HTMLInputElement) void this.setTrust(workspace, event.target.checked); }}
++            />
++            <span>Trusted${busy ? "…" : ""}</span>
++          </label>
++          <a class="workspace-trust-link" href="https://pi.dev/docs/latest/security" target="_blank" rel="noreferrer">Learn about project trust</a>
++        </div>
++        ${trust?.error === undefined ? null : html`<small class="workspace-trust-error">${trust.error}</small>`}
++      </div>
++    `;
++  }
++
++  /** Fields worth carrying across a loading/saving transition, minus any prior error. */
++  private trustBase(state: WorkspaceTrustState | undefined): WorkspaceTrustState {
++    return {
++      ...(state?.trusted === undefined ? {} : { trusted: state.trusted }),
++    };
++  }
++
++  private setTrustState(workspaceId: string, state: WorkspaceTrustState): void {
++    this.trustByWorkspaceId = { ...this.trustByWorkspaceId, [workspaceId]: state };
++  }
++
++  private async loadTrust(workspace: Workspace): Promise<void> {
++    const existing = this.trustByWorkspaceId[workspace.id];
++    if (existing?.loading === true || existing?.saving === true) return;
++    this.setTrustState(workspace.id, { ...this.trustBase(existing), loading: true });
++    try {
++      const result = await trustApi.workspaceTrust(workspace.projectId, workspace.id, this.machineId);
++      this.setTrustState(workspace.id, { trusted: result.trusted });
++    } catch (error) {
++      this.setTrustState(workspace.id, { error: error instanceof Error ? error.message : String(error) });
++    }
++  }
++
++  private async setTrust(workspace: Workspace, trusted: boolean): Promise<void> {
++    const existing = this.trustByWorkspaceId[workspace.id];
++    this.setTrustState(workspace.id, { ...this.trustBase(existing), saving: true });
++    try {
++      const result = await trustApi.setWorkspaceTrust(workspace.projectId, workspace.id, trusted, this.machineId);
++      this.setTrustState(workspace.id, { trusted: result.trusted });
++    } catch (error) {
++      // Keep the prior checkbox value (revert the optimistic flip) and surface why.
++      this.setTrustState(workspace.id, { ...this.trustBase(existing), error: error instanceof Error ? error.message : String(error) });
++    }
++  }
++
++  private renderWorkspaceDetails(workspace: Workspace): TemplateResult {
++    const items = this.workspaceLabelItems(workspace);
++    return html`
++      <dl class="workspace-menu-details">
++        <div class="workspace-detail-row">
++          <dt>Workspace</dt>
++          <dd>${workspacePrimaryLabel(workspace)}${this.renderDetailCopyButton(`${workspace.id}:label`, workspace.label, "Copy workspace label")}</dd>
++        </div>
++        <div class="workspace-detail-row">
++          <dt>Path</dt>
++          <dd title=${workspace.path}>${workspace.path}${this.renderDetailCopyButton(`${workspace.id}:path`, workspace.path, "Copy path")}</dd>
++        </div>
++        ${items.length === 0 ? null : html`
++          <div class="workspace-detail-row">
++            <dt>Details</dt>
++            <dd><span class="workspace-label">${renderWorkspaceLabelInlineItems(items)}</span></dd>
++          </div>
++        `}
++      </dl>
++    `;
++  }
++
++  private renderDetailCopyButton(key: string, value: string, action: string): TemplateResult {
++    const copied = this.copiedDetailKey === key;
++    const label = copied ? "Copied" : action;
++    return html`
++      <button type="button" class="detail-copy" title=${label} aria-label=${label} @click=${() => { void this.copyDetail(key, value); }}>
++        <span aria-hidden="true">${copied ? "✓" : "⧉"}</span>
++      </button>
++    `;
++  }
++
++  private async copyDetail(key: string, value: string): Promise<void> {
++    const copied = await writeClipboardText(value);
++    if (!copied) return;
++    this.copiedDetailKey = key;
++    window.setTimeout(() => {
++      if (this.copiedDetailKey === key) this.copiedDetailKey = undefined;
++    }, 1200);
++  }
++
+   private toggleMenu(projectId: string, target: EventTarget | null) {
+     if (this.openMenuProjectId === projectId) {
+       this.openMenuProjectId = undefined;
+@@ -113,6 +275,8 @@
+     }
+     this.menuStyle = actionMenuPanelStyle(target, { constrainTo: "viewport" });
+     this.openMenuProjectId = projectId;
++    const workspace = this.menuWorkspace(projectId);
++    if (workspace !== undefined) void this.loadTrust(workspace);
+   }
+ 
+   private close(project: Project) {
+@@ -120,5 +284,20 @@
+     if (confirm(`Close ${project.name}?\n\nThis only removes it from PI WEB; it will not change the project folder.`)) this.onClose?.(project);
+   }
+ 
+-  static override styles = listStyles;
++  static override styles = [listStyles, css`
++    .workspace-menu-trust { display: flex; flex-direction: column; gap: 3px; padding: 4px 2px; }
++    .workspace-menu-trust-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
++    .workspace-menu-trust label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
++    .workspace-menu-trust input { cursor: pointer; }
++    .workspace-trust-link { color: var(--pi-accent); font-size: 12px; text-align: right; white-space: nowrap; }
++    .workspace-trust-error { color: var(--pi-danger, #c0392b); line-height: 1.3; }
++  `];
++}
++
++function workspacePrimaryLabel(workspace: Workspace): string {
++  return `${workspace.label}${workspace.isMain ? " · main" : ""}`;
++}
++
++function projectMenuId(projectId: string): string {
++  return `project-menu-${projectId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+ }
+--- a/src/client/src/components/appShell/AppContextBar.ts
++++ b/src/client/src/components/appShell/AppContextBar.ts
+@@ -1,6 +1,6 @@
+ import { LitElement, css, html } from "lit";
+ import { customElement, property, query, state } from "lit/decorators.js";
+-import type { Machine, Project, SessionInfo, Workspace } from "../../api";
++import type { Machine, Project, SessionInfo } from "../../api";
+ import { browserGatewayDisplayUrl, machineIconUrl } from "../../instanceIdentity";
+ import { shortSessionId } from "../../sessionLabels";
+ import type { NavigationSection } from "../../appShell/navigationState";
+@@ -12,7 +12,6 @@
+   /** PWA display mode: surfaces the machine location identity in the breadcrumb. */
+   @property({ type: Boolean }) locationIndicator = false;
+   @property({ attribute: false }) project?: Project;
+-  @property({ attribute: false }) workspace?: Workspace;
+   @property({ attribute: false }) session?: SessionInfo;
+   @property({ attribute: false }) refreshControl: unknown;
+   @property({ attribute: false }) onOpenSection?: (section: NavigationSection) => void;
+@@ -48,7 +47,6 @@
+     const showMachineChip = machineChoice || this.locationIndicator;
+     const machineChipClass = machine === undefined ? "context-chip machine-chip empty" : "context-chip machine-chip";
+     const projectLabel = projectContextLabel(this.project);
+-    const workspaceLabel = workspaceContextLabel(this.workspace);
+     const sessionLabel = sessionContextLabel(this.session);
+     return html`
+       <nav class=${this.contextBarClass()} aria-label="Current location">
+@@ -75,12 +73,6 @@
+             </button>
+           </li>
+           <li class="context-item">
+-            <button type="button" class=${this.workspace === undefined ? "context-chip empty" : "context-chip"} title=${workspaceContextTitle(this.workspace)} aria-label=${`Workspace: ${workspaceLabel}. Open workspace selection.`} @click=${() => { this.onOpenSection?.("workspaces"); }}>
+-              <span class="context-kind">Workspace</span>
+-              <span class="context-value">${workspaceLabel}</span>
+-            </button>
+-          </li>
+-          <li class="context-item">
+             <button type="button" class=${this.session === undefined ? "context-chip empty" : "context-chip"} title=${sessionContextTitle(this.session)} aria-label=${`Session: ${sessionLabel}. Open session selection.`} @click=${() => { this.onOpenSection?.("sessions"); }}>
+               <span class="context-kind">Session</span>
+               <span class="context-value">${sessionLabel}</span>
+@@ -237,14 +229,6 @@
+   return project === undefined ? "No project selected" : `${project.name} — ${project.path}`;
+ }
+ 
+-function workspaceContextLabel(workspace: Workspace | undefined): string {
+-  return workspace === undefined ? "No workspace" : `${workspace.label}${workspace.isMain ? " · main" : ""} · ${workspace.path}`;
+-}
+-
+-function workspaceContextTitle(workspace: Workspace | undefined): string {
+-  return workspace === undefined ? "No workspace selected" : `${workspace.label}${workspace.isMain ? " · main" : ""} — ${workspace.path}`;
+-}
+-
+ function sessionContextLabel(session: SessionInfo | undefined): string {
+   const name = session?.name?.trim();
+   const firstMessage = session?.firstMessage.trim();
+--- a/src/client/src/components/appShell/AppNavigationPanel.ts
++++ b/src/client/src/components/appShell/AppNavigationPanel.ts
+@@ -10,7 +10,6 @@
+ import "../MachineList";
+ import "../MachineSwitcher";
+ import "../ProjectList";
+-import "../WorkspaceList";
+ import "../SessionList";
+ 
+ export type NavigationFocusTarget = NavigationSection | "chat";
+@@ -25,7 +24,6 @@
+   @property({ attribute: false }) machineStatusSnapshots: Record<string, MachineStatusSnapshot> = {};
+   @property({ attribute: false }) projects: Project[] = [];
+   @property({ attribute: false }) selectedProject?: Project;
+-  @property({ attribute: false }) workspaces: Workspace[] = [];
+   @property({ attribute: false }) selectedWorkspace?: Workspace;
+   @property({ attribute: false }) sessions: SessionInfo[] = [];
+   @property({ attribute: false }) selectedSession?: SessionInfo;
+@@ -33,26 +31,21 @@
+   @property({ attribute: false }) sessionStatuses: Record<string, SessionStatus> = {};
+   @property({ attribute: false }) sendingPrompts: Record<string, true> = {};
+   @property({ attribute: false }) unreadSessionIds: ReadonlySet<string> = new Set();
+-  @property({ attribute: false }) deletingWorkspaceIds: string[] = [];
+   @property({ attribute: false }) workspaceLabelItems: (workspace: Workspace) => WorkspaceLabelItem[] = () => [];
+   @property({ attribute: false }) refreshControl: unknown;
+   @property({ type: Boolean, reflect: true }) collapsible = false;
+   @property({ type: Boolean, reflect: true }) compact = false;
+   @property({ type: Boolean }) machinesCollapsed = false;
+   @property({ type: Boolean }) projectsCollapsed = false;
+-  @property({ type: Boolean }) workspacesCollapsed = false;
+   @property({ type: Boolean }) sessionsCollapsed = false;
+   @property({ type: Number }) startingSessionCount = 0;
+   @property({ type: Boolean }) canStartSession = false;
+   @property({ attribute: false }) onShowActions?: () => void;
+   @property({ attribute: false }) onToggleMachines?: () => void;
+   @property({ attribute: false }) onToggleProjects?: () => void;
+-  @property({ attribute: false }) onToggleWorkspaces?: () => void;
+   @property({ attribute: false }) onToggleSessions?: () => void;
+   @property({ attribute: false }) onSelectProject?: (project: Project) => void | Promise<void>;
+   @property({ attribute: false }) onCloseProject?: (project: Project) => void | Promise<void>;
+-  @property({ attribute: false }) onSelectWorkspace?: (workspace: Workspace) => void | Promise<void>;
+-  @property({ attribute: false }) onDeleteWorkspace?: (workspace: Workspace) => void | Promise<void>;
+   @property({ attribute: false }) onStartSession?: () => void | Promise<void>;
+   @property({ attribute: false }) onSelectSession?: (session: SessionInfo) => void | Promise<void>;
+   @property({ attribute: false }) onArchiveSession?: (session: SessionInfo) => void | Promise<void>;
+@@ -76,7 +69,6 @@
+   @query("machine-list") private machineList?: KeyboardNavigableSection;
+   @query("machine-switcher") private machineSwitcher?: KeyboardNavigableSection;
+   @query("project-list") private projectList?: KeyboardNavigableSection;
+-  @query("workspace-list") private workspaceList?: KeyboardNavigableSection;
+   @query("session-list") private sessionList?: KeyboardNavigableSection;
+ 
+   async focusSection(section: NavigationSection): Promise<boolean> {
+@@ -84,7 +76,6 @@
+     switch (section) {
+       case "machines": return await this.focusNavigableSection(this.compact ? this.machineList : this.machineSwitcher);
+       case "projects": return await this.focusNavigableSection(this.projectList);
+-      case "workspaces": return await this.focusNavigableSection(this.workspaceList);
+       case "sessions": return await this.focusNavigableSection(this.sessionList);
+     }
+   }
+@@ -127,6 +118,9 @@
+       <project-list
+         .projects=${this.projects}
+         .selected=${this.selectedProject}
++        .selectedWorkspace=${this.selectedWorkspace}
++        .machineId=${this.selectedMachine?.id ?? "local"}
++        .workspaceLabelItems=${this.workspaceLabelItems}
+         .statusSnapshot=${this.selectedMachineStatusSnapshot()}
+         .collapsible=${this.collapsible}
+         .collapsed=${this.projectsCollapsed}
+@@ -137,22 +131,6 @@
+         .onFocusNextSection=${() => { this.focusNextFrom("projects"); }}
+         .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
+       ></project-list>
+-      <workspace-list
+-        .workspaces=${this.workspaces}
+-        .selected=${this.selectedWorkspace}
+-        .machineId=${this.selectedMachine?.id ?? "local"}
+-        .statusSnapshot=${this.selectedMachineStatusSnapshot()}
+-        .deletingWorkspaceIds=${this.deletingWorkspaceIds}
+-        .collapsible=${this.collapsible}
+-        .collapsed=${this.workspacesCollapsed}
+-        .workspaceLabelItems=${this.workspaceLabelItems}
+-        .onToggleCollapsed=${() => { this.onToggleWorkspaces?.(); }}
+-        .onSelect=${(workspace: Workspace) => this.onSelectWorkspace?.(workspace)}
+-        .onDelete=${(workspace: Workspace) => this.onDeleteWorkspace?.(workspace)}
+-        .onFocusPreviousSection=${() => { this.focusPreviousFrom("workspaces"); }}
+-        .onFocusNextSection=${() => { this.focusNextFrom("workspaces"); }}
+-        .onCancelKeyboardNavigation=${() => { this.cancelKeyboardNavigation(); }}
+-      ></workspace-list>
+       <session-list
+         .sessions=${this.sessions}
+         .statuses=${this.sessionStatuses}
+@@ -227,10 +205,9 @@
+     /* Expanded sections share the panel height equally, so collapsing one
+        section distributes its space to every remaining section, not just the
+        session list. Collapsed sections keep only their heading height. */
+-    machine-list, project-list, workspace-list, session-list { flex: 1 1 0px; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--pi-border-muted); }
++    machine-list, project-list, session-list { flex: 1 1 0px; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--pi-border-muted); }
+     machine-list[collapsed],
+     project-list[collapsed],
+-    workspace-list[collapsed],
+     session-list[collapsed] { flex: 0 0 auto; min-height: auto; overflow: hidden; }
+     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
+   `;
+--- a/src/client/src/components/appShell/AppNavigationPanel.test.ts
++++ b/src/client/src/components/appShell/AppNavigationPanel.test.ts
+@@ -1,13 +1,12 @@
+ // @vitest-environment happy-dom
+ 
+ import { afterEach, describe, expect, it } from "vitest";
+-import type { Machine, Project, Workspace } from "../../api";
++import type { Machine, Project } from "../../api";
+ import type { MachineStatusSnapshot } from "../../../../shared/machineStatus";
+ import { machineStatusSnapshot } from "../../machineStatus.testSupport";
+ import { MachineList } from "../MachineList";
+ import { MachineSwitcher } from "../MachineSwitcher";
+ import { ProjectList } from "../ProjectList";
+-import { WorkspaceList } from "../WorkspaceList";
+ import { AppNavigationPanel, shouldShowMachinesSection } from "./AppNavigationPanel";
+ 
+ afterEach(() => {
+@@ -48,7 +47,7 @@
+ });
+ 
+ describe("machine status wiring", () => {
+-  it("gives machine sections every snapshot and project and workspace sections the selected machine's", async () => {
++  it("gives machine sections every snapshot and the project section the selected machine's", async () => {
+     const local = machineStatusSnapshot({ machine: { "core:working": true } });
+     const remote = machineStatusSnapshot({ machine: { "core:unread": true } });
+     const panel = await mountPanel({ local, "remote-a": remote }, machine("local"));
+@@ -56,7 +55,6 @@
+     expect(section(panel, "machine-switcher", MachineSwitcher).statusSnapshots).toEqual({ local, "remote-a": remote });
+     expect(section(panel, "machine-list", MachineList).statusSnapshots).toEqual({ local, "remote-a": remote });
+     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBe(local);
+-    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBe(local);
+   });
+ 
+   it("reads the local machine's snapshot before a machine has been selected", async () => {
+@@ -68,14 +66,12 @@
+     const panel = await mountPanel({ local }, undefined);
+ 
+     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBe(local);
+-    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBe(local);
+   });
+ 
+-  it("leaves project and workspace sections without a snapshot when the selected machine has none", async () => {
++  it("leaves the project section without a snapshot when the selected machine has none", async () => {
+     const panel = await mountPanel({ "remote-a": machineStatusSnapshot() }, machine("local"));
+ 
+     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBeUndefined();
+-    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBeUndefined();
+   });
+ });
+ 
+@@ -85,7 +81,6 @@
+   panel.machines = [machine("local"), machine("remote-a")];
+   if (selectedMachine !== undefined) panel.selectedMachine = selectedMachine;
+   panel.projects = [project("project-1")];
+-  panel.workspaces = [workspace("ws-1", "project-1")];
+   panel.machineStatusSnapshots = machineStatusSnapshots;
+   document.body.append(panel);
+   await panel.updateComplete;
+@@ -120,7 +115,3 @@
+ function project(id: string): Project {
+   return { id, name: id, path: `/repo/${id}`, createdAt: "2026-06-04T00:00:00.000Z" };
+ }
+-
+-function workspace(id: string, projectId: string): Workspace {
+-  return { id, projectId, path: `/repo/${id}`, label: id, isMain: true, effectiveConfig: {} };
+-}
+--- a/src/client/src/controllers/workspaceController.ts
++++ b/src/client/src/controllers/workspaceController.ts
+@@ -61,7 +61,7 @@
+       const workspaces = await this.api.workspaces(project.id, machineId);
+       if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedProject?.id !== project.id) return;
+       this.setState({ workspaces, workspacesByProjectId: { ...this.getState().workspacesByProjectId, [project.id]: workspaces }, isLoadingWorkspaces: false });
+-      const workspace = selectPreferredWorkspace(workspaces, { targetWorkspaceId: target?.workspaceId, latestWorkspaceId: this.workspaceSelection.latestWorkspaceId(machineProjectKey(machineId, project.id)) });
++      const workspace = selectPreferredWorkspace(workspaces);
+       if (workspace) await this.selectWorkspace(workspace, { sessionId: target?.sessionId, updateUrl: target?.updateUrl });
+       else if (target?.updateUrl !== false) this.updateUrl();
+     } catch (error) {
+--- a/src/client/src/controllers/workspaceSelection.ts
++++ b/src/client/src/controllers/workspaceSelection.ts
+@@ -45,12 +45,7 @@
+   }
+ }
+ 
+-export function selectPreferredWorkspace(workspaces: Workspace[], options?: { targetWorkspaceId?: string | undefined; latestWorkspaceId?: string | undefined }): Workspace | undefined {
+-  const targetWorkspaceId = options?.targetWorkspaceId;
+-  if (targetWorkspaceId !== undefined && targetWorkspaceId !== "") return workspaces.find((workspace) => workspace.id === targetWorkspaceId);
+-
+-  const latestWorkspaceId = options?.latestWorkspaceId;
+-  if (latestWorkspaceId !== undefined && latestWorkspaceId !== "") return workspaces.find((workspace) => workspace.id === latestWorkspaceId) ?? workspaces[0];
+-
+-  return workspaces[0];
++/** Projects always open their default (main) workspace; other workspaces are not selectable. */
++export function selectPreferredWorkspace(workspaces: Workspace[]): Workspace | undefined {
++  return workspaces.find((workspace) => workspace.isMain) ?? workspaces[0];
+ }
+--- a/src/client/src/controllers/workspaceSelection.test.ts
++++ b/src/client/src/controllers/workspaceSelection.test.ts
+@@ -4,28 +4,16 @@
+ import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, SessionStorageWorkspaceSelectionMemory } from "./workspaceSelection";
+ 
+ describe("selectPreferredWorkspace", () => {
+-  it("prefers an explicit target workspace", () => {
+-    const workspaces = [testWorkspace("main"), testWorkspace("feature")];
++  it("always selects the main workspace", () => {
++    const workspaces = [testWorkspace("feature"), testWorkspace("main")];
+ 
+-    expect(selectPreferredWorkspace(workspaces, { targetWorkspaceId: "feature", latestWorkspaceId: "main" })?.id).toBe("feature");
++    expect(selectPreferredWorkspace(workspaces)?.id).toBe("main");
+   });
+ 
+-  it("remembers the latest selected workspace when no explicit target is provided", () => {
+-    const workspaces = [testWorkspace("main"), testWorkspace("feature")];
++  it("falls back to the first workspace when none is main", () => {
++    const workspaces = [testWorkspace("feature"), testWorkspace("other")];
+ 
+-    expect(selectPreferredWorkspace(workspaces, { latestWorkspaceId: "feature" })?.id).toBe("feature");
+-  });
+-
+-  it("falls back to the first workspace when the remembered workspace no longer exists", () => {
+-    const workspaces = [testWorkspace("main"), testWorkspace("feature")];
+-
+-    expect(selectPreferredWorkspace(workspaces, { latestWorkspaceId: "old" })?.id).toBe("main");
+-  });
+-
+-  it("does not fall back to remembered workspace when the explicit target is invalid", () => {
+-    const workspaces = [testWorkspace("main"), testWorkspace("feature")];
+-
+-    expect(selectPreferredWorkspace(workspaces, { targetWorkspaceId: "old", latestWorkspaceId: "feature" })).toBeUndefined();
++    expect(selectPreferredWorkspace(workspaces)?.id).toBe("feature");
+   });
+ });
+ 
