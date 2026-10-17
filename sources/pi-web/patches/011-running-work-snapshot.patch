@@ -1,0 +1,1750 @@
+--- a/src/client/src/api.ts
++++ b/src/client/src/api.ts
+@@ -5,5 +5,5 @@ export { DEFAULT_WORKSPACE_UPLOADS_FOLDER, effectiveWorkspaceUploadFolder, uploa
+ export { DEFAULT_WORKSPACE_ATTACHMENTS_FOLDER, effectiveWorkspaceAttachmentsFolder, workspaceEffectiveAttachmentsFolder } from "./api/workspaceAttachments";
+ export type { WorkspaceAttachmentsFolderConfig } from "./api/workspaceAttachments";
+ export type { UploadWorkspaceFileOptions, UploadWorkspaceFilesOptions, WorkspaceFileUploadProgress, WorkspaceUploadBatchFileProgress, WorkspaceUploadBatchProgress, WorkspaceUploadFileFailure, WorkspaceUploadFileInput, WorkspaceUploadFolderConfig, WorkspaceUploadTask, WorkspaceUploadXhr, WorkspaceUploadXhrFactory } from "./api/workspaceUploads";
+-export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
++export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionRunningShell, SessionRunningTool, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
+ 
+--- a/src/client/src/api/parsers.test.ts
++++ b/src/client/src/api/parsers.test.ts
+@@ -349,6 +349,21 @@ describe("API parsers", () => {
+     expect(parseSessionStreamSnapshot({ seq: 3 })).toEqual({ seq: 3, partial: null });
+   });
+ 
++  it("parses running tools and ! commands in a session stream snapshot", () => {
++    const tools = [
++      { toolCallId: "call-1", toolName: "bash", text: "out", content: [{ type: "text", text: "out" }], details: { truncation: undefined } },
++      { toolCallId: "call-2", toolName: "ask_user", text: "" },
++    ];
++    const shells = [
++      { command: "make", excludeFromContext: false, output: "b\n", end: { exitCode: null, cancelled: true, truncated: false, fullOutputPath: "/tmp/out" } },
++      { command: "sleep 60", excludeFromContext: false, output: "a\n" },
++    ];
++    expect(parseSessionStreamSnapshot({ seq: 5, partial: null, tools, shells })).toEqual({ seq: 5, partial: null, tools, shells });
++    expect(() => parseSessionStreamSnapshot({ seq: 5, partial: null, tools: [{ toolCallId: "call-1", toolName: "bash" }] })).toThrow("Expected string field: text");
++    expect(() => parseSessionStreamSnapshot({ seq: 5, partial: null, shells: [{ command: "ls", output: "" }] })).toThrow("Expected boolean field: excludeFromContext");
++    expect(() => parseSessionStreamSnapshot({ seq: 5, partial: null, shells: [{ command: "ls", excludeFromContext: false, output: "", end: { exitCode: "1" } }] })).toThrow();
++  });
++
+   it("rejects a session stream snapshot without a numeric seq", () => {
+     expect(() => parseSessionStreamSnapshot({ partial: null })).toThrow("Expected number field: seq");
+   });
+@@ -1312,3 +1327,20 @@ function notificationInboxWire() {
+     dismissThrough: { order: 1, overflowWatermark: 0 },
+   };
+ }
++
++it("parses atomic page and retained tool final without legacy defaults", () => {
++  const messagePage = { start: 0, total: 1, messages: [
++    { role: "assistant", content: [{ type: "image", data: "a", mimeType: "image/png" }] },
++  ] };
++  const tools = [{ toolCallId: "A", toolName: "read", text: "done",
++    end: { isError: false }, details: { arbitrary: [1, 2] } }];
++  expect(parseSessionStreamSnapshot({ seq: 1, partial: null, messagePage, tools }))
++    .toEqual({ seq: 1, partial: null, messagePage, tools });
++  expect(parseSessionStreamSnapshot({ seq: 1 })).toEqual({ seq: 1, partial: null });
++  expect(() => parseSessionStreamSnapshot({ seq: 1, messagePage: null })).toThrow();
++  expect(() => parseSessionStreamSnapshot({ seq: 1,
++    messagePage: { messages: [], start: "0", total: 0 } })).toThrow();
++  expect(() => parseSessionStreamSnapshot({ seq: 1, tools: [
++    { toolCallId: "A", toolName: "read", text: "done", end: { isError: "false" } },
++  ] })).toThrow();
++});
+--- a/src/client/src/api/parsers.ts
++++ b/src/client/src/api/parsers.ts
+@@ -1,4 +1,4 @@
+-import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
++import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionRunningShell, type SessionRunningTool, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
+ import { parseMachineStatusSnapshot, type MachineStatusSnapshot, type MachineStatusUiEvent } from "../../../shared/machineStatus";
+ import type { JsonValue, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageMutationAction, PiPackageMutationResponse, PiPackageScope, PiPackagesResponse, SessionActivity, SessionStartupProgressEvent, SessionTreeForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier } from "../../../shared/apiTypes";
+ 
+@@ -571,6 +571,45 @@ export function parseSessionStreamSnapshot(value: unknown): SessionStreamSnapsho
+   return {
+     seq: requireNumber(record, "seq"),
+     partial: record["partial"] ?? null,
++    ...optionalField("messagePage", record["messagePage"] === undefined
++      ? undefined : parseMessagePage(record["messagePage"])),
++    ...optionalField("tools", record["tools"] === undefined ? undefined : arrayOf(parseSessionRunningTool)(record["tools"])),
++    ...optionalField("shells", record["shells"] === undefined ? undefined : arrayOf(parseSessionRunningShell)(record["shells"])),
++  };
++}
++
++function parseSessionRunningTool(value: unknown): SessionRunningTool {
++  const record = requireRecord(value);
++  const end = record["end"] === undefined ? undefined : requireRecord(record["end"]);
++  return {
++    ...optionalField("end", end === undefined
++      ? undefined : { isError: requireBoolean(end, "isError") }),
++    toolCallId: requireString(record, "toolCallId"),
++    toolName: requireString(record, "toolName"),
++    text: requireString(record, "text"),
++    ...optionalField("content", record["content"]),
++    ...optionalField("details", record["details"]),
++  };
++}
++
++function parseSessionRunningShell(value: unknown): SessionRunningShell {
++  const record = requireRecord(value);
++  return {
++    command: requireString(record, "command"),
++    excludeFromContext: requireBoolean(record, "excludeFromContext"),
++    output: requireString(record, "output"),
++    ...optionalField("end", record["end"] === undefined ? undefined : parseSessionRunningShellEnd(record["end"])),
++  };
++}
++
++function parseSessionRunningShellEnd(value: unknown): NonNullable<SessionRunningShell["end"]> {
++  const record = requireRecord(value);
++  return {
++    ...optionalField("exitCode", optionalNumberOrNull(record, "exitCode")),
++    ...optionalField("cancelled", parseOptionalBoolean(record["cancelled"], "cancelled")),
++    ...optionalField("truncated", parseOptionalBoolean(record["truncated"], "truncated")),
++    ...optionalField("fullOutputPath", optionalString(record, "fullOutputPath")),
++    ...optionalField("isError", parseOptionalBoolean(record["isError"], "isError")),
+   };
+ }
+ 
+--- a/src/client/src/chatTranscript.ts
++++ b/src/client/src/chatTranscript.ts
+@@ -1,3 +1,4 @@
++import type { SessionStreamSnapshot } from "./api";
+ import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
+ import type { ChatLine, ToolExecutionPart } from "./components/shared";
+ import { appendShellChunk, finalizeShellMessage, shellStartMessage } from "./shellMessages";
+@@ -40,6 +41,28 @@ export function seedStreamingPartial(messages: ChatLine[], partial: unknown): Ch
+   return lines.length === 0 ? messages : [...messages, ...lines];
+ }
+ 
++/**
++ * Replay the join-time progress of still-executing tools and of a running user
++ * `!` shell command. Neither is in committed history or the partial, and the
++ * live events that carried them are at or below the snapshot watermark, so
++ * without this a running tool shows no output until its next update arrives.
++ */
++export function seedRunningWork(messages: ChatLine[], snapshot: Pick<SessionStreamSnapshot, "tools" | "shells">): ChatLine[] {
++  const seeded = (snapshot.tools ?? []).reduce((next, tool) => {
++    const updated = updateToolExecution(next, tool.toolCallId,
++      (part) => mergeToolExecutionUpdate(part, { type: "tool.update", ...tool }));
++    if (updated === next || tool.end === undefined) return updated;
++    return applyTranscriptEvent(updated, {
++      type: "tool.end", ...tool, isError: tool.end.isError,
++    }) ?? updated;
++  }, messages);
++  return (snapshot.shells ?? []).reduce((next, shell) => {
++    const started = [...next, shellStartMessage(shell.command, shell.excludeFromContext)];
++    const output = shell.output === "" ? started : appendShellChunk(started, shell.output);
++    return shell.end === undefined ? output : finalizeShellMessage(output, { type: "shell.end", ...shell.end, output: shell.output });
++  }, seeded);
++}
++
+ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
+   if (event.type === "message.append") return appendNewMessage(messages, event.message);
+   if (event.type === "assistant.delta") return appendText(messages, "assistant", event.text);
+--- a/src/client/src/chatTranscriptStore.ts
++++ b/src/client/src/chatTranscriptStore.ts
+@@ -1,5 +1,6 @@
+ import { normalizeMessages } from "./chatMessages";
+-import { applyTranscriptEvent, seedStreamingPartial } from "./chatTranscript";
++import type { SessionStreamSnapshot } from "./api";
++import { applyTranscriptEvent, seedRunningWork, seedStreamingPartial } from "./chatTranscript";
+ import { mergeChatHistory, readChatHistoryCache, removeChatHistoryCache, writeChatHistoryCache, type RawMessagePage } from "./chatHistoryCache";
+ import type { ChatLine } from "./components/shared";
+ import type { SessionUiEvent } from "./sessionSocket";
+@@ -54,6 +55,11 @@ export class ChatTranscriptStore {
+     return seedStreamingPartial(messages, partial);
+   }
+ 
++  /** Replay join-time progress of running tools and `!` commands, in memory only. */
++  seedRunningWork(messages: ChatLine[], snapshot: Pick<SessionStreamSnapshot, "tools" | "shells">): ChatLine[] {
++    return seedRunningWork(messages, snapshot);
++  }
++
+   discard(sessionId: string): void {
+     this.rawHistoryPages.delete(sessionId);
+     this.cache.remove?.(sessionId);
+--- a/src/client/src/controllers/sessionController.refresh.test.ts
++++ b/src/client/src/controllers/sessionController.refresh.test.ts
+@@ -50,6 +50,7 @@ describe("SessionController selected-session refresh", () => {
+     const firstStatus = deferred<SessionStatus>();
+     const trailingPage = deferred<MessagePage>();
+     const trailingStatus = deferred<SessionStatus>();
++    const firstStarted = deferred<undefined>();
+     const trailingStarted = deferred<undefined>();
+     let messageCalls = 0;
+     let statusCalls = 0;
+@@ -58,6 +59,7 @@ describe("SessionController selected-session refresh", () => {
+       ...defaultApi,
+       messages: () => {
+         messageCalls += 1;
++        if (messageCalls === 1) firstStarted.resolve(undefined);
+         if (messageCalls === 2) trailingStarted.resolve(undefined);
+         return messageCalls === 1 ? firstPage.promise : trailingPage.promise;
+       },
+@@ -77,7 +79,8 @@ describe("SessionController selected-session refresh", () => {
+ 
+     const first = controller.refreshSelectedSession();
+     const duplicate = controller.refreshSelectedSession();
+-    await Promise.resolve();
++    firstStatus.resolve({ ...status(oldSession.id), messageCount: 1 });
++    await firstStarted.promise;
+ 
+     expect(messageCalls).toBe(1);
+     expect(statusCalls).toBe(1);
+@@ -85,14 +88,13 @@ describe("SessionController selected-session refresh", () => {
+     const later = controller.refreshSelectedSession();
+     const laterDuplicate = controller.refreshSelectedSession();
+     firstPage.resolve(page("stale", 1));
+-    firstStatus.resolve({ ...status(oldSession.id), messageCount: 1 });
++    trailingStatus.resolve({ ...status(oldSession.id), messageCount: 2 });
+     await trailingStarted.promise;
+ 
+     expect(messageCalls).toBe(2);
+     expect(statusCalls).toBe(2);
+ 
+     trailingPage.resolve(page("fresh", 2));
+-    trailingStatus.resolve({ ...status(oldSession.id), messageCount: 2 });
+     await Promise.all([first, duplicate, later, laterDuplicate]);
+ 
+     expect(messageCalls).toBe(2);
+@@ -214,10 +216,14 @@ describe("SessionController selected-session refresh errors", () => {
+ describe("SessionController scoped refresh errors", () => {
+   it("retains a late failure under its originating session instead of the newer selection", async () => {
+     const messages = deferred<MessagePage>();
++    const messagesStarted = deferred<undefined>();
+     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession, replacementSession] };
+     const api: typeof defaultApi = {
+       ...defaultApi,
+-      messages: () => messages.promise,
++      messages: () => {
++        messagesStarted.resolve(undefined);
++        return messages.promise;
++      },
+       status: () => Promise.resolve(status(oldSession.id)),
+       streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+     };
+@@ -230,7 +236,7 @@ describe("SessionController scoped refresh errors", () => {
+     );
+ 
+     const refresh = controller.refreshSelectedSession(oldSession.id);
+-    await Promise.resolve();
++    await messagesStarted.promise;
+     state = { ...state, selectedSession: replacementSession };
+     messages.reject(new Error("old transcript unavailable"));
+     await refresh;
+@@ -259,6 +265,7 @@ describe("SessionController scoped refresh errors", () => {
+     const projectA: NonNullable<AppState["selectedProject"]> = { id: workspaceA.projectId, name: "Project A", path: workspaceA.path, createdAt: "now" };
+     const projectB: NonNullable<AppState["selectedProject"]> = { id: workspaceB.projectId, name: "Project B", path: workspaceB.path, createdAt: "now" };
+     const messages = deferred<MessagePage>();
++    const messagesStarted = deferred<undefined>();
+     let state: AppState = {
+       ...initialAppState(),
+       selectedMachine: machineA,
+@@ -269,7 +276,10 @@ describe("SessionController scoped refresh errors", () => {
+     };
+     const api: typeof defaultApi = {
+       ...defaultApi,
+-      messages: () => messages.promise,
++      messages: () => {
++        messagesStarted.resolve(undefined);
++        return messages.promise;
++      },
+       status: () => Promise.resolve(status(oldSession.id)),
+       streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+     };
+@@ -282,7 +292,7 @@ describe("SessionController scoped refresh errors", () => {
+     );
+ 
+     const refresh = controller.refreshSelectedSession(oldSession.id);
+-    await Promise.resolve();
++    await messagesStarted.promise;
+     state = {
+       ...state,
+       selectedMachine: machineB,
+@@ -326,27 +336,24 @@ describe("SessionController unchanged selected-session refresh", () => {
+     return { page: page("idle", 1), sessionStatus: { ...status(oldSession.id), messageCount: 1 }, snapshot: { seq: 4, partial: null } };
+   }
+ 
+-  // The refresh invokes messages/status/streamSnapshot in order per poll, so the
+-  // poll index advances on the last of the three.
++  // Each endpoint consumes its own poll index, independent of request order.
+   function controllerWithPolls(polls: RefreshPoll[]) {
+     const cacheWrites: string[] = [];
+-    let pollCalls = 0;
++    let messageCalls = 0;
++    let statusCalls = 0;
++    let snapshotCalls = 0;
+     let setStateCalls = 0;
+-    const poll = (): RefreshPoll => {
+-      const current = polls[Math.min(pollCalls, polls.length - 1)];
++    const poll = (index: number): RefreshPoll => {
++      const current = polls[Math.min(index, polls.length - 1)];
+       if (current === undefined) throw new Error("controllerWithPolls requires at least one poll");
+       return current;
+     };
+     let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, selectedSession: oldSession, sessions: [oldSession] };
+     const api: typeof defaultApi = {
+       ...defaultApi,
+-      messages: () => Promise.resolve(poll().page),
+-      status: () => Promise.resolve(poll().sessionStatus),
+-      streamSnapshot: () => {
+-        const snapshot = poll().snapshot;
+-        pollCalls += 1;
+-        return Promise.resolve(snapshot);
+-      },
++      messages: () => Promise.resolve(poll(messageCalls++).page),
++      status: () => Promise.resolve(poll(statusCalls++).sessionStatus),
++      streamSnapshot: () => Promise.resolve(poll(snapshotCalls++).snapshot),
+       thinkingLevels: () => Promise.resolve({ levels: [] }),
+     };
+     const controller = new SessionController(
+--- a/src/client/src/controllers/sessionController.streamSeed.test.ts
++++ b/src/client/src/controllers/sessionController.streamSeed.test.ts
+@@ -120,8 +120,9 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+       }),
+       status: () => Promise.resolve({ ...status(oldSession.id), isStreaming: true, isBashRunning: true }),
+       // Mid tool execution the assistant-message stream has ended, so the
+-      // snapshot carries no partial; the tool call is already in history.
+-      streamSnapshot: () => Promise.resolve({ seq: 7, partial: null }),
++      // snapshot carries no partial; the tool call is already in history and its
++      // progress up to the watermark comes from the snapshot's running tools.
++      streamSnapshot: () => Promise.resolve({ seq: 7, partial: null, tools: [{ toolCallId: "tool-1", toolName: "bash", text: "stale" }] }),
+     };
+     const controller = new SessionController(
+       () => state,
+@@ -134,7 +135,7 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+     await controller.selectSession(oldSession, { updateUrl: false });
+ 
+     const toolLine = state.messages.find((line) => line.parts.some((part) => part.type === "toolExecution"));
+-    expect(toolLine?.parts[0]).toMatchObject({ type: "toolExecution", toolCallId: "tool-1", toolName: "bash" });
++    expect(toolLine?.parts[0]).toMatchObject({ type: "toolExecution", toolCallId: "tool-1", toolName: "bash", status: "running", resultText: "stale" });
+ 
+     // Reflected in the snapshot watermark (seq <= 7): dropped.
+     socket.emit({ type: "tool.update", toolName: "bash", toolCallId: "tool-1", text: "stale", content: undefined, details: undefined, seq: 7 });
+@@ -146,6 +147,54 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+     expect(updatedToolLine?.parts[0]).toMatchObject({ resultText: "fresh output" });
+   });
+ 
++  it("seeds a running tool without updates as running and ! commands with their output and end", async () => {
++    const socket = new EmitSocket();
++    let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [oldSession] };
++    const api: typeof defaultApi = {
++      ...defaultApi,
++      messages: () => Promise.resolve({
++        messages: [
++          { role: "user", content: "ask me" },
++          { role: "assistant", content: [{ type: "toolCall", id: "tool-2", name: "ask_user", arguments: { questions: [] } }] },
++        ],
++        start: 0,
++        total: 2,
++      }),
++      status: () => Promise.resolve({ ...status(oldSession.id), isStreaming: true, isBashRunning: true }),
++      streamSnapshot: () => Promise.resolve({
++        seq: 3,
++        partial: null,
++        tools: [{ toolCallId: "tool-2", toolName: "ask_user", text: "" }],
++        shells: [
++          { command: "make", excludeFromContext: false, output: "built\n", end: { exitCode: 0, cancelled: false, truncated: false } },
++          { command: "sleep 60; date", excludeFromContext: true, output: "first line\n" },
++        ],
++      }),
++    };
++    const controller = new SessionController(
++      () => state,
++      (patch) => { state = { ...state, ...patch }; },
++      () => undefined,
++      undefined,
++      { api, socket },
++    );
++
++    await controller.selectSession(oldSession, { updateUrl: false });
++
++    const toolLine = state.messages.find((line) => line.parts.some((part) => part.type === "toolExecution"));
++    expect(toolLine?.parts[0]).toMatchObject({ toolCallId: "tool-2", status: "running" });
++    expect(toolLine?.parts[0]).not.toHaveProperty("resultText");
++    expect(state.messages.at(-2)).toEqual({ role: "bash", parts: [{ type: "text", text: "$ make\n\nbuilt\n\n\nexit 0" }] });
++    expect(state.messages.at(-1)).toEqual({ role: "bash", parts: [{ type: "text", text: "excluded from context\n\n$ sleep 60; date\n\nfirst line\n" }] });
++
++    socket.emit({ type: "shell.chunk", chunk: "stale", seq: 3 });
++    socket.emit({ type: "shell.chunk", chunk: "second line\n", seq: 4 });
++    socket.emit({ type: "shell.end", output: "first line\nsecond line\n", exitCode: 0, seq: 5 });
++    runPendingAnimationFrames();
++
++    expect(state.messages.at(-1)).toEqual({ role: "bash", parts: [{ type: "text", text: "excluded from context\n\n$ sleep 60; date\n\nfirst line\nsecond line\n\n\nexit 0" }] });
++  });
++
+   it("fails the join refresh honestly when the snapshot fetch fails", async () => {
+     // A session id unique to this test, so no transcript cache from earlier
+     // tests can mask whether the failed join applied history.
+@@ -217,3 +266,255 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+     ]);
+   });
+ });
++
++describe("atomic refresh history and event replay", () => {
++  function page(text = "question"): MessagePage {
++    return { messages: [{ role: "user", content: text }], start: 0, total: 1 };
++  }
++
++  function harness(api: typeof defaultApi, id: string) {
++    const socket = new EmitSocket();
++    const session = { ...oldSession, id, path: `/tmp/${id}.jsonl` };
++    let state: AppState = {
++      ...initialAppState(), selectedWorkspace: workspace, sessions: [session],
++    };
++    const controller = new SessionController(
++      () => state,
++      (patch) => { state = { ...state, ...patch }; },
++      () => undefined,
++      undefined,
++      { api, socket },
++    );
++    return { socket, session, controller, state: () => state };
++  }
++
++  function text(state: AppState) {
++    return state.messages.flatMap((line) => line.parts)
++      .filter((part) => part.type === "text")
++      .map((part) => part.text).join("|");
++  }
++
++  it("uses messagePage alone before and after a deferred ! flush", async () => {
++    let legacyCalls = 0;
++    const bash = { role: "bashExecution", command: "same", output: "done\n",
++      exitCode: 0, cancelled: false, truncated: false, timestamp: 1 };
++    let snapshot: SessionStreamSnapshot = {
++      seq: 4, partial: null, messagePage: { messages: [], start: 0, total: 0 },
++      shells: [{ command: "same", excludeFromContext: false, output: "done\n",
++        end: { exitCode: 0, cancelled: false, truncated: false } }],
++    };
++    const api = { ...defaultApi,
++      messages: () => {
++        legacyCalls += 1;
++        return Promise.reject(new Error("must not fetch independent history"));
++      },
++      status: (session: Parameters<typeof defaultApi.status>[0]) => Promise.resolve(status(session.id)),
++      streamSnapshot: () => Promise.resolve(snapshot),
++    };
++    const h = harness(api, "client-atomic-flush");
++    try {
++      await h.controller.selectSession(h.session, { updateUrl: false });
++      expect(h.state().messages.filter((line) => line.role === "bash")).toHaveLength(1);
++      snapshot = { seq: 5, partial: null,
++        messagePage: { messages: [bash], start: 0, total: 1 } };
++      await h.controller.refreshSelectedSession();
++      expect(h.state().messages.filter((line) => line.role === "bash")).toHaveLength(1);
++      expect(legacyCalls).toBe(0);
++    } finally { h.controller.dispose(); }
++  });
++
++  for (const outcome of ["apply", "skip", "error"] as const) {
++    it(`replays ordinary refresh events with ${outcome} watermark semantics`, async () => {
++      const requested = deferred<undefined>();
++      const statusGate = deferred<SessionStatus>();
++      let refreshing = false;
++      const api = { ...defaultApi,
++        status: (session: Parameters<typeof defaultApi.status>[0]) => refreshing
++          ? statusGate.promise : Promise.resolve(status(session.id)),
++        streamSnapshot: () => {
++          if (refreshing) requested.resolve(undefined);
++          return Promise.resolve({ seq: refreshing ? 8 : 4,
++            partial: assistantPartial(refreshing && outcome !== "skip" ? "new" : "seed"),
++            messagePage: page() });
++        },
++      };
++      const h = harness(api, `client-buffer-${outcome}`);
++      try {
++        await h.controller.selectSession(h.session, { updateUrl: false });
++        refreshing = true;
++        const refresh = h.controller.refreshSelectedSession(undefined, { silent: true });
++        await requested.promise;
++        // Snapshot has seq=8, but status has not resolved yet.
++        h.socket.emit({ type: "assistant.delta", text: " live",
++          seq: outcome === "apply" ? 9 : 6 });
++        if (outcome === "error") statusGate.reject(new Error("status unavailable"));
++        else statusGate.resolve(status(h.session.id));
++        await refresh;
++        runPendingAnimationFrames();
++        expect(text(h.state())).toBe(
++          outcome === "apply" ? "question|new live" : "question|seed live",
++        );
++      } finally {
++        statusGate.resolve(status(h.session.id));
++        h.controller.dispose();
++      }
++    });
++  }
++
++  it("retains live tool.end received after snapshot while status is pending", async () => {
++    const requested = deferred<undefined>();
++    const statusGate = deferred<SessionStatus>();
++    let refreshing = false;
++    const history: MessagePage = { start: 0, total: 2, messages: [
++      { role: "user", content: "run" },
++      { role: "assistant", content: [
++        { type: "toolCall", id: "A", name: "bash", arguments: {} },
++        { type: "toolCall", id: "B", name: "read", arguments: {} },
++      ] },
++    ] };
++    const api = { ...defaultApi,
++      status: (session: Parameters<typeof defaultApi.status>[0]) => refreshing ? statusGate.promise
++        : Promise.resolve(status(session.id)),
++      streamSnapshot: () => {
++        if (refreshing) requested.resolve(undefined);
++        return Promise.resolve({ seq: refreshing ? 8 : 4, partial: null,
++          messagePage: history, tools: [
++            { toolCallId: "A", toolName: "bash", text: "partial A" },
++            { toolCallId: "B", toolName: "read", text: "" },
++          ] });
++      },
++    };
++    const h = harness(api, "client-tool-final-buffer");
++    try {
++      await h.controller.selectSession(h.session, { updateUrl: false });
++      refreshing = true;
++      const refresh = h.controller.refreshSelectedSession();
++      await requested.promise;
++      h.socket.emit({ type: "tool.end", toolCallId: "A", toolName: "bash",
++        text: "final A", isError: false, seq: 9 });
++      statusGate.resolve(status(h.session.id));
++      await refresh;
++      runPendingAnimationFrames();
++      const tools = h.state().messages.flatMap((line) => line.parts)
++        .filter((part) => part.type === "toolExecution");
++      expect(tools).toMatchObject([
++        { toolCallId: "A", resultText: "final A", status: "success" },
++        { toolCallId: "B", status: "running" },
++      ]);
++    } finally {
++      statusGate.resolve(status(h.session.id));
++      h.controller.dispose();
++    }
++  });
++
++  it("seeds an unpersisted tool final as final, not running or a duplicate", async () => {
++    const api = { ...defaultApi,
++      status: (session: Parameters<typeof defaultApi.status>[0]) => Promise.resolve(status(session.id)),
++      streamSnapshot: () => Promise.resolve({ seq: 7, partial: null,
++        messagePage: { start: 0, total: 2, messages: [
++          { role: "user", content: "run" },
++          { role: "assistant", content: [
++            { type: "toolCall", id: "A", name: "bash", arguments: {} },
++          ] },
++        ] },
++        tools: [{ toolCallId: "A", toolName: "bash", text: "final",
++          end: { isError: true } }],
++      }),
++    };
++    const h = harness(api, "client-unpersisted-tool");
++    try {
++      await h.controller.selectSession(h.session, { updateUrl: false });
++      const tools = h.state().messages.flatMap((line) => line.parts)
++        .filter((part) => part.type === "toolExecution");
++      expect(tools).toHaveLength(1);
++      expect(tools[0]).toMatchObject({ toolCallId: "A", resultText: "final",
++        status: "error" });
++    } finally { h.controller.dispose(); }
++  });
++
++  it("an old target finally cannot clear the new target refresh buffer", async () => {
++    const aGate = deferred<SessionStatus>();
++    const bGate = deferred<SessionStatus>();
++    const aRequested = deferred<undefined>();
++    const bRequested = deferred<undefined>();
++    let refreshA = false;
++    let refreshB = false;
++    const b = { ...oldSession, id: "client-overlap-B", path: "/tmp/overlap-B.jsonl" };
++    const api = { ...defaultApi,
++      status: (session: Parameters<typeof defaultApi.status>[0]) => session.id === b.id
++        ? (refreshB ? bGate.promise : Promise.resolve(status(session.id)))
++        : (refreshA ? aGate.promise : Promise.resolve(status(session.id))),
++      streamSnapshot: (session: Parameters<typeof defaultApi.status>[0]) => {
++        const refreshing = session.id === b.id ? refreshB : refreshA;
++        if (refreshing) {
++          (session.id === b.id ? bRequested : aRequested).resolve(undefined);
++        }
++        return Promise.resolve({ seq: refreshing ? 8 : 4, messagePage: page(session.id),
++          partial: assistantPartial(refreshing ? "new" : "seed") });
++      },
++    };
++    const h = harness(api, "client-overlap-A");
++    try {
++      await h.controller.selectSession(h.session, { updateUrl: false });
++      refreshA = true;
++      const aRefresh = h.controller.refreshSelectedSession();
++      await aRequested.promise;
++      await h.controller.selectSession(b, { updateUrl: false });
++      refreshB = true;
++      const bRefresh = h.controller.refreshSelectedSession();
++      await bRequested.promise;
++      aGate.resolve(status(h.session.id));
++      await aRefresh;
++      h.socket.emit({ type: "assistant.delta", text: " live", seq: 9 });
++      bGate.resolve(status(b.id));
++      await bRefresh;
++      runPendingAnimationFrames();
++      expect(h.state().selectedSession?.id).toBe(b.id);
++      expect(text(h.state())).toBe(`${b.id}|new live`);
++    } finally {
++      aGate.resolve(status(h.session.id));
++      bGate.resolve(status(b.id));
++      h.controller.dispose();
++    }
++  });
++
++  it("uses legacy history only when a successful snapshot lacks messagePage", async () => {
++    let legacyCalls = 0;
++    const api = { ...defaultApi,
++      messages: () => { legacyCalls += 1; return Promise.resolve(page("legacy")); },
++      status: (session: Parameters<typeof defaultApi.status>[0]) => Promise.resolve(status(session.id)),
++      streamSnapshot: () => Promise.resolve({ seq: 4, partial: null }),
++    };
++    const h = harness(api, "client-old-server");
++    try {
++      await h.controller.selectSession(h.session, { updateUrl: false });
++      expect(legacyCalls).toBe(1);
++      expect(text(h.state())).toBe("legacy");
++    } finally { h.controller.dispose(); }
++  });
++
++  it("does not apply a legacy fallback response after selection changes", async () => {
++    const requested = deferred<undefined>();
++    const legacy = deferred<MessagePage>();
++    const b = { ...oldSession, id: "client-fallback-B", path: "/tmp/fallback-B.jsonl" };
++    const api = { ...defaultApi,
++      messages: () => { requested.resolve(undefined); return legacy.promise; },
++      status: (session: Parameters<typeof defaultApi.status>[0]) => Promise.resolve(status(session.id)),
++      streamSnapshot: (session: Parameters<typeof defaultApi.status>[0]) => Promise.resolve(session.id === b.id
++        ? { seq: 4, partial: null, messagePage: page("B") }
++        : { seq: 4, partial: null }),
++    };
++    const h = harness(api, "client-fallback-A");
++    try {
++      const selectingA = h.controller.selectSession(h.session, { updateUrl: false });
++      await requested.promise;
++      await h.controller.selectSession(b, { updateUrl: false });
++      legacy.resolve(page("obsolete A"));
++      await selectingA;
++      expect(text(h.state())).toBe("B");
++    } finally {
++      legacy.resolve(page("obsolete A"));
++      h.controller.dispose();
++    }
++  });
++});
+--- a/src/client/src/controllers/sessionController.ts
++++ b/src/client/src/controllers/sessionController.ts
+@@ -123,6 +123,10 @@ export class SessionController {
+   // in the committed history + seeded partial and must be dropped, so every event
+   // applies exactly once. Reset whenever the selection changes.
+   private streamWatermark: { sessionId: string; seq: number } | undefined;
++  private selectedRefreshBuffer: {
++    target: SelectedSessionRefreshTarget;
++    events: SessionUiEvent[];
++  } | undefined;
+   // Fingerprint of the last applied selected-session refresh, bound to that
+   // selection: a poll whose page, status, and partial all match what is already
+   // held skips the redundant merge, sessionStorage rewrite, and render. The
+@@ -169,6 +173,7 @@ export class SessionController {
+   dispose() {
+     this.disposed = true;
+     this.selectionSeq += 1;
++    this.selectedRefreshBuffer = undefined;
+     this.socket.close();
+     this.clearPendingUpdates();
+   }
+@@ -178,6 +183,7 @@ export class SessionController {
+     this.socket.close();
+     this.notifications?.clearSelectedSession();
+     this.streamWatermark = undefined;
++    this.selectedRefreshBuffer = undefined;
+     this.clearPendingUpdates();
+     // Note: sendingPrompts is intentionally NOT cleared here. Deselecting a
+     // session must not cancel the in-flight upload indicator of the session
+@@ -231,6 +237,7 @@ export class SessionController {
+     const seq = ++this.selectionSeq;
+     this.socket.close();
+     this.streamWatermark = undefined;
++    this.selectedRefreshBuffer = undefined;
+     this.clearPendingUpdates();
+     this.notifications?.prepareSelectedSession(session, machineId);
+     const transcriptKey = this.sessionCacheKey(session.id);
+@@ -1155,31 +1162,48 @@ export class SessionController {
+     return this.selectedSessionRefreshes.request(key, async () => {
+       if (!this.isCurrentRefreshTarget(target)) return;
+       this.flushPendingUpdates();
+-      const [page, status, streamSnapshot] = await Promise.all([
+-        this.api.messages(target.session, { limit: MESSAGE_PAGE_SIZE }, target.machineId),
+-        this.api.status(target.session, target.machineId),
+-        this.api.streamSnapshot(target.session, target.machineId),
+-        this.notifications?.refreshSelectedSession(target.session, target.machineId) ?? Promise.resolve(),
+-      ]);
+-      if (!this.isCurrentRefreshTarget(target)) return;
+-      if (this.isUnchangedSelectedRefresh(target, key, page, status, streamSnapshot)) return;
+-      // Seed the in-flight partial assistant message on top of committed history
+-      // and record the snapshot's sequence as the watermark. Buffered/live events
+-      // with `seq <= watermark` are already reflected here and are dropped by
+-      // `applyEvent`; later events (`seq > watermark`) stream in on top. The
+-      // partial is seeded into the in-memory transcript only, never the raw
+-      // history cache, so it never persists.
+-      const history = this.transcripts.mergeHistory(key, page);
+-      const messages = this.transcripts.seedStreamingPartial(history.messages, streamSnapshot.partial);
+-      this.streamWatermark = { sessionId: target.session.id, seq: streamSnapshot.seq };
+-      this.setState({
+-        ...history,
+-        messages,
+-        status,
+-        activity: this.getState().sessionActivities[target.session.id],
+-      });
+-      this.applyStatus(status);
+-      this.lastAppliedSelectedRefresh = { selectionSeq: target.selectionSeq, partialJson: selectedRefreshPartialJson(streamSnapshot) };
++      const buffer: NonNullable<SessionController['selectedRefreshBuffer']> = {
++        target, events: [],
++      };
++      this.selectedRefreshBuffer = buffer;
++      try {
++        const [streamSnapshot, status] = await Promise.all([
++          this.api.streamSnapshot(target.session, target.machineId),
++          this.api.status(target.session, target.machineId),
++          this.notifications?.refreshSelectedSession(target.session, target.machineId)
++            ?? Promise.resolve(),
++        ]);
++        if (!this.isCurrentRefreshTarget(target)) return;
++        const page = streamSnapshot.messagePage ?? await this.api.messages(
++          target.session, { limit: MESSAGE_PAGE_SIZE }, target.machineId,
++        );
++        if (!this.isCurrentRefreshTarget(target)) return;
++        if (this.isUnchangedSelectedRefresh(target, key, page, status, streamSnapshot)) {
++          return;
++        }
++        const history = this.transcripts.mergeHistory(key, page);
++        const partialMessages = this.transcripts.seedStreamingPartial(
++          history.messages, streamSnapshot.partial,
++        );
++        const messages = this.transcripts.seedRunningWork(partialMessages, streamSnapshot);
++        this.streamWatermark = { sessionId: target.session.id, seq: streamSnapshot.seq };
++        this.setState({
++          ...history, messages, status,
++          activity: this.getState().sessionActivities[target.session.id],
++        });
++        this.applyStatus(status);
++        this.lastAppliedSelectedRefresh = {
++          selectionSeq: target.selectionSeq,
++          partialJson: selectedRefreshPartialJson(streamSnapshot),
++        };
++      } finally {
++        if (this.selectedRefreshBuffer === buffer) {
++          this.selectedRefreshBuffer = undefined;
++        }
++        if (this.isCurrentRefreshTarget(target)) {
++          for (const event of buffer.events) this.applyEvent(event);
++        }
++      }
+     });
+   }
+ 
+@@ -1321,6 +1345,7 @@ export class SessionController {
+     this.socket.close();
+     this.notifications?.clearSelectedSession();
+     this.streamWatermark = undefined;
++    this.selectedRefreshBuffer = undefined;
+     this.clearPendingUpdates();
+     const state = this.getState();
+     const pendingStart = this.pendingSessionStarts.get(session.id);
+@@ -1638,6 +1663,11 @@ export class SessionController {
+       this.notifications?.applyInboxEvent(selectedMachineId(this.getState()), event);
+       return;
+     }
++    const buffer = this.selectedRefreshBuffer;
++    if (buffer !== undefined && this.isCurrentRefreshTarget(buffer.target)) {
++      buffer.events.push(event);
++      return;
++    }
+     // Drop events already reflected in the seeded join snapshot (committed
+     // history + partial). Everything past the watermark applies exactly once,
+     // so live content streams directly on top of the seeded partial.
+@@ -1876,7 +1906,7 @@ export class SessionController {
+ }
+ 
+ function selectedRefreshPartialJson(snapshot: SessionStreamSnapshot): string {
+-  return JSON.stringify(snapshot.partial ?? null);
++  return JSON.stringify([snapshot.partial ?? null, snapshot.tools ?? [], snapshot.shells ?? []]);
+ }
+ 
+ function omitSessionActivity(activities: Record<string, SessionActivity>, sessionId: string): Record<string, SessionActivity> {
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts
+@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { join, resolve, sep } from "node:path";
+ import { describe, expect, it, vi } from "vitest";
++import { projectBrowserMessageResponse } from '../browserMessageProjection.js';
+ import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
+ import { PiSessionService, type PiAgentSession, type PiSessionRuntime, type ResolvedSessionFile } from "./piSessionService.js";
+ import { SessionNotificationStore } from "./sessionNotificationStore.js";
+@@ -1481,7 +1482,7 @@ describe("PiSessionService.streamSnapshot", () => {
+ 
+       const snapshot = await service.streamSnapshot(sessionRef("snap-idle"));
+ 
+-      expect(snapshot).toEqual({ seq: 0, partial: null });
++      expect(snapshot).toEqual({ seq: 0, partial: null, messagePage: { messages: [], start: 0, total: 0 } });
+     } finally {
+       await service.dispose();
+     }
+@@ -1527,4 +1528,487 @@ describe("PiSessionService.streamSnapshot", () => {
+       await service.dispose();
+     }
+   });
++
++  it("carries the latest progress of tools still executing until they end", async () => {
++    const hub = new CapturingSessionEventHub();
++    const fake = fakeRuntime("snap-tools");
++    const service = new PiSessionService(hub, {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      createAgentRuntime: runtimeCreator(fake.runtime),
++      sessionManager: sessionGateway([]),
++      heartbeatIntervalMs: 60_000,
++    });
++    try {
++      await service.start("/workspace");
++      fake.emit({ type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: { command: "make" } });
++      fake.emit({ type: "tool_execution_start", toolCallId: "call-2", toolName: "ask_user", args: {} });
++      fake.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "bash", partialResult: { content: [{ type: "text", text: "line 1" }] } });
++      fake.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "bash", partialResult: { content: [{ type: "text", text: "line 1\nline 2" }], details: { truncation: { truncated: true } } } });
++      // Like the client's live merge: absent content/details and empty text keep the previous ones.
++      fake.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "bash" });
++
++      expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools).toEqual([
++        { toolCallId: "call-1", toolName: "bash", text: "line 1\nline 2", content: [{ type: "text", text: "line 1\nline 2" }], details: { truncation: { truncated: true } } },
++        { toolCallId: "call-2", toolName: "ask_user", text: "" },
++      ]);
++
++      fake.emit({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: { content: [{ type: "text", text: "done" }] }, isError: false });
++      expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools?.[0]).toMatchObject({ toolCallId: "call-1", text: "done", end: { isError: false } });
++      fake.emit({ type: "message_end", message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text: "done" }], isError: false } });
++      expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools).toEqual([{ toolCallId: "call-2", toolName: "ask_user", text: "" }]);
++
++      // An aborted run may never end its tools; the run end forgets them.
++      fake.emit({ type: "agent_end", messages: [] });
++      expect(await service.streamSnapshot(sessionRef("snap-tools"))).toEqual({ seq: 0, partial: null, messagePage: { messages: [], start: 0, total: 0 } });
++    } finally {
++      await service.dispose();
++    }
++  });
++
++  it("carries a running ! command with its output until it ends", async () => {
++    const hub = new CapturingSessionEventHub();
++    let finishBash: ((result: { output: string; exitCode: number; cancelled: boolean; truncated: boolean }) => void) | undefined;
++    let onChunk: ((chunk: string) => void) | undefined;
++    const fake = fakeRuntime("snap-shell", {
++      executeBash: (_command: string, chunk?: (chunk: string) => void) => {
++        fake.session.isBashRunning = true;
++        onChunk = chunk;
++        return new Promise<Awaited<ReturnType<PiAgentSession["executeBash"]>>>((resolve) => { finishBash = resolve; })
++          .finally(() => { fake.session.isBashRunning = false; });
++      },
++    });
++    const service = new PiSessionService(hub, {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      createAgentRuntime: runtimeCreator(fake.runtime),
++      sessionManager: sessionGateway([]),
++      heartbeatIntervalMs: 60_000,
++    });
++    try {
++      await service.start("/workspace");
++      await service.shell(sessionRef("snap-shell"), "!!sleep 60");
++      await vi.waitFor(() => { expect(onChunk).toBeDefined(); });
++
++      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells).toEqual([{ command: "sleep 60", excludeFromContext: true, output: "" }]);
++      onChunk?.("a\n");
++      onChunk?.("b\n");
++      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells).toEqual([{ command: "sleep 60", excludeFromContext: true, output: "a\nb\n" }]);
++      // The tail cut must not leave the low half of a surrogate pair at the start.
++      onChunk?.(`\u{1F600}${"x".repeat(999_999)}`);
++      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells?.[0]?.output).toBe("x".repeat(999_999));
++      // Past the internal trim threshold the snapshot still holds exactly the last 1,000,000 characters.
++      onChunk?.(`${"y".repeat(1_000_000)}z`);
++      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells?.[0]?.output).toBe(`${"y".repeat(999_999)}z`);
++
++      finishBash?.({ output: "a\nb\n", exitCode: 0, cancelled: false, truncated: false });
++      await vi.waitFor(() => { expect(hub.sessionEvents.some(({ event }) => event.type === "shell.end")).toBe(true); });
++      expect(await service.streamSnapshot(sessionRef("snap-shell"))).toEqual({ seq: 0, partial: null, messagePage: { messages: [], start: 0, total: 0 } });
++    } finally {
++      await service.dispose();
++    }
++  });
++
++  it("keeps a ! command finished during a run with its end until pi records it in history", async () => {
++    const hub = new CapturingSessionEventHub();
++    let finishBash: ((result: { output: string; exitCode: number; cancelled: boolean; truncated: boolean }) => void) | undefined;
++    const fake = fakeRuntime("snap-deferred", {
++      executeBash: (_command: string, chunk?: (chunk: string) => void) => {
++        fake.session.isBashRunning = true;
++        chunk?.("done\n");
++        return new Promise<Awaited<ReturnType<PiAgentSession["executeBash"]>>>((resolve) => { finishBash = resolve; })
++          .finally(() => { fake.session.isBashRunning = false; });
++      },
++    });
++    const service = new PiSessionService(hub, {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      createAgentRuntime: runtimeCreator(fake.runtime),
++      sessionManager: sessionGateway([]),
++      heartbeatIntervalMs: 60_000,
++    });
++    try {
++      await service.start("/workspace");
++      await service.shell(sessionRef("snap-deferred"), "!make");
++      await vi.waitFor(() => { expect(finishBash).toBeDefined(); });
++      // pi defers the bashExecution message while a run is active.
++      fake.session.hasPendingBashMessages = true;
++      finishBash?.({ output: "done\n", exitCode: 2, cancelled: false, truncated: false });
++      await vi.waitFor(() => { expect(hub.sessionEvents.some(({ event }) => event.type === "shell.end")).toBe(true); });
++
++      expect((await service.streamSnapshot(sessionRef("snap-deferred"))).shells).toEqual([
++        { command: "make", excludeFromContext: false, output: "done\n", end: { exitCode: 2, cancelled: false, truncated: false } },
++      ]);
++
++      // The run end flushes the deferred results into history.
++      fake.session.hasPendingBashMessages = false;
++      expect(await service.streamSnapshot(sessionRef("snap-deferred"))).toEqual({ seq: 0, partial: null, messagePage: { messages: [], start: 0, total: 0 } });
++    } finally {
++      await service.dispose();
++    }
++  });
++});
++
++function snapshotDeferred<T>() {
++  let resolve!: (value: T | PromiseLike<T>) => void;
++  let reject!: (reason?: unknown) => void;
++  const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
++  return { promise, resolve, reject };
++}
++
++describe("consistent running-work snapshots", () => {
++  function fixture(id: string, gateway: SessionGateway = sessionGateway([])) {
++    const branch: unknown[] = [];
++    const hub = new CapturingSessionEventHub();
++    const stream: { streamingMessage?: unknown } = {};
++    const fake = fakeRuntime(id, {
++      state: stream,
++      sessionManager: fakeSessionManager("/workspace", {
++        getBranch: () => [...branch],
++      }),
++    });
++    const service = new PiSessionService(hub, {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      createAgentRuntime: runtimeCreator(fake.runtime),
++      sessionManager: gateway,
++      heartbeatIntervalMs: 60_000,
++    });
++    return { branch, hub, fake, service, stream, ref: sessionRef(id) };
++  }
++
++  function bashMessage(command: string) {
++    return {
++      role: "bashExecution", command, output: "done\n", exitCode: 0,
++      cancelled: false, truncated: false, timestamp: 1,
++      excludeFromContext: false,
++    };
++  }
++
++  function append(branch: unknown[], message: unknown) {
++    branch.push({ type: "message", message });
++  }
++
++  function shellEnd(hub: CapturingSessionEventHub) {
++    const end = snapshotDeferred<undefined>();
++    const publish = hub.publish.bind(hub);
++    const spy = vi.spyOn(hub, "publish").mockImplementation((id, event) => {
++      publish(id, event);
++      if (event.type === "shell.end") end.resolve(undefined);
++    });
++    return { promise: end.promise, restore: () => { spy.mockRestore(); } };
++  }
++
++  it("moves one deferred ! from replay to messagePage in one capture", async () => {
++    const f = fixture("atomic-flush");
++    const command = snapshotDeferred<Awaited<ReturnType<PiAgentSession["executeBash"]>>>();
++    const started = snapshotDeferred<undefined>();
++    f.fake.session.executeBash = (_command, chunk) => {
++      f.fake.session.isBashRunning = true;
++      chunk?.("done\n");
++      started.resolve(undefined);
++      return command.promise.finally(() => { f.fake.session.isBashRunning = false; });
++    };
++    const end = shellEnd(f.hub);
++    try {
++      await f.service.start("/workspace");
++      await f.service.shell(f.ref, "!make");
++      await started.promise;
++      f.fake.session.hasPendingBashMessages = true;
++      command.resolve({ output: "done\n", exitCode: 0,
++        cancelled: false, truncated: false });
++      await end.promise;
++      const before = await f.service.streamSnapshot(f.ref);
++      expect(before.messagePage?.messages).toEqual([]);
++      expect(before.shells).toEqual([{
++        command: "make", excludeFromContext: false, output: "done\n",
++        end: { exitCode: 0, cancelled: false, truncated: false },
++      }]);
++      // SDK flush is synchronous and drains the entire pending queue.
++      append(f.branch, bashMessage("make"));
++      f.fake.session.hasPendingBashMessages = false;
++      const after = await f.service.streamSnapshot(f.ref);
++      expect(after.messagePage?.messages).toEqual([bashMessage("make")]);
++      expect(after.shells).toBeUndefined();
++    } finally {
++      end.restore();
++      await f.service.dispose();
++    }
++  });
++
++  it("waits for service finalization after immediate SDK record, not for a running !",
++    async () => {
++      const f = fixture("atomic-immediate");
++      const command = snapshotDeferred<undefined>();
++      const sdkReturn = snapshotDeferred<undefined>();
++      const started = snapshotDeferred<undefined>();
++      const recorded = snapshotDeferred<undefined>();
++      f.fake.session.executeBash = async (_command, chunk) => {
++        f.fake.session.isBashRunning = true;
++        chunk?.("done\n");
++        started.resolve(undefined);
++        await command.promise;
++        append(f.branch, bashMessage("same"));
++        f.fake.session.isBashRunning = false;
++        recorded.resolve(undefined);
++        // Hold the SDK return reaction after record, before the service then.
++        await sdkReturn.promise;
++        return { output: "done\n", exitCode: 0, cancelled: false, truncated: false };
++      };
++      try {
++        await f.service.start("/workspace");
++        await f.service.shell(f.ref, "!same");
++        await started.promise;
++        const running = await f.service.streamSnapshot(f.ref);
++        expect(running.shells?.[0]?.output).toBe("done\n");
++        expect(running.messagePage?.messages).toEqual([]);
++        command.resolve(undefined);
++        await recorded.promise;
++        const capture = f.service.streamSnapshot(f.ref);
++        // A second command must not hide the first one's settlement gap.
++        await expect(f.service.shell(f.ref, "!same"))
++          .rejects.toThrow("A bash command is already running");
++        sdkReturn.resolve(undefined);
++        const final = await capture;
++        expect(final.messagePage?.messages).toEqual([bashMessage("same")]);
++        expect(final.shells).toBeUndefined();
++      } finally {
++        command.resolve(undefined);
++        sdkReturn.resolve(undefined);
++        await f.service.dispose();
++      }
++    });
++
++  it("retains tool.end by id without waiting for message hooks or other tools",
++    async () => {
++      const f = fixture("atomic-tools");
++      const call = { role: "assistant", content: [
++        { type: "toolCall", id: "A", name: "bash", arguments: {} },
++        { type: "toolCall", id: "B", name: "read", arguments: {} },
++      ] };
++      const result = { role: "toolResult", toolCallId: "A", toolName: "bash",
++        content: [{ type: "text", text: "final A" }], isError: false };
++      append(f.branch, call);
++      try {
++        await f.service.start("/workspace");
++        f.fake.session.isStreaming = true;
++        for (const [id, name] of [["A", "bash"], ["B", "read"]]) {
++          f.fake.emit({ type: "tool_execution_start", toolCallId: id,
++            toolName: name, args: {} });
++        }
++        f.fake.emit({ type: "tool_execution_end", toolCallId: "A", toolName: "bash",
++          result: { content: result.content }, isError: false });
++        // SDK message_start may already set streamingMessage to toolResult.
++        f.stream.streamingMessage = result;
++        const between = await f.service.streamSnapshot(f.ref);
++        expect(between.partial).toBeNull();
++        expect(between.tools).toMatchObject([
++          { toolCallId: "A", text: "final A", end: { isError: false } },
++          { toolCallId: "B", text: "" },
++        ]);
++        expect(between.messagePage?.messages).toEqual([call]);
++        // Service subscriber runs before append, with no await between them.
++        f.fake.emit({ type: "message_end", message: result });
++        append(f.branch, result);
++        f.stream.streamingMessage = undefined;
++        const after = await f.service.streamSnapshot(f.ref);
++        expect(after.tools).toEqual([{ toolCallId: "B", toolName: "read", text: "" }]);
++        expect(after.messagePage?.messages).toEqual([call, result]);
++        f.fake.emit({ type: "agent_end", messages: [] });
++        expect((await f.service.streamSnapshot(f.ref)).tools).toBeUndefined();
++      } finally {
++        await f.service.dispose();
++      }
++    });
++
++  it("agent_end clears running tools but preserves an unpersisted final", async () => {
++    const f = fixture("atomic-abort");
++    try {
++      await f.service.start("/workspace");
++      f.fake.emit({ type: "tool_execution_start", toolCallId: "A",
++        toolName: "read", args: {} });
++      f.fake.emit({ type: "tool_execution_start", toolCallId: "B",
++        toolName: "read", args: {} });
++      f.fake.emit({ type: "tool_execution_end", toolCallId: "A", toolName: "read",
++        result: { content: [{ type: "text", text: "finished" }] }, isError: true });
++      f.fake.emit({ type: "agent_end", messages: [] });
++      expect((await f.service.streamSnapshot(f.ref)).tools).toMatchObject([
++        { toolCallId: "A", text: "finished", end: { isError: true } },
++      ]);
++    } finally {
++      await f.service.dispose();
++    }
++  });
++
++  it("keeps two identical ! commands separate across the first flush", async () => {
++    const f = fixture("atomic-identical");
++    const second = snapshotDeferred<Awaited<ReturnType<PiAgentSession["executeBash"]>>>();
++    const secondStarted = snapshotDeferred<undefined>();
++    let calls = 0;
++    f.fake.session.executeBash = async (_command, chunk) => {
++      calls += 1;
++      chunk?.("done\n");
++      if (calls === 1) {
++        f.fake.session.hasPendingBashMessages = true;
++        return { output: "done\n", exitCode: 0, cancelled: false, truncated: false };
++      }
++      f.fake.session.isBashRunning = true;
++      secondStarted.resolve(undefined);
++      const result = await second.promise;
++      append(f.branch, bashMessage("same"));
++      f.fake.session.isBashRunning = false;
++      return result;
++    };
++    const firstEnd = shellEnd(f.hub);
++    try {
++      await f.service.start("/workspace");
++      await f.service.shell(f.ref, "!same");
++      await firstEnd.promise;
++      // Await a capture to cross the service completion, not a timer.
++      await f.service.streamSnapshot(f.ref);
++      firstEnd.restore();
++      await f.service.shell(f.ref, "!same");
++      await secondStarted.promise;
++      append(f.branch, bashMessage("same"));
++      f.fake.session.hasPendingBashMessages = false;
++      const middle = await f.service.streamSnapshot(f.ref);
++      expect(middle.messagePage?.messages).toEqual([bashMessage("same")]);
++      expect(middle.shells).toEqual([
++        { command: "same", excludeFromContext: false, output: "done\n" },
++      ]);
++      second.resolve({ output: "done\n", exitCode: 0,
++        cancelled: false, truncated: false });
++      // The SDK continuation was registered on second before this await.
++      await second.promise;
++      const persisted = await f.service.streamSnapshot(f.ref);
++      expect(persisted.messagePage?.messages).toEqual([
++        bashMessage("same"), bashMessage("same"),
++      ]);
++      expect(persisted.shells).toBeUndefined();
++    } finally {
++      firstEnd.restore();
++      second.resolve({ output: "done\n", exitCode: 0,
++        cancelled: false, truncated: false });
++      await f.service.dispose();
++    }
++  });
++
++  it("rejects a disk read raced by a complete runtime mutation with unchanged leaf",
++    async () => {
++      const disk = snapshotDeferred<unknown[] | undefined>();
++      const reading = snapshotDeferred<undefined>();
++      let reads = 0;
++      const gateway = { ...sessionGateway([]), readBranch: () => {
++        reads += 1;
++        if (reads === 1) { reading.resolve(undefined); return disk.promise; }
++        return Promise.resolve([{ type: "message",
++          message: { role: "user", content: "fresh disk" } }]);
++      } };
++      const f = fixture("atomic-idle-aba", gateway);
++      try {
++        await f.service.start("/workspace");
++        const capture = f.service.streamSnapshot(f.ref);
++        await reading.promise;
++        // CapturingSessionEventHub keeps seq=0, leaf remains leaf-1.
++        // Only the new generation detects this complete activity interval.
++        f.fake.session.isStreaming = true;
++        f.fake.emit({ type: "agent_start" });
++        f.fake.emit({ type: "agent_end", messages: [] });
++        f.fake.session.isStreaming = false;
++        disk.resolve([{ type: "message",
++          message: { role: "user", content: "stale disk" } }]);
++        const snapshot = await capture;
++        expect(reads).toBe(2);
++        expect(snapshot.messagePage?.messages).toEqual([
++          { role: "user", content: "fresh disk" },
++        ]);
++      } finally {
++        disk.resolve(undefined);
++        await f.service.dispose();
++      }
++    });
++
++it("pages transformed history with browser projection after the full prefix", async () => {
++  const f = fixture("atomic-page-contract");
++  f.branch.push({ type: "thinking_level_change", thinkingLevel: "high" });
++  for (let index = 0; index < 110; index += 1) {
++    append(f.branch, { role: "user", content: `q${String(index)}` });
++    append(f.branch, { role: "assistant", content: [
++      { type: "thinking", thinking: "private", thinkingSignature: "secret" },
++      { type: "image", data: "a", mimeType: "image/png" },
++      { type: "text", text: `a${String(index)}` },
++    ] });
++  }
++  f.branch.push({ type: "custom_message", customType: "hidden",
++    content: "must not display", display: false });
++  f.branch.push({ type: "custom_message", customType: "visible",
++    content: "show", display: true });
++  try {
++    await f.service.start("/workspace");
++    const snapshot = await f.service.streamSnapshot(f.ref);
++    expect(snapshot.messagePage?.total).toBe(221);
++    expect(snapshot.messagePage?.start).toBe(120);
++    expect(snapshot.messagePage?.messages).toHaveLength(101);
++    expect(JSON.stringify(snapshot.messagePage)).not.toContain("thinkingSignature");
++    expect(JSON.stringify(snapshot.messagePage)).toContain('"type":"image"');
++    expect(JSON.stringify(f.branch)).toContain('"thinkingSignature":"secret"');
++    const raw = await f.service.messages(f.ref, { limit: 100 });
++    // /messages service is raw; the route projects it for the browser.
++    const browser = projectBrowserMessageResponse(raw);
++    expect(snapshot.messagePage).toEqual(browser);
++  } finally { await f.service.dispose(); }
++});
++
++it("invalidates an idle disk read across a completed tree navigation ABA", async () => {
++  const disk = snapshotDeferred<unknown[] | undefined>();
++  const reading = snapshotDeferred<undefined>();
++  let reads = 0;
++  const f = fixture("atomic-tree-aba", {
++    ...sessionGateway([]),
++    readBranch: () => {
++      reads += 1;
++      if (reads === 1) { reading.resolve(undefined); return disk.promise; }
++      return Promise.resolve([{ type: "message",
++        message: { role: "user", content: "fresh" } }]);
++    },
++  });
++  f.fake.session.navigateTree = () => Promise.resolve({ cancelled: false });
++  try {
++    await f.service.start("/workspace");
++    const capture = f.service.streamSnapshot(f.ref);
++    await reading.promise;
++    await f.service.navigateTree(f.ref, {
++      targetId: "leaf-1", expectedLeafId: "leaf-1", summary: { mode: "none" },
++    });
++    // The fake leaf and hub seq are unchanged; only generation moved.
++    disk.resolve([{ type: "message", message: { role: "user", content: "stale" } }]);
++    expect((await capture).messagePage?.messages).toEqual([
++      { role: "user", content: "fresh" },
++    ]);
++    expect(reads).toBe(2);
++  } finally {
++    disk.resolve(undefined);
++    await f.service.dispose();
++  }
++});
++  it("freezes extension JSON details and partials without structuredClone restrictions", async () => {
++    const f = fixture("atomic-json-copy");
++    const details = { nested: { text: "old" }, callback: () => undefined };
++    const partialText = { type: 'text', text: 'old' };
++    const partial = { role: 'assistant', content: [partialText] };
++    try {
++      await f.service.start("/workspace");
++      f.fake.session.isStreaming = true;
++      f.stream.streamingMessage = partial;
++      f.fake.emit({ type: "tool_execution_start", toolCallId: "A", toolName: "custom", args: {} });
++      f.fake.emit({ type: "tool_execution_update", toolCallId: "A", toolName: "custom", partialResult: { content: [{ type: "text", text: "x" }], details } });
++      const snapshot = await f.service.streamSnapshot(f.ref);
++      details.nested.text = "new";
++      partialText.text = 'new';
++      expect(snapshot.tools?.[0]?.details).toEqual({ nested: { text: "old" } });
++      expect(snapshot.partial).toEqual({ role: "assistant", content: [{ type: "text", text: "old" }] });
++    } finally {
++      await f.service.dispose();
++    }
++  });
+ });
+--- a/src/server/sessions/piSessionService.testSupport.ts
++++ b/src/server/sessions/piSessionService.testSupport.ts
+@@ -153,6 +153,7 @@ export function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession>
+     isStreaming: false,
+     isCompacting: false,
+     isBashRunning: false,
++    hasPendingBashMessages: false,
+     pendingMessageCount: 0,
+     sessionManager: fakeSessionManager(),
+     settingsManager: { getWarnings: () => ({}), setWarnings: () => undefined, getEnabledModels: () => undefined, getProjectSettings: () => ({}), setEnabledModels: () => undefined },
+--- a/src/server/sessions/piSessionService.ts
++++ b/src/server/sessions/piSessionService.ts
+@@ -27,8 +27,8 @@ import {
+   type ProjectTrustEventResult,
+   type ResourceDiagnostic,
+ } from "@earendil-works/pi-coding-agent";
+-import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionModelCatalogEntry, ClientSessionStatus, ClientSessionTreeForkRequest, ClientSessionTreeForkResult, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
+-import { projectBrowserMessage } from "../browserMessageProjection.js";
++import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionModelCatalogEntry, ClientSessionStatus, ClientSessionTreeForkRequest, ClientSessionTreeForkResult, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionRunningShell, SessionRunningTool, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
++import { projectBrowserMessage, projectBrowserMessageResponse } from "../browserMessageProjection.js";
+ import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
+ import type { SessionEventHub } from "../realtime/sessionEventHub.js";
+ import { BUILTIN_COMMANDS } from "./builtinCommands.js";
+@@ -129,6 +129,8 @@ const MAX_PENDING_UNREAD_MUTATIONS = SESSION_UNREAD_LIMIT + 1;
+  * persists, `getSessionFile()` answers and this throttle is bypassed.
+  */
+ const IDLE_SESSION_FILE_RESOLUTION_THROTTLE_MS = 30_000;
++/** Tail of a running `!` command's output kept for join-time snapshots. */
++const MAX_RUNNING_SHELL_OUTPUT_CHARS = 1_000_000;
+ 
+ function noop(): void {
+   // Intentionally empty default unsubscribe callback.
+@@ -481,6 +483,8 @@ export interface PiAgentSession {
+   isStreaming: boolean;
+   isCompacting: boolean;
+   isBashRunning: boolean;
++  /** `!` results pi defers while a run is active and appends to history all at once when it ends. */
++  hasPendingBashMessages: boolean;
+   pendingMessageCount: number;
+   extensionRunner: {
+     getRegisteredCommands(): readonly { invocationName: string; description?: string }[];
+@@ -1206,6 +1210,15 @@ export class PiSessionService implements SessionRouteService {
+   private readonly notificationGenerationBySession = new WeakMap<PiAgentSession, SessionNotificationGeneration>();
+   /** Last idle-poll transcript file resolution per runtime, throttled; entries die with their runtime. */
+   private readonly idleSessionFileResolutions = new WeakMap<PiAgentSession, { at: number; path: string | undefined }>();
++  /** Latest progress of each still-executing tool per runtime, replayed by `streamSnapshot`. */
++  private readonly runningTools = new WeakMap<PiAgentSession, Map<string, SessionRunningTool>>();
++  /** User `!` commands per runtime still running or finished but not yet in history, replayed by `streamSnapshot`. */
++  private readonly runningShells = new WeakMap<PiAgentSession, SessionRunningShell[]>();
++  private readonly snapshotGenerations = new WeakMap<PiAgentSession, number>();
++  private readonly shellFinalizations = new WeakMap<PiAgentSession, Map<
++    SessionRunningShell,
++    { started: boolean; completion: Promise<void> }
++  >>();
+   private readonly unreadStore: SessionUnreadStore;
+   private readonly pendingAskStore: PendingAskStore;
+   private readonly pendingExtensionDialogStore: PendingExtensionDialogStore;
+@@ -2347,15 +2360,70 @@ export class PiSessionService implements SessionRouteService {
+    * signatures; it is `null` when no assistant message is mid-stream.
+    */
+   async streamSnapshot(ref: PiSessionRef): Promise<SessionStreamSnapshot> {
+-    const session = await this.getOrOpen(ref);
+-    // Single consistent tick: capture the watermark and the partial together so
+-    // the seq matches the partial the client seeds against.
+-    const seq = this.events.currentSeq(session.sessionId);
+-    const streamingMessage = session.state.streamingMessage;
+-    const partial = streamingMessage === undefined || streamingMessage === null
+-      ? null
+-      : annotateAssistantThinkingLevel(projectBrowserMessage(streamingMessage), session.thinkingLevel);
+-    return { seq, partial };
++    const target = { ...ref };
++    for (;;) {
++      const active = await this.getActive(target);
++      const runtime = active.runtime;
++      const session = runtime.session;
++      if (this.activeForRef(target) !== active) continue;
++      const manager = session.sessionManager;
++      const file = session.sessionFile;
++      const managerFile = manager.getSessionFile();
++      const leaf = manager.getLeafId();
++      const seq = this.events.currentSeq(session.sessionId);
++      const generation = this.snapshotGenerations.get(session) ?? 0;
++      const current = () => this.activeForRef(target) === active
++        && active.runtime === runtime && runtime.session === session
++        && session.sessionManager === manager && session.sessionFile === file
++        && manager.getSessionFile() === managerFile && manager.getLeafId() === leaf
++        && this.events.currentSeq(session.sessionId) === seq
++        && (this.snapshotGenerations.get(session) ?? 0) === generation;
++      if (!session.isBashRunning) {
++        const finishing = [...(this.shellFinalizations.get(session)?.values() ?? [])]
++          .filter((entry) => entry.started);
++        if (finishing.length > 0) {
++          await Promise.all(finishing.map((entry) => entry.completion));
++          continue;
++        }
++      }
++      const branch = this.hasActiveWork(session)
++        ? manager.getBranch()
++        : await this.readableSessionBranch(target, session, current);
++      if (!current()) continue;
++      // No await below: history, watermark and replay records form one version.
++      this.pruneRecordedShells(session);
++      const messagePage = projectBrowserMessageResponse(pageMessagesAtSafeBoundary(
++        historyMessagesFromEntries(branch), { limit: 100 },
++      ));
++      const streamingMessage = session.state.streamingMessage;
++      const partial = getString(streamingMessage, "role") !== "assistant"
++        ? null
++        : annotateAssistantThinkingLevel(
++          projectBrowserMessage(streamingMessage), session.thinkingLevel,
++        );
++      const tools = [...(this.runningTools.get(session)?.values() ?? [])];
++      const shells = this.runningShells.get(session) ?? [];
++      // Copy unknown JSON payloads before returning; keep the envelope typed.
++      return {
++        seq,
++        partial: copySnapshotValue(partial),
++        messagePage: {
++          start: messagePage.start,
++          total: messagePage.total,
++          messages: messagePage.messages.map((message) =>
++            copySnapshotValue(message) ?? null),
++        },
++        ...(tools.length === 0 ? {} : { tools: tools.map(copySnapshotTool) }),
++        ...(shells.length === 0 ? {} : {
++          shells: shells.map((shell) => ({
++            command: shell.command,
++            excludeFromContext: shell.excludeFromContext,
++            output: runningShellOutputTail(shell.output),
++            ...(shell.end === undefined ? {} : { end: { ...shell.end } }),
++          })),
++        }),
++      };
++    }
+   }
+ 
+   async availableModels(ref: PiSessionRef): Promise<ClientSessionModel[]> {
+@@ -2588,31 +2656,63 @@ export class PiSessionService implements SessionRouteService {
+     const isExcluded = text.startsWith("!!");
+     const command = (isExcluded ? text.slice(2) : text.slice(1)).trim();
+     if (!command) throw new Error("Usage: !<shell command>");
+-    if (session.isBashRunning) throw new Error("A bash command is already running");
++    if (session.isBashRunning
++      || (this.shellFinalizations.get(session)?.size ?? 0) > 0) {
++      throw new Error("A bash command is already running");
++    }
+ 
+     this.publishActivity(session, "running bash", "active", command);
++    const running: SessionRunningShell = { command, excludeFromContext: isExcluded, output: "" };
++    this.runningShells.set(session, [...(this.runningShells.get(session) ?? []), running]);
++    const finalizations = this.shellFinalizations.get(session) ?? new Map<
++      SessionRunningShell, { started: boolean; completion: Promise<void> }
++    >();
++    let complete!: () => void;
++    const finalization = {
++      started: false,
++      completion: new Promise<void>((resolve) => { complete = resolve; }),
++    };
++    finalizations.set(running, finalization);
++    this.shellFinalizations.set(session, finalizations);
+     this.events.publish(session.sessionId, { type: "shell.start", command, excludeFromContext: isExcluded });
+-    void this.runSessionEntryMutation(session, "run a shell command", () => session.executeBash(command, (chunk) => {
+-      this.events.publish(session.sessionId, { type: "shell.chunk", chunk });
+-      this.publishActivity(session, "running bash", "active", command);
+-      this.publishStatus(session);
+-    }, { excludeFromContext: isExcluded })).then((result) => {
+-      this.events.publish(session.sessionId, {
+-        type: "shell.end",
+-        output: result.output,
++    void this.runSessionEntryMutation(session, "run a shell command", () => {
++      finalization.started = true;
++      return session.executeBash(command, (chunk) => {
++        // Trim only past twice the limit so a chatty command costs O(1) per character.
++        running.output += chunk;
++        if (running.output.length > 2 * MAX_RUNNING_SHELL_OUTPUT_CHARS) {
++          running.output = running.output.slice(-MAX_RUNNING_SHELL_OUTPUT_CHARS);
++        }
++        this.events.publish(session.sessionId, { type: "shell.chunk", chunk });
++        this.publishActivity(session, "running bash", "active", command);
++        this.publishStatus(session);
++      }, { excludeFromContext: isExcluded });
++    }).then((result) => {
++      const end = {
+         ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+         cancelled: result.cancelled,
+         truncated: result.truncated,
+         ...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
+-      });
++      };
++      // A result deferred by an active run stays visible to joining clients until pi records it.
++      // `end` skips `output`: the client needs it only to tell whether there was any, and the
++      // streamed tail answers that; pi's own truncation applies once the result is in history.
++      if (session.hasPendingBashMessages) running.end = end;
++      else this.clearRunningShell(session, running);
++      this.events.publish(session.sessionId, { type: "shell.end", output: result.output, ...end });
+       this.publishActivity(session, "bash complete", result.exitCode === 0 ? "idle" : "error", command);
+       this.publishStatus(session);
+     }).catch((error: unknown) => {
+       const message = error instanceof Error ? error.message : String(error);
++      this.clearRunningShell(session, running);
+       this.events.publish(session.sessionId, { type: "shell.end", output: message, isError: true });
+       this.events.publish(session.sessionId, { type: "session.error", message });
+       this.publishActivity(session, "bash failed", "error", message);
+       this.publishStatus(session);
++    }).finally(() => {
++      finalizations.delete(running);
++      if (finalizations.size === 0) this.shellFinalizations.delete(session);
++      complete();
+     });
+   }
+ 
+@@ -2641,6 +2741,7 @@ export class PiSessionService implements SessionRouteService {
+ 
+     // Acquire synchronously after the active-work check. No leaf-producing work
+     // may enter this runtime until Pi's potentially asynchronous summary settles.
++    this.bumpSnapshotGeneration(session);
+     this.treeNavigations.add(session);
+     try {
+       const oldLeafId = session.sessionManager.getLeafId();
+@@ -2706,6 +2807,7 @@ export class PiSessionService implements SessionRouteService {
+       }
+       throw error;
+     } finally {
++      this.bumpSnapshotGeneration(session);
+       this.treeNavigations.delete(session);
+       if (this.isCurrentActiveSession(session)) {
+         this.flushDeferredTreeNavigationWork(session);
+@@ -3327,7 +3429,9 @@ export class PiSessionService implements SessionRouteService {
+    * read-only snapshot rather than serving that cached branch forever. Active
+    * runtimes remain authoritative and are never replaced, reloaded, or aborted.
+    */
+-  private async readableSessionBranch(ref: PiSessionRef, session: PiAgentSession): Promise<unknown[]> {
++  private async readableSessionBranch(
++    ref: PiSessionRef, session: PiAgentSession, current: () => boolean = () => true,
++  ): Promise<unknown[]> {
+     if (this.hasActiveWork(session) || this.sessionManager.readBranch === undefined) return session.sessionManager.getBranch();
+     const sessionFile = session.sessionFile ?? session.sessionManager.getSessionFile();
+     const resolvedPath = sessionFile === undefined ? await this.idleSessionFilePath(ref, session) : undefined;
+@@ -3335,6 +3439,7 @@ export class PiSessionService implements SessionRouteService {
+     const path = sessionFile ?? resolvedPath;
+     if (path === undefined) return session.sessionManager.getBranch();
+     const snapshot = await this.sessionManager.readBranch(path);
++    if (!current()) return session.sessionManager.getBranch();
+     // No snapshot exists when the transcript file is absent (a session known
+     // by path but never persisted, or externally removed): the runtime branch
+     // is the only readable branch then.
+@@ -3842,6 +3947,7 @@ export class PiSessionService implements SessionRouteService {
+   }
+ 
+   private bindRuntime(active: ActiveSession<PiSessionRuntime>, session: PiAgentSession = active.runtime.session): void {
++    this.bumpSnapshotGeneration(session);
+     active.unsubscribe();
+     for (const [sessionId, candidate] of this.active.entries()) {
+       if (candidate === active) {
+@@ -3850,13 +3956,24 @@ export class PiSessionService implements SessionRouteService {
+       }
+     }
+     active.unsubscribe = session.subscribe((event) => {
++      this.bumpSnapshotGeneration(session);
+       const eventType = getString(event, "type");
+       if (eventType === "session_info_changed") {
+         this.publishSessionName(session);
+       } else {
+-        this.events.publish(session.sessionId, toClientEvent(event, session.thinkingLevel));
++        const clientEvent = toClientEvent(event, session.thinkingLevel);
++        this.events.publish(session.sessionId, clientEvent);
++        this.trackRunningTool(session, clientEvent);
+       }
++      this.pruneRecordedShells(session);
+       this.publishActivityForEvent(session, event);
++      if (eventType === "agent_end") {
++        const tools = this.runningTools.get(session);
++        for (const [id, tool] of tools ?? []) {
++          if (tool.end === undefined) tools?.delete(id);
++        }
++        if (tools?.size === 0) this.runningTools.delete(session);
++      }
+       if (eventType === "agent_end") this.abortRunScopedExtensionDialogs(session.sessionId);
+       if (eventType === "compaction_end") this.scheduleCompactionQueueDrain(session.sessionId);
+       if (eventType === "agent_start" || eventType === "agent_end") this.scheduleCompactionQueueDrain(session.sessionId);
+@@ -3866,6 +3983,70 @@ export class PiSessionService implements SessionRouteService {
+     this.active.set(session.sessionId, active);
+   }
+ 
++  /**
++   * Mirror `tool.*` events published in the same tick, so `streamSnapshot` can
++   * hand a joining client the progress its watermark marks as already seen.
++   * Merge progress like the live client; retain finals until the SDK appends them.
++   */
++  private trackRunningTool(session: PiAgentSession, event: SessionUiEvent): void {
++    if (event.type === "message.end") {
++      if (getString(event.message, "role") === "toolResult") {
++        const id = getString(event.message, "toolCallId");
++        if (id !== undefined) this.runningTools.get(session)?.delete(id);
++      }
++      return;
++    }
++    if (event.type !== "tool.start" && event.type !== "tool.update"
++      && event.type !== "tool.end") return;
++    if (event.toolCallId === "") return;
++    const tools = this.runningTools.get(session) ?? new Map<string, SessionRunningTool>();
++    if (event.type === "tool.end") tools.set(event.toolCallId, {
++      ...tools.get(event.toolCallId),
++      toolCallId: event.toolCallId, toolName: event.toolName, text: event.text,
++      ...(event.content === undefined ? {} : { content: event.content }),
++      ...(event.details === undefined ? {} : { details: event.details }),
++      end: { isError: event.isError },
++    });
++    else if (event.type === "tool.start") tools.set(event.toolCallId, { toolCallId: event.toolCallId, toolName: event.toolName, text: "" });
++    else {
++      // Merge like the client's live `tool.update`: empty text and absent content/details keep the previous ones.
++      const previous = tools.get(event.toolCallId);
++      const content = event.content === undefined ? previous?.content : event.content;
++      const details = event.details === undefined ? previous?.details : event.details;
++      tools.set(event.toolCallId, {
++        toolCallId: event.toolCallId,
++        toolName: event.toolName,
++        text: event.text === "" ? previous?.text ?? "" : event.text,
++        ...(content === undefined ? {} : { content }),
++        ...(details === undefined ? {} : { details }),
++      });
++    }
++    if (tools.size === 0) this.runningTools.delete(session);
++    else this.runningTools.set(session, tools);
++  }
++
++  private bumpSnapshotGeneration(session: PiAgentSession): void {
++    this.snapshotGenerations.set(session,
++      (this.snapshotGenerations.get(session) ?? 0) + 1);
++  }
++
++  private clearRunningShell(session: PiAgentSession, running: SessionRunningShell): void {
++    this.setRunningShells(session, (this.runningShells.get(session) ?? []).filter((shell) => shell !== running));
++  }
++
++  /** pi flushes every deferred `!` result in one go, so with none pending the finished ones are in history. */
++  private pruneRecordedShells(session: PiAgentSession): void {
++    const shells = this.runningShells.get(session);
++    if (shells === undefined || session.hasPendingBashMessages) return;
++    const running = shells.filter((shell) => shell.end === undefined);
++    if (running.length !== shells.length) this.setRunningShells(session, running);
++  }
++
++  private setRunningShells(session: PiAgentSession, shells: SessionRunningShell[]): void {
++    if (shells.length === 0) this.runningShells.delete(session);
++    else this.runningShells.set(session, shells);
++  }
++
+   private scheduleCompactionQueueDrain(sessionId: string, delayMs = 0): void {
+     if (!this.compactionPromptQueues.has(sessionId) || this.compactionDrainTimers.has(sessionId)) return;
+     const timer = setTimeout(() => {
+@@ -4040,7 +4221,10 @@ export class PiSessionService implements SessionRouteService {
+     for (const runtime of runtimes) {
+       this.treeExclusiveRuntimeOperationCounts.set(runtime, (this.treeExclusiveRuntimeOperationCounts.get(runtime) ?? 0) + 1);
+     }
+-    for (const session of sessions) this.observeUnreadActivityState(session);
++    for (const session of sessions) {
++      this.bumpSnapshotGeneration(session);
++      this.observeUnreadActivityState(session);
++    }
+ 
+     try {
+       return await operation();
+@@ -4048,6 +4232,7 @@ export class PiSessionService implements SessionRouteService {
+       for (const runtime of runtimes) decrementWeakCount(this.treeExclusiveRuntimeOperationCounts, runtime);
+       for (const sessionId of sessionIds) decrementMapCount(this.treeExclusiveSessionOperationCounts, sessionId);
+       for (const session of sessions) {
++        this.bumpSnapshotGeneration(session);
+         if (this.isCurrentActiveSession(session)) this.observeUnreadActivityState(session);
+       }
+     }
+@@ -4085,11 +4270,13 @@ export class PiSessionService implements SessionRouteService {
+ 
+   private beginSessionEntryMutation(session: PiAgentSession, action: string): void {
+     this.assertTreeNavigationInactive(session, action);
++    this.bumpSnapshotGeneration(session);
+     this.sessionEntryMutationCounts.set(session, (this.sessionEntryMutationCounts.get(session) ?? 0) + 1);
+     this.observeUnreadActivityState(session);
+   }
+ 
+   private endSessionEntryMutation(session: PiAgentSession): void {
++    this.bumpSnapshotGeneration(session);
+     const remaining = (this.sessionEntryMutationCounts.get(session) ?? 1) - 1;
+     if (remaining <= 0) this.sessionEntryMutationCounts.delete(session);
+     else this.sessionEntryMutationCounts.set(session, remaining);
+@@ -4912,6 +5099,31 @@ function stringifyToolResult(result: unknown): string {
+   return stringifyPrimitive(result);
+ }
+ 
++function runningShellOutputTail(output: string): string {
++  const tail = output.slice(-MAX_RUNNING_SHELL_OUTPUT_CHARS);
++  // Drop a low surrogate orphaned by the cut so the tail does not start with U+FFFD.
++  const first = tail.charCodeAt(0);
++  return first >= 0xdc00 && first <= 0xdfff ? tail.slice(1) : tail;
++}
++function copySnapshotValue(value: unknown): unknown {
++  const stringify: (input: unknown) => string | undefined = JSON.stringify;
++  const json = stringify(value);
++  if (json === undefined) return undefined;
++  const parsed: unknown = JSON.parse(json);
++  return parsed;
++}
++function copySnapshotTool(tool: SessionRunningTool): SessionRunningTool {
++  const content = copySnapshotValue(tool.content);
++  const details = copySnapshotValue(tool.details);
++  return {
++    toolCallId: tool.toolCallId,
++    toolName: tool.toolName,
++    text: tool.text,
++    ...(content === undefined ? {} : { content }),
++    ...(details === undefined ? {} : { details }),
++    ...(tool.end === undefined ? {} : { end: { isError: tool.end.isError } }),
++  };
++}
+ function isRecord(value: unknown): value is Record<string, unknown> {
+   return typeof value === "object" && value !== null;
+ }
+--- a/src/server/types.ts
++++ b/src/server/types.ts
+@@ -13,6 +13,8 @@ export type {
+   SessionCleanupExecuteResponse as ClientSessionCleanupExecuteResponse,
+   MessagePage as ClientMessagePage,
+   SessionStreamSnapshot,
++  SessionRunningTool,
++  SessionRunningShell,
+   SessionStatus as ClientSessionStatus,
+   SessionModel as ClientSessionModel,
+   SessionModelCatalogEntry as ClientSessionModelCatalogEntry,
+--- a/src/shared/apiTypes.ts
++++ b/src/shared/apiTypes.ts
+@@ -1330,6 +1330,37 @@ export interface SessionStreamSnapshot {
+   seq: number;
+   /** Browser-projected in-flight `AssistantMessage`, or `null` when idle. */
+   partial: unknown;
++  /**
++   * Progress of running tools, plus published finals not yet recorded in
++   * history (empty `text` before the first update). Omitted when there are none.
++   */
++  tools?: SessionRunningTool[];
++  /** Browser-safe history tail from the same capture as seq and running work. */
++  messagePage?: MessagePage;
++  /**
++   * User `!` commands still running, plus finished ones pi has not recorded in
++   * history yet because a run was active. Omitted when there are none.
++   */
++  shells?: SessionRunningShell[];
++}
++
++export interface SessionRunningTool {
++  /** Final result published but not yet appended as a toolResult. */
++  end?: { isError: boolean };
++  toolCallId: string;
++  toolName: string;
++  text: string;
++  content?: unknown;
++  details?: unknown;
++}
++
++export interface SessionRunningShell {
++  command: string;
++  excludeFromContext: boolean;
++  /** Output streamed so far; only its tail is kept for a very chatty command. */
++  output: string;
++  /** The `shell.end` payload, minus the output `output` already holds, once finished but not yet in history. */
++  end?: Omit<Extract<SessionUiEvent, { type: "shell.end" }>, "type" | "output">;
+ }
+ 
+ export type CommandResult =
