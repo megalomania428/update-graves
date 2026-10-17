@@ -3,12 +3,12 @@
 <!-- markdownlint-disable MD013 -->
 <!-- cspell:ignore enum jmfederico patchset subkey subsession toolArgs toolContent -->
 
-Patched build of [pi-web](https://github.com/jmfederico/pi-web), distributed as the `@raven428/pi-web` npm tarball in [GitHub Releases](https://github.com/megalomania428/update-graves/releases). The upstream ref and the patch number live in `build.yaml`: `ref: v1.202609.0` with `patch: 4` sets the package version to `1.202609.0-p4`. Pull requests and manual builds use `1.202609.0-p4.dev.<run>.<attempt>` and the shared `v999` draft.
+Patched build of [pi-web](https://github.com/jmfederico/pi-web), distributed as the `@raven428/pi-web` npm tarball in [GitHub Releases](https://github.com/megalomania428/update-graves/releases). The upstream ref and the patch number live in `build.yaml`: `ref: v1.202609.0` with `patch: 5` sets the package version to `1.202609.0-p5`. Pull requests and manual builds use `1.202609.0-p5.dev.<run>.<attempt>` and the shared `v999` draft.
 
 Installation: `npm i -g <asset .tgz URL>`. For example:
 
 ```bash
-npm i -g 'https://github.com/megalomania428/update-graves/releases/download/pi-web-v1.202609.0p4/pi-web-1_202609_0-p4.tgz'
+npm i -g 'https://github.com/megalomania428/update-graves/releases/download/pi-web-v1.202609.0p5/pi-web-1_202609_0-p5.tgz'
 ```
 
 The package requires Node.js >=22.19.0 and is not a standalone executable. Native dependencies such as `node-pty` can require build tools on the installation machine.
@@ -51,3 +51,4 @@ The package requires Node.js >=22.19.0 and is not a standalone executable. Nativ
 - `008-ask-user-markdown` – render question text, question details, and custom ask_user answers as Markdown in forms and transcript records; double-clicking inline code (single backticks, not code blocks) in ask_user cards and in chat Markdown selects its whole text, ready to copy, without copying it automatically; text typed into the Custom answer survives choosing another option (or unchecking Custom) and comes back when Custom is selected again, kept in the ask draft but never submitted and shown, marked as not selected, in the record of a superseded ask; ask drafts in localStorage expire 7 days after their last change and are swept on client start
 - `009-chat-scroll-buttons` – add buttons to scroll the chat transcript to the beginning or latest message; remove the workspaces section from the navigation panel: selecting a project always opens its default (main) workspace, and the workspace trust toggle and details move to the project ⋯ menu
 - `010-events-group-limit` – add `ui.eventsGroupLimit` (0…10000, default 111) and split event groups into deterministic parts; zero disables splitting
+- `011-running-work-snapshot` – restore tool progress, pending tool finals, and running or deferred user `!`/`!!` commands when joining a session; capture a browser-safe history tail together with the stream watermark, replay events arriving during every refresh, and keep each shell command's last 1,000,000 characters until its result is recorded without duplicating identical commands
