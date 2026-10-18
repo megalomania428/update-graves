@@ -1,4 +1,4 @@
-<!-- cspell:ignore верхнеуровневый неизменённой немокированный рефакторинга эмитит -->
+<!-- cspell:ignore верхнеуровневый неизменённой немокированный рефакторинга эмитит trixie -->
 
 # OAuth fingerprint для compact и tree
 
@@ -17,21 +17,16 @@ Settings читаются одним доверенным snapshot на опер
 Own marker `aoauthFingerprintSummary: 1` признаётся только с двумя полностью валидными массивами строк. Гарантируются compact→compact, branch→branch и own branch→compact в потребляемом диапазоне, включая OAuth→non-OAuth→OAuth. На non-OAuth действует только metadata bridge: aliased read/edited Sets и элементы исходного tree array, без auth/settings/provider/fingerprint. Native результаты не усыновляются marker; original entry objects не меняются. Штатный metadata gap compact→tree намеренно сохранён на обоих типах providers: tree не наследует compaction.details. Чужие fromHook schemas не поддерживаются.
 Установка, reload, изменение настроек, ядра self/web и сервисов не выполнялись. Существующей регистрации entrypoint достаточно; новые factory handlers станут доступны после самостоятельного reload пользователем. Текущая активная сессия и историческая ошибка с версией `2.1.151` живым запросом не проверялись.
 
-## Адресный offline запуск
+## Offline запуск
 
-Из корня `opencode-ctrl`, без запуска Pi или сервисов:
+Из корня репозитория, без запуска Pi или сервисов:
 
 ```bash
-unshare -Urn env PI_OFFLINE=1 PI_TELEMETRY=0 node patches/_pi-dev/tests/run-aoauth-fingerprint-2_1_281.mjs
+harness/pi-dev/tests/run-tests.sh
 ```
 
-`unshare -Urn` обязателен; при его недоступности запуск завершается ошибкой, без сетевого fallback. `PI_OFFLINE` сам по себе не является сетевой изоляцией. Loader использует уже установленный Node 24 и jiti 2.7, отключает `fsCache`/`moduleCache`, проверяет реальное разрешение nested agent-core 0.85.1 из coding-agent, изолирует HOME/agent dir в `/tmp`, очищает окружение и запрещает немокированный fetch. Credentials, реальная история и settings не читаются. Fake settings – `SettingsManager.inMemory`; production factory проверяется через scoped mock `SettingsManager.create`. Настоящий move-reminders загружается из неизменённой временной копии с fake prompt config, без реальных config/инструкций.
+Скрипт запускает себя в одноразовом podman-контейнере `mirror.gcr.io/library/node:24-trixie-slim`, ставит в нём runtime и выполняет все `run-*.mjs` и `tsc --noEmit` по всем `tsconfig*.json` этого каталога и подкаталогов. Новый тест добавляется своими файлами, скрипт не меняется. Loader использует уже установленный Node 24 и jiti 2.7, отключает `fsCache`/`moduleCache`, проверяет реальное разрешение nested agent-core 0.85.1 из coding-agent, изолирует HOME/agent dir в `/tmp`, очищает окружение и запрещает немокированный fetch. Credentials, реальная история и settings не читаются. Fake settings – `SettingsManager.inMemory`; production factory проверяется через scoped mock `SettingsManager.create`. Настоящий move-reminders загружается из неизменённой временной копии с fake prompt config, без реальных config/инструкций.
 Префикс runtime задаётся `AOAUTH_RUNTIME_NODE_MODULES`, по умолчанию `/home/coder/.local/pi-dev/node_modules`. При другом префиксе одновременно требуется согласованная замена абсолютных paths/typeRoots адресного tsconfig, в том числе на nested agent-core, а не root 1.1.0. Генераторы штатные; временный SDK facade только для адресной инъекции некорректных generator results/подсчёта StreamFn. Native preparation для chain-тестов читается из installed dist, production использует только публичные root exports. Временные файлы удаляются, в репозитории cache/logs не создаются.
 Frozen fixture `fixtures/ordinary-281.json` снята с исходного entrypoint до рефакторинга: known hash `b83`, headers, billing, betas и Opus transformations. Session UUID нормализован, OS/arch зависят от платформы. Один test-файл проверяет ordinary regression, factory integration, реальные fake-fetch adapter bodies, retries/callback counts, abort/auth, metadata bridges, sentinel/error semantics и ограничения runner. Live LLM requests, полные suites и сборки не выполняются.
-Адресная типизация на установленном согласованном графе:
-
-```bash
-node /home/coder/.local/share/opencode/bin/node_modules/typescript/bin/tsc --noEmit -p patches/_pi-dev/tests/tsconfig.aoauth-fingerprint-2_1_281.json
-```
 
 Линт выполняется только для изменённого entrypoint, helper, test и loader, без `--fix` и без форматирования сторонних файлов.
