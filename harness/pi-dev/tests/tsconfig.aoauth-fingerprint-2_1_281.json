@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "typeRoots": ["/home/coder/.local/pi-dev/node_modules/@types"],
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+      ],
+      "@earendil-works/pi-ai": [
+        "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.d.ts"
+      ],
+      "@earendil-works/pi-ai/*": [
+        "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/*"
+      ],
+      "@earendil-works/pi-agent-core": [
+        "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "../extensions/aoauth-fingerprint-2_1_281.ts",
+    "../lib/aoauth-summary-2_1_281.ts",
+    "aoauth-fingerprint-2_1_281.test.ts"
+  ]
+}
