@@ -1,0 +1,24 @@
+root = true
+
+[*]
+charset = utf-8
+indent_size = 2
+indent_style = space
+end_of_line = lf
+max_line_length = 90
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.go]
+indent_size = unset
+indent_style = tab
+
+[{*.ts,*.md,*.json,*.mjs,.gitleaksignore}]
+max_line_length = unset
+
+[harness/pi-dev/reminders/**/*.md]
+end_of_line = unset
+indent_size = unset
+indent_style = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

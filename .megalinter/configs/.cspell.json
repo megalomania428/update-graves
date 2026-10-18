@@ -2,12 +2,16 @@
   "version": "0.2",
   "language": "en,ru",
   "words": [
+    "aoauth",
     "devskim",
+    "earendil",
+    "jmfederico",
     "lintignore",
     "lycheeignore",
     "opencode",
     "opeview",
     "pideview",
+    "prpgcessing",
     "pylintrc",
     "snomcy",
     "wripy",
@@ -48,6 +52,11 @@
     "networking-terms",
     "computing-acronyms"
   ],
-  "ignorePaths": ["**/go.mod", "**/go.sum", "sources/*/patches/**"],
+  "ignorePaths": [
+    "**/go.mod",
+    "**/go.sum",
+    "sources/*/patches/**",
+    "harness/pi-dev/reminders/**"
+  ],
   "enabled": true
 }

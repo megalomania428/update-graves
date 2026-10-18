@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Claude OAuth beta feature flag"
+paths = ['''harness/pi-dev/extensions/aoauth-fingerprint-.*\.ts''']
+regexes = ['''oauth-2025-04-20''']

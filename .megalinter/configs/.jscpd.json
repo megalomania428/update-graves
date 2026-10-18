@@ -6,6 +6,7 @@
     "megalinter/configs/*",
     ".megalinter/configs/*",
     "review-pi_dev/main.md",
-    "sources/*/patches/**"
+    "sources/*/patches/**",
+    "harness/pi-dev/**"
   ]
 }
