@@ -324,11 +324,11 @@ class Harness {
       modelRegistry: registry,
       isProjectTrusted: () => false,
       ui: strictFake<ExtensionContext['ui']>({
-        // Preserve synchronous notification errors and a possible void return.
+        // Preserve synchronous throws and returned promises behind the void API.
         notify: (message, type) => {
           assert.equal(type, 'error')
           this.notices.push(message)
-          return this.notify(message)
+          return this.notify(message) as ReturnType<ExtensionContext['ui']['notify']>
         }
       })
     })
@@ -1100,14 +1100,14 @@ export async function runTests (
     assert.equal(h.bodies[0].model, model.id)
     for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       const h = new Harness()
-      await assert.rejects(async () => h.stream()(model, { messages: [] }, {
+      await assert.rejects(async () => await h.stream()(model, { messages: [] }, {
         maxTokens: invalid, signal: h.controller.signal
       }))
       assert.equal(h.authCalls, 0)
       assert.equal(h.calls.length, 0)
     }
     const mismatch = new Harness()
-    await assert.rejects(async () => mismatch.stream()(model, { messages: [] }, {
+    await assert.rejects(async () => await mismatch.stream()(model, { messages: [] }, {
       maxTokens: 512, signal: new AbortController().signal
     }))
     assert.equal(mismatch.authCalls, 0)

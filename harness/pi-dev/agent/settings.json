@@ -5,6 +5,7 @@
   ],
   "extensions": [
     "/workspace/vscode/raven/update-graves/harness/pi-dev/extensions/change-title.ts",
+    "/workspace/vscode/raven/update-graves/harness/pi-dev/extensions/compact-context.ts",
     "/workspace/vscode/raven/update-graves/harness/pi-dev/extensions/anthropic-happier-title.ts",
     "/workspace/vscode/raven/update-graves/harness/pi-dev/extensions/move-reminders-2_1_281.ts",
     "/workspace/vscode/raven/update-graves/harness/pi-dev/extensions/aoauth-fingerprint-2_1_281.ts",

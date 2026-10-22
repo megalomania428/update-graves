@@ -191,7 +191,7 @@ export function createSummaryStream (
       throw new SummaryFailure('summary')
     }
     if (model.provider !== 'anthropic' ||
-      !(ctx.modelRegistry.isUsingOAuth(model) as boolean)) {
+      !ctx.modelRegistry.isUsingOAuth(model)) {
       throw new SummaryFailure('auth')
     }
     const provider = ctx.modelRegistry.getProvider(model.provider)
@@ -202,7 +202,7 @@ export function createSummaryStream (
       ctx.modelRegistry.getApiKeyAndHeaders(model), signal
     ).catch(() => { throw new SummaryFailure('auth') })
     signal.throwIfAborted()
-    if (auth.ok !== true || !(ctx.modelRegistry.isUsingOAuth(model) as boolean)) {
+    if (!auth.ok || !ctx.modelRegistry.isUsingOAuth(model)) {
       throw new SummaryFailure('auth')
     }
     const requestModel = auth.baseUrl !== undefined && auth.baseUrl !== ''
@@ -240,8 +240,8 @@ export function createSummaryStream (
     const response = await waitOrAbort(stream.result(), signal)
     signal.throwIfAborted()
     if (response.stopReason === 'aborted') throw new SummaryFailure('aborted')
-    if (response.stopReason === 'stop' && !(response.content.some((block) =>
-      block.type === 'text' && block.text.trim().length > 0) as boolean)) {
+    if (response.stopReason === 'stop' && !response.content.some((block) =>
+      block.type === 'text' && block.text.trim().length > 0)) {
       throw new SummaryFailure('summary')
     }
     return stream
@@ -301,7 +301,7 @@ export function registerSummaryHooks (
       target = oauth
       category = 'metadata'
       const hasOwn = event.branchEntries.some((entry) => ownDetails(entry) !== undefined)
-      if (!oauth && !(hasOwn as boolean)) return
+      if (!oauth && !hasOwn) return
       const preparedCopy = prepareSummaryCompaction(event)
       if (!oauth || model === undefined) {
         for (const path of preparedCopy.fileOps.read) {
@@ -323,7 +323,7 @@ export function registerSummaryHooks (
       )
       event.signal.throwIfAborted()
       const details = fileDetails(result.details)
-      if ((details == null) || (result.summary as string).trim() === '') {
+      if ((details == null) || result.summary.trim() === '') {
         throw new SummaryFailure('summary')
       }
       return {
@@ -340,7 +340,7 @@ export function registerSummaryHooks (
     }
   })
   pi.on('session_before_tree', async (event, ctx) => {
-    if (!(event.preparation.userWantsSummary as boolean) ||
+    if (!event.preparation.userWantsSummary ||
       event.preparation.entriesToSummarize.length === 0) return
     let category: SummaryCategory = 'auth'
     let target = false
@@ -366,9 +366,9 @@ export function registerSummaryHooks (
         ctx, event.signal, settings, fingerprint
       )
       let streamRequested = false
-      const streamFn: StreamFn = (model, context, options) => {
+      const streamFn: StreamFn = async (model, context, options) => {
         streamRequested = true
-        return providerStream(model, context, options)
+        return await providerStream(model, context, options)
       }
       const result = await generateBranchSummary(entries, {
         model,
@@ -380,7 +380,7 @@ export function registerSummaryHooks (
         retry: settings.getRetrySettings()
       })
       event.signal.throwIfAborted()
-      if ((result.aborted as boolean | undefined) === true) {
+      if (result.aborted === true) {
         throw new SummaryFailure('aborted')
       }
       const emptyNativeResult = !streamRequested && result.error === undefined &&
@@ -397,7 +397,7 @@ export function registerSummaryHooks (
         ? { readFiles: [], modifiedFiles: [] }
         : { readFiles: result.readFiles, modifiedFiles: result.modifiedFiles })
       if (result.error !== undefined || result.summary === undefined ||
-        (result.summary as string).trim() === '' || (details == null)) {
+        result.summary.trim() === '' || (details == null)) {
         throw new SummaryFailure('summary')
       }
       return {

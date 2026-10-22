@@ -118,7 +118,7 @@ function loadPromptEntry (
 ): string {
   if (typeof value === 'string' && value.length > 0) return value
   if (isPromptFileReference(value)) {
-    const path: string = (isAbsolute(value.$ref) as boolean)
+    const path: string = isAbsolute(value.$ref)
       ? value.$ref
       : resolve(configDir, value.$ref)
     try {
@@ -279,7 +279,7 @@ async function collectEnvironmentSnapshot (
     crs_is_repo: 'false',
     crs_platform: process.platform,
     crs_shell: shellName(),
-    crs_os_ver: `${osType() as string} ${release() as string}`,
+    crs_os_ver: `${osType()} ${release()}`,
     crs_branch: 'unknown',
     crs_master: 'unknown',
     crs_repo_user: 'unknown',
@@ -408,7 +408,7 @@ export default function prependClaudeCodePrompt (pi: ExtensionAPI): void {
       ...snapshot,
       crs_model_short: model?.id ?? 'unknown',
       crs_model_full: `${model !== undefined
-        ? ctx.modelRegistry.getProviderDisplayName(model.provider) as string
+        ? ctx.modelRegistry.getProviderDisplayName(model.provider)
         : 'unknown'}/${model?.id ?? 'unknown'}`,
       crs_model_name: model?.name ?? 'unknown'
     }
