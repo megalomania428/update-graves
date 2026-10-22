@@ -34,15 +34,19 @@
  const MAX_LIVE_HIGHLIGHT_TEXT_LENGTH = 65_536;
  
  @customElement("tool-execution-view")
-@@ -64,6 +84,7 @@
+@@ -64,6 +84,11 @@
    @state() private copied = false;
    @state() private copiedArgs = false;
    @state() private copiedContent = false;
++  @state() private copiedDetails = false;
++  @state() private copiedResult = false;
 +  @state() private wrapped: Record<ToolScroller, boolean> = { ...NO_WRAP };
++  private sectionCopyGeneration = 0;
++  private readonly sectionCopyTimers: Record<"details" | "result", number | undefined> = { details: undefined, result: undefined };
    private codeHighlightModule: typeof import("../codeHighlight") | undefined;
    private codeHighlightLoadStarted = false;
    private scrollerListenersAttached = false;
-@@ -72,6 +93,7 @@
+@@ -72,6 +97,7 @@
    private callIdentityStatus: ToolExecutionPart["status"] | undefined;
    private pendingInputScrollRestore: { scroller: "args" | "content"; scrollTop: number } | undefined;
    private sawLiveExecution = false;
@@ -50,7 +54,7 @@
    private readonly scrollerStates: Record<ToolScroller, ToolScrollerState> = {
      details: { pinned: true, initialized: false },
      args: { pinned: true, initialized: false },
-@@ -106,6 +128,7 @@
+@@ -106,6 +132,7 @@
        }
        if (state.pinned && (live || wasLive)) this.scrollScrollerToBottom(scroller, element);
      }
@@ -58,16 +62,23 @@
      this.restorePendingInputScroll();
      if (!live && wasLive) this.sawLiveExecution = false;
    }
-@@ -162,6 +185,8 @@
+@@ -162,6 +189,15 @@
      this.pendingInputScrollRestore = undefined;
      this.copiedArgs = false;
      this.copiedContent = false;
++    this.copiedDetails = false;
++    this.copiedResult = false;
++    this.sectionCopyGeneration += 1;
++    window.clearTimeout(this.sectionCopyTimers.details);
++    window.clearTimeout(this.sectionCopyTimers.result);
++    this.sectionCopyTimers.details = undefined;
++    this.sectionCopyTimers.result = undefined;
 +    this.wrapped = { ...NO_WRAP };
 +    this.pendingWrapScroll = undefined;
    }
  
    private readonly onScrollerScroll = (event: Event): void => {
-@@ -227,6 +252,47 @@
+@@ -227,6 +263,69 @@
      this.pendingInputScrollRestore = undefined;
    }
  
@@ -112,10 +123,32 @@
 +    return html`<button class=${className} type="button" title=${label} aria-label=${label} aria-pressed=${String(wrapped)} @click=${(event: Event) => { this.toggleWrap(scroller, event); }}>wrap</button>`;
 +  }
 +
++  private renderSectionCopy(section: "details" | "result", text: string) {
++    const copied = section === "details" ? this.copiedDetails : this.copiedResult;
++    const label = `${copied ? "Copied" : "Copy"} ${WRAP_LABELS[section]}`;
++    return html`<button class="section-copy" type="button" title=${label} aria-label=${label} @click=${(event: Event) => { void this.copySection(section, text, event); }}>${copied ? "copied" : "copy"}</button>`;
++  }
++
++  private async copySection(section: "details" | "result", text: string, event: Event): Promise<void> {
++    event.preventDefault();
++    event.stopPropagation();
++    const generation = this.sectionCopyGeneration;
++    const copied = await writeClipboardText(text);
++    if (!copied || generation !== this.sectionCopyGeneration) return;
++    if (section === "details") this.copiedDetails = true;
++    else this.copiedResult = true;
++    window.clearTimeout(this.sectionCopyTimers[section]);
++    this.sectionCopyTimers[section] = window.setTimeout(() => {
++      this.sectionCopyTimers[section] = undefined;
++      if (section === "details") this.copiedDetails = false;
++      else this.copiedResult = false;
++    }, 1200);
++  }
++
    override render() {
      const execution = this.execution;
      if (execution === undefined) return null;
-@@ -277,7 +343,7 @@
+@@ -277,7 +376,7 @@
      return html`
        <div class="detail-target">
          <span class="detail-label">${target.label}</span>
@@ -124,16 +157,16 @@
        </div>
      `;
    }
-@@ -286,7 +352,7 @@
+@@ -286,7 +385,7 @@
      if (target === undefined) return null;
      return html`
        <details class="text-body" ?open=${this.detailsOpen}>
 -        <summary>Details</summary>
-+        <summary>Details ${this.renderWrapToggle("details")}</summary>
++        <summary>Details <span class="summary-actions">${this.renderWrapToggle("details")}${this.renderSectionCopy("details", target.text)}</span></summary>
          ${this.renderExpandedTarget(target)}
        </details>
      `;
-@@ -375,9 +441,10 @@
+@@ -375,9 +474,10 @@
          </summary>
          <div class="diff-toolbar">
            <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : fullLabel}</span>
@@ -145,18 +178,18 @@
          ${truncated ? html`
            <button class="show-more" type="button" @click=${onShowAll}>
              Show all ${String(lines.length)} lines
-@@ -442,8 +509,8 @@
+@@ -442,8 +542,8 @@
      if (text === undefined || text === "") return null;
      return html`
        <details class="result-body" ?open=${this.resultOpen || isError}>
 -        <summary>Result</summary>
 -        <div class="detail-result"><pre>${text}</pre></div>
-+        <summary>Result ${this.renderWrapToggle("result")}</summary>
++        <summary>Result <span class="summary-actions">${this.renderWrapToggle("result")}${this.renderSectionCopy("result", text)}</span></summary>
 +        <div class="detail-result"><pre class=${this.wrapped.result ? "wrap" : ""}>${text}</pre></div>
        </details>
      `;
    }
-@@ -460,9 +527,10 @@
+@@ -460,9 +560,10 @@
          </summary>
          <div class="diff-toolbar">
            <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : "Full diff"}</span>
@@ -168,7 +201,7 @@
          ${truncated ? html`
            <button class="show-more" type="button" @click=${() => { this.showFullDiff = true; }}>
              Show all ${String(lines.length)} diff lines
-@@ -542,6 +610,15 @@
+@@ -542,6 +643,16 @@
      .tool-card .text-body .detail-target-value { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
      .tool-card .result-body .detail-result pre { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
      .tool-card .diff { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
@@ -178,13 +211,14 @@
 +    .input-card-pre.wrap .line-content { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 +    .diff.wrap span { white-space: pre-wrap; overflow-wrap: anywhere; }
 +    .diff-toolbar .toolbar-wrap { margin-left: auto; }
-+    .wrap-toggle { float: right; box-sizing: border-box; height: 14px; margin-left: 8px; padding: 0 6px; color: var(--pi-muted); font: 11px/12px system-ui, sans-serif; }
++    .summary-actions { float: right; display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; }
++    .wrap-toggle, .section-copy { box-sizing: border-box; height: 14px; padding: 0 6px; color: var(--pi-muted); font: 11px/12px system-ui, sans-serif; }
 +    .wrap-toggle[aria-pressed="true"], .toolbar-wrap[aria-pressed="true"] { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-accent) 15%, var(--pi-surface)); color: var(--pi-accent); }
-+    details:not([open]) > summary > .wrap-toggle { display: none; }
++    details:not([open]) > summary > .summary-actions { display: none; }
    `;
  }
  
-@@ -626,3 +703,98 @@
+@@ -626,3 +737,98 @@
    const property = getProperty(value, key);
    return typeof property === "string" ? property : undefined;
  }
