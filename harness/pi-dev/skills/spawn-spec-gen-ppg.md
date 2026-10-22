@@ -1,7 +1,7 @@
 ---
 # cspell:ignore deepseek mktemp qwen subsession subsessions toplevel ггггммдд доработчик коммита коммитер коммитит коммитить коммиты криптоподписи лэптопе неотслеживаемые подсессии подсессия ревьюер ревьюера ревьюеров репо скилла спека спеке
-name: spawn-spec-ppg
-description: Доработка по циклу «вопросы → спека → ревью спеки → выполнение → проверка → финальное ревью» с делегированием моделям по ролям. Запускать только явно через `/skill:spawn-spec-pipeline`.
+name: spawn-spec-gen-ppg
+description: Доработка по циклу «вопросы → спека → ревью спеки → выполнение → проверка → финальное ревью» с делегированием моделям по ролям. Запускать только явно через `/skill:spawn-spec-gen-ppg`.
 compatibility: Требует сессию PI WEB с включёнными инструментами subsessions (spawn_subsession).
 disable-model-invocation: true
 ---

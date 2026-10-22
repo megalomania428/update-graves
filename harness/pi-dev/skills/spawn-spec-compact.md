@@ -1,7 +1,7 @@
 ---
 # cspell:ignore mktemp subsession subsessions toplevel ггггммдд доработчик коммита коммитер коммитит коммитить коммиты криптоподписи лэптопе неотслеживаемые подсессии ревьюер ревьюера ревьюеров репо скилла спека спеке
-name: spawn-spec-pipeline
-description: Доработка по циклу «вопросы → спека → ревью спеки → выполнение → проверка → финальное ревью» с делегированием моделям по ролям. Запускать только явно через `/skill:spawn-spec-pipeline`.
+name: spawn-spec-compact
+description: Доработка по циклу «вопросы → спека → ревью спеки → выполнение → проверка → финальное ревью» с делегированием моделям по ролям. Запускать только явно через `/skill:spawn-spec-compact`.
 compatibility: Требует сессию PI WEB с включёнными инструментами subsessions (spawn_subsession).
 disable-model-invocation: true
 ---
