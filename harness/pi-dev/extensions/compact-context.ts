@@ -1,3 +1,4 @@
+// cspell:ignore subsessions
 import { Type } from 'typebox'
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 
@@ -14,6 +15,11 @@ const CompactContextParams = Type.Object(
     })),
     next: Type.Optional(Type.String({
       description: 'Concrete note on what to do right after compaction'
+    })),
+    minContextTokens: Type.Optional(Type.Integer({
+      minimum: 1,
+      description: 'Compact only if the current context has at least this many tokens, ' +
+        'otherwise skip without ending the turn'
     }))
   },
   { additionalProperties: true }
@@ -56,6 +62,13 @@ export function continuationText (
     'again unless explicitly instructed.')
   if (next !== undefined) lines.push('', 'Next step noted before compaction:', next)
   return lines.join('\n')
+}
+
+export function skippedText (tokens: number | null, minContextTokens: number): string {
+  const reason = tokens === null
+    ? 'the context size is unknown'
+    : `the context has ${tokens} tokens, below minContextTokens ${minContextTokens}`
+  return `Context compaction skipped: ${reason}. Continue the task as planned.`
 }
 
 export function notStartedText (reason: string): string {
@@ -237,10 +250,36 @@ export default function compactContext (pi: ExtensionAPI): void {
       'after the call, compaction starts once the turn has finished, and then a ' +
       'continuation message arrives and work resumes. Pass instructions to focus the ' +
       'summary and next to note what to do right after compaction, for example ' +
-      're-read the skill file and the run journal.',
+      're-read the skill file and the run journal. Pass minContextTokens to compact ' +
+      'only when the current context has at least that many tokens: below it, or ' +
+      'when the context size is unknown, the call is skipped and returns at once, ' +
+      'the turn continues, and the next planned action must follow, for example ' +
+      'yield_to_subsessions.',
     parameters: CompactContextParams,
     async execute (_toolCallId, params, signal, _onUpdate, ctx) {
       if (state !== 'idle') throw new Error('Context compaction is already in progress')
+      const { minContextTokens } = params
+      if (minContextTokens !== undefined) {
+        const usage = ctx.getContextUsage()
+        const tokens = usage?.tokens ?? null
+        if (tokens === null || tokens < minContextTokens) {
+          const skipped = {
+            success: true as const,
+            skipped: true as const,
+            reason: tokens === null ? 'unknown' as const : 'below-threshold' as const,
+            tokens,
+            minContextTokens,
+            ...(usage !== undefined
+              ? { contextWindow: usage.contextWindow, percent: usage.percent }
+              : {}),
+            message: skippedText(tokens, minContextTokens)
+          }
+          return {
+            content: [{ type: 'text', text: JSON.stringify(skipped) }],
+            details: skipped
+          }
+        }
+      }
       if (ctx.hasPendingMessages() || queuedNotice !== undefined) {
         throw new Error('Queued messages are pending: handle them first, then call ' +
           'compact_context again')

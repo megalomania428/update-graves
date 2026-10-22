@@ -1,12 +1,13 @@
+// cspell:ignore subsessions
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type {
-  AgentToolResult, CompactOptions, CompactionResult, ExtensionAPI, ExtensionContext,
-  ExtensionUIContext, SessionEntry, SessionMessageEntry, ToolDefinition
+  AgentToolResult, CompactOptions, CompactionResult, ContextUsage, ExtensionAPI,
+  ExtensionContext, ExtensionUIContext, SessionEntry, SessionMessageEntry, ToolDefinition
 } from '@earendil-works/pi-coding-agent'
 import compactContext, {
   ALREADY_COMPACTED, COMPACT_CONTEXT_MESSAGE_TYPE, COMPACTION_CANCELLED,
-  SINGLE_CALL_REASON, autoCompactedText, continuationText, notStartedText
+  SINGLE_CALL_REASON, autoCompactedText, continuationText, notStartedText, skippedText
 } from '../extensions/compact-context'
 
 type Handler = (...args: unknown[]) => unknown
@@ -16,6 +17,7 @@ type AssistantMessage = Extract<SessionMessageEntry['message'], { role: 'assista
 interface Params {
   instructions?: string
   next?: string
+  minContextTokens?: number
 }
 // Partial fakes are typed at construction and fail on every unexpected API access.
 function strictFake<T extends object> (partial: Partial<T>): T {
@@ -56,6 +58,10 @@ const HOOKS = [
   'session_compact_failed', 'agent_settled'
 ]
 const FOLLOW_UP = { triggerTurn: true, deliverAs: 'followUp' }
+const WINDOW = 200000
+function usageOf (tokens: number): ContextUsage {
+  return { tokens, contextWindow: WINDOW, percent: tokens / WINDOW * 100 }
+}
 class Harness {
   readonly hooks = new Map<string, Handler[]>()
   readonly tools: ToolDefinition[] = []
@@ -68,6 +74,8 @@ class Harness {
   idle = true
   pending = false
   signal: AbortSignal | undefined
+  // Without it the strict ctx has no getContextUsage and fails on access.
+  usage: (() => ContextUsage | undefined) | undefined
   readonly pi: ExtensionAPI
   constructor () {
     const on = (name: string, handler: Handler): void => {
@@ -108,7 +116,8 @@ class Harness {
       isIdle: () => this.idle,
       hasPendingMessages: () => this.pending,
       signal: this.signal,
-      sessionManager: strictFake<SessionManager>({ getBranch })
+      sessionManager: strictFake<SessionManager>({ getBranch }),
+      ...(this.usage !== undefined ? { getContextUsage: this.usage } : {})
     })
   }
 
@@ -150,6 +159,9 @@ export async function runTests (): Promise<void> {
     assert.match(h.tool.description, /never call it on your own initiative/)
     assert.match(h.tool.description, /only tool call in the message/)
     assert.match(h.tool.description, /re-read the skill file and the run journal/)
+    assert.match(h.tool.description, /minContextTokens/)
+    assert.match(h.tool.description, /the turn continues/)
+    assert.match(h.tool.description, /yield_to_subsessions/)
     assert.deepEqual([...h.hooks.keys()], HOOKS)
     assert.equal(COMPACT_CONTEXT_MESSAGE_TYPE, 'compact-context')
     assert.equal(COMPACTION_CANCELLED, 'Compaction cancelled')
@@ -158,7 +170,11 @@ export async function runTests (): Promise<void> {
       'compact_context must be the only tool call in the message')
     const properties = (h.tool.parameters as { properties: Record<string, unknown> })
       .properties
-    assert.deepEqual(Object.keys(properties).sort(), ['instructions', 'next'])
+    assert.deepEqual(Object.keys(properties).sort(),
+      ['instructions', 'minContextTokens', 'next'])
+    const min = properties.minContextTokens as { type: string, minimum: number }
+    assert.equal(min.type, 'integer')
+    assert.equal(min.minimum, 1)
   })
   await test('defers compaction to agent_settled and resumes once on success',
     async () => {
@@ -217,6 +233,130 @@ export async function runTests (): Promise<void> {
     await h.request()
     assert.equal(h.compacts.length, 1)
   })
+  await test('skips compaction below minContextTokens without ending the turn',
+    async () => {
+      const h = new Harness()
+      h.usage = () => usageOf(999)
+      const result = await h.execute({ minContextTokens: 1000 })
+      const details = {
+        success: true,
+        skipped: true,
+        reason: 'below-threshold',
+        tokens: 999,
+        minContextTokens: 1000,
+        contextWindow: WINDOW,
+        percent: 999 / WINDOW * 100,
+        message: skippedText(999, 1000)
+      }
+      assert.deepEqual(result.details, details)
+      assert.deepEqual(JSON.parse(textOf(result)), details)
+      assert.equal(skippedText(999, 1000), 'Context compaction skipped: the context ' +
+        'has 999 tokens, below minContextTokens 1000. Continue the task as planned.')
+      assert.equal(result.terminate, undefined)
+      h.emit('turn_start', { turnIndex: 1, timestamp: 0 })
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 0)
+      assert.equal(h.sent.length, 0)
+    })
+  await test('skips compaction when the context size is unknown', async () => {
+    const message = skippedText(null, 1)
+    assert.equal(message, 'Context compaction skipped: the context size is unknown. ' +
+      'Continue the task as planned.')
+    const h = new Harness()
+    h.usage = () => ({ tokens: null, contextWindow: WINDOW, percent: null })
+    const known = await h.execute({ minContextTokens: 1 })
+    const details = {
+      success: true,
+      skipped: true,
+      reason: 'unknown',
+      tokens: null,
+      minContextTokens: 1,
+      contextWindow: WINDOW,
+      percent: null,
+      message
+    }
+    assert.deepEqual(known.details, details)
+    assert.deepEqual(JSON.parse(textOf(known)), details)
+    assert.equal(known.terminate, undefined)
+    h.usage = () => undefined
+    const missing = await h.execute({ minContextTokens: 1 })
+    const unsized = {
+      success: true,
+      skipped: true,
+      reason: 'unknown',
+      tokens: null,
+      minContextTokens: 1,
+      message
+    }
+    assert.deepEqual(missing.details, unsized)
+    assert.deepEqual(JSON.parse(textOf(missing)), unsized)
+    assert.equal(missing.terminate, undefined)
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 0)
+    assert.equal(h.sent.length, 0)
+  })
+  await test('requests compaction when the context reaches minContextTokens',
+    async () => {
+      const h = new Harness()
+      let reads = 0
+      h.usage = () => {
+        reads += 1
+        return usageOf(1000)
+      }
+      const result = await h.execute({ minContextTokens: 1000 })
+      assert.equal(reads, 1)
+      assert.equal(result.terminate, true)
+      assert.deepEqual(JSON.parse(textOf(result)), result.details)
+      assert.equal((result.details as { skipped?: boolean }).skipped, undefined)
+      assert.match(textOf(result), /after this turn ends/)
+      assert.equal(h.compacts.length, 0)
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 1)
+      h.options().onComplete?.(compaction)
+      assert.equal(h.sent.length, 1)
+      assert.deepEqual(h.sent[0][1], FOLLOW_UP)
+    })
+  await test('does not read the context size without minContextTokens', async () => {
+    const h = new Harness()
+    assert.throws(() => h.context().getContextUsage(),
+      /Unexpected fake API: getContextUsage/)
+    const result = await h.execute({})
+    assert.equal(result.terminate, true)
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 1)
+  })
+  await test('accepts an ordinary call after a skipped one', async () => {
+    const h = new Harness()
+    h.usage = () => usageOf(10)
+    const skipped = await h.execute({ minContextTokens: 1000 })
+    assert.equal((skipped.details as { skipped: boolean }).skipped, true)
+    const result = await h.execute({ next: 'step 10' })
+    assert.equal(result.terminate, true)
+    await assert.rejects(h.execute({ minContextTokens: 1000 }), /already in progress/)
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 1)
+    h.options().onComplete?.(compaction)
+    assert.equal(h.sent[0][0].content, continuationText('step 10'))
+  })
+  await test('skips below minContextTokens even while messages are queued',
+    async () => {
+      const h = new Harness()
+      h.usage = () => usageOf(10)
+      h.pending = true
+      const pending = await h.execute({ minContextTokens: 1000 })
+      assert.equal((pending.details as { skipped: boolean }).skipped, true)
+      assert.equal(pending.terminate, undefined)
+      await assert.rejects(h.execute({ minContextTokens: 10 }),
+        /Queued messages are pending/)
+      h.pending = false
+      await h.execute({})
+      h.emit('turn_start', { turnIndex: 1, timestamp: 0 })
+      const notice = await h.execute({ minContextTokens: 1000 })
+      assert.equal((notice.details as { skipped: boolean }).skipped, true)
+      await assert.rejects(h.execute({ minContextTokens: 10 }),
+        /Queued messages are pending/)
+      assert.equal(h.compacts.length, 0)
+    })
   await test('blocks compact_context unless it is the only tool call', () => {
     const h = new Harness()
     const call = { toolName: 'compact_context', toolCallId: 'call-1', input: {} }
@@ -224,6 +364,8 @@ export async function runTests (): Promise<void> {
     h.branch = [assistantEntry('call-1', 'call-2')]
     const blocked = { block: true, reason: SINGLE_CALL_REASON }
     assert.deepEqual(h.emit('tool_call', call), [blocked])
+    const skippable = { ...call, input: { minContextTokens: 1000 } }
+    assert.deepEqual(h.emit('tool_call', skippable), [blocked])
     assert.deepEqual(h.emit('tool_call', { ...call, toolName: 'read' }), [undefined])
     h.branch = [assistantEntry('call-1'), assistantEntry('call-3')]
     assert.deepEqual(h.emit('tool_call', call), [undefined])
