@@ -3,12 +3,12 @@
 <!-- markdownlint-disable MD013 -->
 <!-- cspell:ignore enum jmfederico patchset subkey subsession toolArgs toolContent -->
 
-Patched build of [pi-web](https://github.com/jmfederico/pi-web), distributed as the `@raven428/pi-web` npm tarball in [GitHub Releases](https://github.com/megalomania428/update-graves/releases). The upstream ref and the patch number live in `build.yaml`: `ref: v1.202609.0` with `patch: 5` sets the package version to `1.202609.0-p5`. Pull requests and manual builds use `1.202609.0-p5.dev.<run>.<attempt>` and the shared `v999` draft.
+Patched build of [pi-web](https://github.com/jmfederico/pi-web), distributed as the `@raven428/pi-web` npm tarball in [GitHub Releases](https://github.com/megalomania428/update-graves/releases). The upstream ref and the patch number live in `build.yaml`: `ref: v1.202609.0` with `patch: 6` sets the package version to `1.202609.0-p6`. Pull requests and manual builds use `1.202609.0-p6.dev.<run>.<attempt>` and the shared `v999` draft.
 
 Installation: `npm i -g <asset .tgz URL>`. For example:
 
 ```bash
-npm i -g 'https://github.com/megalomania428/update-graves/releases/download/pi-web-v1.202609.0p5/pi-web-1_202609_0-p5.tgz'
+npm i -g 'https://github.com/megalomania428/update-graves/releases/download/pi-web-v1.202609.0p6/pi-web-1_202609_0-p6.tgz'
 ```
 
 The package requires Node.js >=22.19.0 and is not a standalone executable. Native dependencies such as `node-pty` can require build tools on the installation machine.
@@ -52,3 +52,4 @@ The package requires Node.js >=22.19.0 and is not a standalone executable. Nativ
 - `009-chat-scroll-buttons` – add buttons to scroll the chat transcript to the beginning or latest message; remove the workspaces section from the navigation panel: selecting a project always opens its default (main) workspace, and the workspace trust toggle and details move to the project ⋯ menu
 - `010-events-group-limit` – add `ui.eventsGroupLimit` (0…10000, default 111) and split event groups into deterministic parts; zero disables splitting
 - `011-running-work-snapshot` – restore tool progress, pending tool finals, and running or deferred user `!`/`!!` commands when joining a session; capture a browser-safe history tail together with the stream watermark, replay events arriving during every refresh, and keep each shell command's last 1,000,000 characters until its result is recorded without duplicating identical commands
+- `012-card-wrap-toggle` – add a `wrap` button to the `Details` and `Result` sections of tool cards, shown at the right of the section header while the section is open; both sections now start unwrapped with horizontal scrolling (`Details` used to wrap), each button independently switches its section to wrapping long lines anywhere and back without toggling the section, keeps a bottom-pinned area at the bottom and otherwise keeps the first visible line in place, resets when the card switches to another call, and is not persisted; the half-window height caps stay the same
