@@ -1,10 +1,11 @@
 --- a/src/client/src/components/ToolExecutionView.ts
 +++ b/src/client/src/components/ToolExecutionView.ts
-@@ -22,6 +22,11 @@
+@@ -22,6 +22,12 @@
    initialized: boolean;
  }
  
 +interface WrapAnchor {
++  line: boolean;
 +  offset: number;
 +  distance: number;
 +}
@@ -12,24 +13,44 @@
  interface InputCardOptions {
    scroller: "args" | "content";
    label: string;
-@@ -64,6 +69,8 @@
+@@ -48,6 +54,20 @@
+   diff: ".diff-details .diff",
+   result: ".result-body .detail-result pre",
+ };
++const WRAP_LABELS: Record<ToolScroller, string> = {
++  details: "Details",
++  args: "Arguments",
++  content: "Written content",
++  diff: "Diff",
++  result: "Result",
++};
++const NO_WRAP: Record<ToolScroller, boolean> = {
++  details: false,
++  args: false,
++  content: false,
++  diff: false,
++  result: false,
++};
+ const MAX_LIVE_HIGHLIGHT_TEXT_LENGTH = 65_536;
+ 
+ @customElement("tool-execution-view")
+@@ -64,6 +84,7 @@
    @state() private copied = false;
    @state() private copiedArgs = false;
    @state() private copiedContent = false;
-+  @state() private wrapDetails = false;
-+  @state() private wrapResult = false;
++  @state() private wrapped: Record<ToolScroller, boolean> = { ...NO_WRAP };
    private codeHighlightModule: typeof import("../codeHighlight") | undefined;
    private codeHighlightLoadStarted = false;
    private scrollerListenersAttached = false;
-@@ -72,6 +79,7 @@
+@@ -72,6 +93,7 @@
    private callIdentityStatus: ToolExecutionPart["status"] | undefined;
    private pendingInputScrollRestore: { scroller: "args" | "content"; scrollTop: number } | undefined;
    private sawLiveExecution = false;
-+  private pendingWrapScroll: { scroller: "details" | "result"; pinned: boolean; ratio: number; anchor: WrapAnchor | undefined } | undefined;
++  private pendingWrapScroll: { scroller: ToolScroller; pinned: boolean; ratio: number; anchor: WrapAnchor | undefined } | undefined;
    private readonly scrollerStates: Record<ToolScroller, ToolScrollerState> = {
      details: { pinned: true, initialized: false },
      args: { pinned: true, initialized: false },
-@@ -106,6 +114,7 @@
+@@ -106,6 +128,7 @@
        }
        if (state.pinned && (live || wasLive)) this.scrollScrollerToBottom(scroller, element);
      }
@@ -37,21 +58,20 @@
      this.restorePendingInputScroll();
      if (!live && wasLive) this.sawLiveExecution = false;
    }
-@@ -162,6 +171,9 @@
+@@ -162,6 +185,8 @@
      this.pendingInputScrollRestore = undefined;
      this.copiedArgs = false;
      this.copiedContent = false;
-+    this.wrapDetails = false;
-+    this.wrapResult = false;
++    this.wrapped = { ...NO_WRAP };
 +    this.pendingWrapScroll = undefined;
    }
  
    private readonly onScrollerScroll = (event: Event): void => {
-@@ -227,6 +239,47 @@
+@@ -227,6 +252,47 @@
      this.pendingInputScrollRestore = undefined;
    }
  
-+  private toggleWrap(scroller: "details" | "result", event: Event): void {
++  private toggleWrap(scroller: ToolScroller, event: Event): void {
 +    event.preventDefault();
 +    event.stopPropagation();
 +    const element = this.findScroller(scroller);
@@ -63,8 +83,7 @@
 +      ratio: element === undefined || range <= 0 ? 0 : element.scrollTop / range,
 +      anchor: element === undefined || range <= 0 ? undefined : findWrapAnchor(element),
 +    };
-+    if (scroller === "details") this.wrapDetails = !this.wrapDetails;
-+    else this.wrapResult = !this.wrapResult;
++    this.wrapped = { ...this.wrapped, [scroller]: !this.wrapped[scroller] };
 +  }
 +
 +  private restoreWrapScroll(): void {
@@ -78,7 +97,7 @@
 +      return;
 +    }
 +    const anchor = pending.anchor;
-+    const anchorTop = anchor === undefined ? undefined : measureTextTop(element, anchor.offset);
++    const anchorTop = anchor === undefined ? undefined : measureAnchorTop(element, anchor);
 +    if (anchor !== undefined && anchorTop !== undefined) {
 +      element.scrollTop += anchorTop - element.getBoundingClientRect().top - anchor.distance;
 +      return;
@@ -86,25 +105,26 @@
 +    element.scrollTop = pending.ratio * Math.max(0, element.scrollHeight - element.clientHeight);
 +  }
 +
-+  private renderWrapToggle(scroller: "details" | "result") {
-+    const wrapped = scroller === "details" ? this.wrapDetails : this.wrapResult;
-+    const label = scroller === "details" ? "Wrap long lines in Details" : "Wrap long lines in Result";
-+    return html`<button class="wrap-toggle" type="button" title=${label} aria-label=${label} aria-pressed=${String(wrapped)} @click=${(event: Event) => { this.toggleWrap(scroller, event); }}>wrap</button>`;
++  private renderWrapToggle(scroller: ToolScroller) {
++    const wrapped = this.wrapped[scroller];
++    const label = `Wrap long lines in ${WRAP_LABELS[scroller]}`;
++    const className = scroller === "details" || scroller === "result" ? "wrap-toggle" : "toolbar-wrap";
++    return html`<button class=${className} type="button" title=${label} aria-label=${label} aria-pressed=${String(wrapped)} @click=${(event: Event) => { this.toggleWrap(scroller, event); }}>wrap</button>`;
 +  }
 +
    override render() {
      const execution = this.execution;
      if (execution === undefined) return null;
-@@ -277,7 +330,7 @@
+@@ -277,7 +343,7 @@
      return html`
        <div class="detail-target">
          <span class="detail-label">${target.label}</span>
 -        <pre class="detail-target-value">${target.text}</pre>
-+        <pre class=${this.wrapDetails ? "detail-target-value wrap" : "detail-target-value"}>${target.text}</pre>
++        <pre class=${this.wrapped.details ? "detail-target-value wrap" : "detail-target-value"}>${target.text}</pre>
        </div>
      `;
    }
-@@ -286,7 +339,7 @@
+@@ -286,7 +352,7 @@
      if (target === undefined) return null;
      return html`
        <details class="text-body" ?open=${this.detailsOpen}>
@@ -113,30 +133,58 @@
          ${this.renderExpandedTarget(target)}
        </details>
      `;
-@@ -442,8 +495,8 @@
+@@ -375,9 +441,10 @@
+         </summary>
+         <div class="diff-toolbar">
+           <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : fullLabel}</span>
++          ${this.renderWrapToggle(scroller)}
+           <button type="button" @click=${() => { void onCopy(copyText); }}>${copied ? "Copied" : copyLabel}</button>
+         </div>
+-        <pre class="input-card-pre" data-scroller=${scroller} aria-label=${label}>${this.renderCodeLines(visibleLines, language, numbered, live, text.length)}</pre>
++        <pre class=${this.wrapped[scroller] ? "input-card-pre wrap" : "input-card-pre"} data-scroller=${scroller} aria-label=${label}>${this.renderCodeLines(visibleLines, language, numbered, live, text.length)}</pre>
+         ${truncated ? html`
+           <button class="show-more" type="button" @click=${onShowAll}>
+             Show all ${String(lines.length)} lines
+@@ -442,8 +509,8 @@
      if (text === undefined || text === "") return null;
      return html`
        <details class="result-body" ?open=${this.resultOpen || isError}>
 -        <summary>Result</summary>
 -        <div class="detail-result"><pre>${text}</pre></div>
 +        <summary>Result ${this.renderWrapToggle("result")}</summary>
-+        <div class="detail-result"><pre class=${this.wrapResult ? "wrap" : ""}>${text}</pre></div>
++        <div class="detail-result"><pre class=${this.wrapped.result ? "wrap" : ""}>${text}</pre></div>
        </details>
      `;
    }
-@@ -542,6 +595,11 @@
+@@ -460,9 +527,10 @@
+         </summary>
+         <div class="diff-toolbar">
+           <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : "Full diff"}</span>
++          ${this.renderWrapToggle("diff")}
+           <button type="button" @click=${() => { void this.copyDiff(diff); }}>${this.copied ? "Copied" : "Copy diff"}</button>
+         </div>
+-        <pre class="diff" aria-label=${label}><code class="diff-content">${visibleLines.map((line) => html`<span class=${diffLineClass(line)}>${line}</span>`)}</code></pre>
++        <pre class=${this.wrapped.diff ? "diff wrap" : "diff"} aria-label=${label}><code class="diff-content">${visibleLines.map((line) => html`<span class=${diffLineClass(line)}>${line}</span>`)}</code></pre>
+         ${truncated ? html`
+           <button class="show-more" type="button" @click=${() => { this.showFullDiff = true; }}>
+             Show all ${String(lines.length)} diff lines
+@@ -542,6 +610,15 @@
      .tool-card .text-body .detail-target-value { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
      .tool-card .result-body .detail-result pre { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
      .tool-card .diff { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
 +    .text-body .detail-target-value { box-sizing: border-box; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; white-space: pre; overflow-wrap: normal; }
 +    .text-body .detail-target-value.wrap, .result-body .detail-result pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
++    .input-card-pre.wrap .input-code, .diff.wrap .diff-content { width: auto; }
++    .input-card-pre.wrap .line-content { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
++    .diff.wrap span { white-space: pre-wrap; overflow-wrap: anywhere; }
++    .diff-toolbar .toolbar-wrap { margin-left: auto; }
 +    .wrap-toggle { float: right; box-sizing: border-box; height: 14px; margin-left: 8px; padding: 0 6px; color: var(--pi-muted); font: 11px/12px system-ui, sans-serif; }
-+    .wrap-toggle[aria-pressed="true"] { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-accent) 15%, var(--pi-surface)); color: var(--pi-accent); }
++    .wrap-toggle[aria-pressed="true"], .toolbar-wrap[aria-pressed="true"] { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-accent) 15%, var(--pi-surface)); color: var(--pi-accent); }
 +    details:not([open]) > summary > .wrap-toggle { display: none; }
    `;
  }
  
-@@ -626,3 +684,47 @@
+@@ -626,3 +703,98 @@
    const property = getProperty(value, key);
    return typeof property === "string" ? property : undefined;
  }
@@ -157,7 +205,25 @@
 +  return range.getClientRects()[0]?.top;
 +}
 +
++function measureTextBottom(element: HTMLElement, offset: number): number | undefined {
++  const node = findTextNode(element);
++  if (node === undefined || offset >= node.length) return undefined;
++  const end = node.data.indexOf("\n", offset);
++  const range = document.createRange();
++  range.setStart(node, offset);
++  range.setEnd(node, end === -1 ? node.length : end);
++  return range.getBoundingClientRect().bottom;
++}
++
++function minVisiblePart(element: HTMLElement): number {
++  const style = getComputedStyle(element);
++  const lineHeight = Number.parseFloat(style.lineHeight);
++  return (Number.isNaN(lineHeight) ? Number.parseFloat(style.fontSize) * 1.2 : lineHeight) / 2;
++}
++
 +function findWrapAnchor(element: HTMLElement): WrapAnchor | undefined {
++  const lines = wrapLines(element);
++  if (lines.length > 0) return findLineAnchor(element, lines);
 +  const node = findTextNode(element);
 +  if (node === undefined) return undefined;
 +  const text = node.data;
@@ -178,9 +244,42 @@
 +    if (lineTop === undefined || lineTop >= top - 0.5) high = middle;
 +    else low = middle + 1;
 +  }
++  const previous = starts[low - 1];
++  const previousBottom = previous === undefined ? undefined : measureTextBottom(element, previous);
++  if (previous !== undefined && previousBottom !== undefined && previousBottom >= top + element.clientTop + minVisiblePart(element)) {
++    return { line: false, offset: previous, distance: element.clientTop };
++  }
 +  const offset = starts[low];
 +  if (offset === undefined) return undefined;
 +  const lineTop = measureTextTop(element, offset);
 +  if (lineTop === undefined || lineTop - top >= element.clientHeight) return undefined;
-+  return { offset, distance: lineTop - top };
++  return { line: false, offset, distance: lineTop - top };
++}
++
++function wrapLines(element: HTMLElement): HTMLElement[] {
++  return Array.from(element.querySelectorAll<HTMLElement>(":scope > code > span"));
++}
++
++function measureAnchorTop(element: HTMLElement, anchor: WrapAnchor): number | undefined {
++  if (!anchor.line) return measureTextTop(element, anchor.offset);
++  return wrapLines(element)[anchor.offset]?.getBoundingClientRect().top;
++}
++
++function findLineAnchor(element: HTMLElement, lines: HTMLElement[]): WrapAnchor | undefined {
++  const top = element.getBoundingClientRect().top;
++  let low = 0;
++  let high = lines.length;
++  while (low < high) {
++    const middle = Math.floor((low + high) / 2);
++    const lineTop = lines[middle]?.getBoundingClientRect().top;
++    if (lineTop === undefined || lineTop >= top - 0.5) high = middle;
++    else low = middle + 1;
++  }
++  const previous = lines[low - 1];
++  if (previous !== undefined && previous.getBoundingClientRect().bottom >= top + element.clientTop + minVisiblePart(element)) {
++    return { line: true, offset: low - 1, distance: element.clientTop };
++  }
++  const lineTop = lines[low]?.getBoundingClientRect().top;
++  if (lineTop === undefined || lineTop - top >= element.clientHeight) return undefined;
++  return { line: true, offset: low, distance: lineTop - top };
 +}
