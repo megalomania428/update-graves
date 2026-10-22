@@ -84,19 +84,19 @@ A pushed `<name>-<label>` tag releases only that application, with one matrix jo
 
 When a pull request changes an application's upstream ref in `build.yaml` or its patches, update that application's `TAG4REL` below in the same pull request.
 
-`opencode`:
+- `opencode`:
 
-```bash
-git checkout master && git pull; TAG4REL='opencode-v1.15.13p0'
-git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
-```
+  ```bash
+  git checkout master && git pull; TAG4REL='opencode-v1.15.13p0'
+  git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
+  ```
 
-`pi-web`:
+- `pi-web`:
 
-```bash
-git checkout master && git pull; TAG4REL='pi-web-v1.202609.0p6'
-git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
-```
+  ```bash
+  git checkout master && git pull; TAG4REL='pi-web-v1.202609.0p6'
+  git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
+  ```
 
 Internal pull requests build only applications changed under `sources/<name>/` or their declared shared assets, using `git diff --name-only origin/<base>...HEAD`. Deleted recipes are skipped. A change only to common Go/workflow code builds nothing. Manual workflow `build` accepts a `sources` input containing space- or comma-separated names and builds a draft. Branch pushes never build applications. Fork/dependabot pull requests run neither builds nor repository checks. The repository test schedule runs tests and linters, never application rebuilds.
 
