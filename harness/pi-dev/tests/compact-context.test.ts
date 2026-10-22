@@ -2,14 +2,17 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type {
   AgentToolResult, CompactOptions, CompactionResult, ExtensionAPI, ExtensionContext,
-  ExtensionUIContext, ToolDefinition
+  ExtensionUIContext, SessionEntry, SessionMessageEntry, ToolDefinition
 } from '@earendil-works/pi-coding-agent'
 import compactContext, {
-  COMPACT_CONTEXT_MESSAGE_TYPE, COMPACTION_CANCELLED, continuationText
+  ALREADY_COMPACTED, COMPACT_CONTEXT_MESSAGE_TYPE, COMPACTION_CANCELLED,
+  SINGLE_CALL_REASON, autoCompactedText, continuationText, notStartedText
 } from '../extensions/compact-context'
 
 type Handler = (...args: unknown[]) => unknown
 type Sent = Parameters<ExtensionAPI['sendMessage']>
+type SessionManager = ExtensionContext['sessionManager']
+type AssistantMessage = Extract<SessionMessageEntry['message'], { role: 'assistant' }>
 interface Params {
   instructions?: string
   next?: string
@@ -28,14 +31,43 @@ function strictFake<T extends object> (partial: Partial<T>): T {
 const compaction: CompactionResult = {
   summary: 'Offline summary', firstKeptEntryId: 'entry-1', tokensBefore: 1000
 }
+function assistantEntry (...ids: string[]): SessionEntry {
+  const message: AssistantMessage = {
+    role: 'assistant',
+    content: ids.map((id) => ({ type: 'toolCall', id, name: 'tool', arguments: {} })),
+    api: 'anthropic-messages',
+    provider: 'anthropic',
+    model: 'offline',
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+    },
+    stopReason: 'toolUse',
+    timestamp: 0
+  }
+  return { type: 'message', id: 'entry-2', parentId: null, timestamp: '', message }
+}
+const HOOKS = [
+  'session_shutdown', 'tool_call', 'turn_start', 'message_start', 'session_compact',
+  'session_compact_failed', 'agent_settled'
+]
+const FOLLOW_UP = { triggerTurn: true, deliverAs: 'followUp' }
 class Harness {
   readonly hooks = new Map<string, Handler[]>()
   readonly tools: ToolDefinition[] = []
   readonly sent: Sent[] = []
   readonly compacts: Array<CompactOptions | undefined> = []
   readonly notices: Array<[string, string | undefined]> = []
+  branch: SessionEntry[] = [assistantEntry('call-1')]
   compactError: Error | undefined
   hasUI = true
+  idle = true
+  pending = false
+  signal: AbortSignal | undefined
   readonly pi: ExtensionAPI
   constructor () {
     const on = (name: string, handler: Handler): void => {
@@ -68,23 +100,40 @@ class Harness {
       if (this.compactError !== undefined) throw this.compactError
       this.compacts.push(options)
     }
+    const getBranch: SessionManager['getBranch'] = () => this.branch
     return strictFake<ExtensionContext>({
-      compact, hasUI: this.hasUI, ui: strictFake<ExtensionUIContext>({ notify })
+      compact,
+      hasUI: this.hasUI,
+      ui: strictFake<ExtensionUIContext>({ notify }),
+      isIdle: () => this.idle,
+      hasPendingMessages: () => this.pending,
+      signal: this.signal,
+      sessionManager: strictFake<SessionManager>({ getBranch })
     })
   }
 
-  async execute (params: Params): Promise<AgentToolResult<unknown>> {
-    return await this.tool.execute('call-1', params, undefined, undefined, this.context())
+  async execute (
+    params: Params, signal?: AbortSignal
+  ): Promise<AgentToolResult<unknown>> {
+    return await this.tool.execute('call-1', params, signal, undefined, this.context())
+  }
+
+  emit (name: string, event: object = {}): unknown[] {
+    return (this.hooks.get(name) ?? []).map((handler) => handler(
+      { type: name, ...event }, this.context()
+    ))
+  }
+
+  async request (params: Params = {}): Promise<CompactOptions> {
+    await this.execute(params)
+    this.emit('agent_settled')
+    return this.options(this.compacts.length - 1)
   }
 
   options (index = 0): CompactOptions {
     const options = this.compacts[index]
     assert.ok(options !== undefined)
     return options
-  }
-
-  shutdown (): void {
-    for (const handler of this.hooks.get('session_shutdown') ?? []) handler({})
   }
 }
 function textOf (result: AgentToolResult<unknown>): string {
@@ -99,19 +148,32 @@ export async function runTests (): Promise<void> {
     assert.equal(h.tool.label, 'Compact Context')
     assert.match(h.tool.description, /skills only/)
     assert.match(h.tool.description, /never call it on your own initiative/)
-    assert.deepEqual([...h.hooks.keys()], ['session_shutdown'])
+    assert.match(h.tool.description, /only tool call in the message/)
+    assert.match(h.tool.description, /re-read the skill file and the run journal/)
+    assert.deepEqual([...h.hooks.keys()], HOOKS)
+    assert.equal(COMPACT_CONTEXT_MESSAGE_TYPE, 'compact-context')
+    assert.equal(COMPACTION_CANCELLED, 'Compaction cancelled')
+    assert.equal(ALREADY_COMPACTED, 'Already compacted')
+    assert.equal(SINGLE_CALL_REASON,
+      'compact_context must be the only tool call in the message')
     const properties = (h.tool.parameters as { properties: Record<string, unknown> })
       .properties
     assert.deepEqual(Object.keys(properties).sort(), ['instructions', 'next'])
   })
-  await test('returns before compaction finishes and resumes once on success',
+  await test('defers compaction to agent_settled and resumes once on success',
     async () => {
       const h = new Harness()
       const result = await h.execute({ instructions: '  keep files  ', next: ' step 2 ' })
       assert.deepEqual(JSON.parse(textOf(result)), result.details)
       assert.equal((result.details as { success: boolean }).success, true)
+      assert.equal(result.terminate, true)
+      assert.match(textOf(result), /after this turn ends/)
+      assert.equal(h.compacts.length, 0)
+      h.emit('agent_settled')
       assert.equal(h.compacts.length, 1)
       assert.equal(h.options().customInstructions, 'keep files')
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 1)
       assert.equal(h.sent.length, 0)
       h.options().onComplete?.(compaction)
       h.options().onComplete?.(compaction)
@@ -120,78 +182,263 @@ export async function runTests (): Promise<void> {
       assert.equal(message.customType, COMPACT_CONTEXT_MESSAGE_TYPE)
       assert.equal(message.display, true)
       assert.equal(message.content, continuationText('step 2'))
+      assert.match(String(message.content),
+        /^Context compaction requested via compact_context has finished\.\n/)
       assert.match(String(message.content), /Next step noted before compaction:\nstep 2$/)
-      assert.deepEqual(options, { triggerTurn: true, deliverAs: 'followUp' })
+      assert.doesNotMatch(String(message.content), /interrupted/)
+      assert.deepEqual(options, FOLLOW_UP)
     })
   await test('omits blank instructions and next', async () => {
     const h = new Harness()
-    await h.execute({ instructions: ' ', next: '' })
-    assert.equal(h.options().customInstructions, undefined)
-    h.options().onComplete?.(compaction)
+    const options = await h.request({ instructions: ' ', next: '' })
+    assert.equal(options.customInstructions, undefined)
+    options.onComplete?.(compaction)
     assert.equal(h.sent[0][0].content, continuationText(undefined))
     assert.doesNotMatch(String(h.sent[0][0].content), /Next step/)
   })
-  await test('rejects a second call while compaction is pending', async () => {
+  await test('rejects a second call while requested or compacting', async () => {
     const h = new Harness()
     await h.execute({})
     await assert.rejects(h.execute({}), /already in progress/)
+    h.emit('agent_settled')
+    await assert.rejects(h.execute({}), /already in progress/)
     assert.equal(h.compacts.length, 1)
     h.options().onComplete?.(compaction)
-    await h.execute({})
+    await h.request()
     assert.equal(h.compacts.length, 2)
   })
-  await test('resumes with the error text when compaction fails', async () => {
+  await test('rejects the call while messages are queued', async () => {
     const h = new Harness()
-    await h.execute({ next: 'step 3' })
-    h.options().onError?.(new Error('Nothing to compact (session too small)'))
+    h.pending = true
+    await assert.rejects(h.execute({}), /Queued messages are pending/)
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 0)
+    h.pending = false
+    await h.request()
+    assert.equal(h.compacts.length, 1)
+  })
+  await test('blocks compact_context unless it is the only tool call', () => {
+    const h = new Harness()
+    const call = { toolName: 'compact_context', toolCallId: 'call-1', input: {} }
+    assert.deepEqual(h.emit('tool_call', call), [undefined])
+    h.branch = [assistantEntry('call-1', 'call-2')]
+    const blocked = { block: true, reason: SINGLE_CALL_REASON }
+    assert.deepEqual(h.emit('tool_call', call), [blocked])
+    assert.deepEqual(h.emit('tool_call', { ...call, toolName: 'read' }), [undefined])
+    h.branch = [assistantEntry('call-1'), assistantEntry('call-3')]
+    assert.deepEqual(h.emit('tool_call', call), [undefined])
+    h.branch = [assistantEntry('call-3')]
+    assert.deepEqual(h.emit('tool_call', call), [blocked])
+  })
+  await test('cancels the request when the turn continues with queued messages',
+    async () => {
+      const h = new Harness()
+      h.emit('turn_start', { turnIndex: 0, timestamp: 0 })
+      assert.equal(h.sent.length, 0)
+      await h.execute({ next: 'step 4' })
+      h.emit('turn_start', { turnIndex: 1, timestamp: 0 })
+      assert.equal(h.sent.length, 1)
+      const [message, options] = h.sent[0]
+      assert.equal(message.customType, COMPACT_CONTEXT_MESSAGE_TYPE)
+      assert.equal(message.content,
+        notStartedText('new messages arrived before the turn ended'))
+      assert.match(String(message.content),
+        /was not started: new messages arrived before the turn ended/)
+      assert.deepEqual(options, { triggerTurn: true, deliverAs: 'steer' })
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 0)
+      await h.request()
+      h.emit('turn_start', { turnIndex: 0, timestamp: 0 })
+      assert.equal(h.sent.length, 1)
+    })
+  await test('reports an automatic compaction from turn_start', async () => {
+    const h = new Harness()
+    await h.execute({ next: 'step 9' })
+    h.emit('session_compact', { reason: 'threshold' })
+    h.emit('turn_start', { turnIndex: 1, timestamp: 0 })
     assert.equal(h.sent.length, 1)
     const [message, options] = h.sent[0]
+    assert.equal(message.customType, COMPACT_CONTEXT_MESSAGE_TYPE)
+    assert.equal(message.content, autoCompactedText('step 9'))
+    assert.match(String(message.content), /Do not call compact_context again/)
+    assert.match(String(message.content), /Next step noted before compaction:\nstep 9$/)
+    assert.deepEqual(options, { triggerTurn: true, deliverAs: 'steer' })
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 0)
+    assert.equal(h.sent.length, 1)
+  })
+  await test('rejects the call until the turn_start notice is delivered', async () => {
+    const h = new Harness()
+    await h.execute({})
+    h.emit('turn_start', { turnIndex: 1, timestamp: 0 })
+    await assert.rejects(h.execute({}), /Queued messages are pending/)
+    h.emit('message_start', { message: { role: 'user', content: 'hi', timestamp: 0 } })
+    await assert.rejects(h.execute({}), /Queued messages are pending/)
+    const other = { role: 'custom', customType: 'other', content: 'x', display: true }
+    h.emit('message_start', { message: { ...other, timestamp: 0 } })
+    await assert.rejects(h.execute({}), /Queued messages are pending/)
+    const followUp = { ...other, customType: COMPACT_CONTEXT_MESSAGE_TYPE, details: {} }
+    h.emit('message_start', { message: { ...followUp, timestamp: 0 } })
+    await assert.rejects(h.execute({}), /Queued messages are pending/)
+    const notice = { role: 'custom', ...h.sent[0][0], timestamp: 0 }
+    h.emit('message_start', { message: notice })
+    await h.execute({})
+    h.emit('turn_start', { turnIndex: 2, timestamp: 0 })
+    await assert.rejects(h.execute({}), /Queued messages are pending/)
+    h.emit('agent_settled')
+    await h.request()
+    assert.equal(h.compacts.length, 1)
+  })
+  await test('skips compaction when Pi already compacted automatically', async () => {
+    for (const reason of ['threshold', 'overflow']) {
+      const h = new Harness()
+      await h.execute({ next: 'step 5' })
+      h.emit('session_compact', { reason })
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 0)
+      assert.equal(h.sent.length, 1)
+      const [message, options] = h.sent[0]
+      assert.equal(message.content, continuationText('step 5', undefined, true))
+      assert.match(String(message.content), /compacted the context automatically/)
+      assert.deepEqual(options, FOLLOW_UP)
+      await h.execute({})
+      h.emit('session_compact', { reason: 'manual' })
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 1)
+    }
+  })
+  await test('treats Already compacted as success only after session_compact',
+    async () => {
+      const h = new Harness()
+      await h.execute({ next: 'step 6' })
+      h.emit('session_compact', { reason: 'manual' })
+      h.emit('agent_settled')
+      h.options().onError?.(new Error(ALREADY_COMPACTED))
+      assert.equal(h.sent[0][0].content, continuationText('step 6'))
+      const fresh = new Harness()
+      const options = await fresh.request({ next: 'step 7' })
+      options.onError?.(new Error(ALREADY_COMPACTED))
+      assert.equal(fresh.sent[0][0].content,
+        continuationText('step 7', new Error(ALREADY_COMPACTED)))
+    })
+  await test('resumes with the error text when compaction fails', async () => {
+    const h = new Harness()
+    const options = await h.request({ next: 'step 3' })
+    options.onError?.(new Error('Nothing to compact (session too small)'))
+    assert.equal(h.sent.length, 1)
+    const [message, sentOptions] = h.sent[0]
     assert.equal(message.content, continuationText('step 3',
       new Error('Nothing to compact (session too small)')))
     assert.match(String(message.content), /failed: Nothing to compact/)
-    assert.deepEqual(options, { triggerTurn: true, deliverAs: 'followUp' })
-    await h.execute({})
+    assert.deepEqual(sentOptions, FOLLOW_UP)
+    await h.request()
     assert.equal(h.compacts.length, 2)
   })
-  await test('only notifies when compaction is cancelled or aborted', async () => {
+  await test('resumes with the error text when ctx.compact throws', async () => {
     const h = new Harness()
-    await h.execute({})
-    h.options().onError?.(new Error(COMPACTION_CANCELLED))
-    assert.equal(h.sent.length, 0)
-    assert.deepEqual(h.notices, [['Context compaction was cancelled', 'warning']])
-    const aborted = new Harness()
-    await aborted.execute({})
+    h.compactError = new Error('stale context')
+    await h.execute({ next: 'step 8' })
+    h.emit('agent_settled')
+    assert.equal(h.sent.length, 1)
+    assert.equal(h.sent[0][0].content, continuationText('step 8', h.compactError))
+    assert.deepEqual(h.sent[0][1], FOLLOW_UP)
+    h.compactError = undefined
+    await h.request()
+    assert.equal(h.compacts.length, 1)
+  })
+  await test('only notifies when compaction is cancelled or aborted', async () => {
     const abortError = new Error('This operation was aborted')
     abortError.name = 'AbortError'
-    aborted.options().onError?.(abortError)
-    assert.equal(aborted.sent.length, 0)
-    assert.deepEqual(aborted.notices, [['Context compaction was cancelled', 'warning']])
-    await aborted.execute({})
-    assert.equal(aborted.compacts.length, 2)
+    for (const hasUI of [true, false]) {
+      for (const error of [new Error(COMPACTION_CANCELLED), abortError]) {
+        const h = new Harness()
+        h.hasUI = hasUI
+        const options = await h.request()
+        options.onError?.(error)
+        assert.equal(h.sent.length, 0)
+        assert.deepEqual(h.notices,
+          hasUI ? [['Context compaction was cancelled', 'warning']] : [])
+        await h.request()
+        assert.equal(h.compacts.length, 2)
+      }
+    }
+  })
+  await test('drops the request when the turn was aborted before settling', async () => {
+    const h = new Harness()
+    const controller = new AbortController()
+    await h.execute({}, controller.signal)
+    controller.abort()
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 0)
+    assert.equal(h.sent.length, 0)
+    assert.deepEqual(h.notices, [['Context compaction was cancelled', 'warning']])
+    await h.execute({})
+    h.emit('session_compact_failed', { reason: 'threshold', aborted: true })
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 0)
+    assert.equal(h.notices.length, 2)
+    const options = await h.request()
+    h.emit('session_compact_failed', { reason: 'manual', aborted: true })
+    options.onComplete?.(compaction)
+    assert.equal(h.sent.length, 1)
     const headless = new Harness()
     headless.hasUI = false
-    await headless.execute({})
-    headless.options().onError?.(new Error(COMPACTION_CANCELLED))
+    const aborted = new AbortController()
+    await headless.execute({}, aborted.signal)
+    aborted.abort()
+    headless.emit('agent_settled')
+    assert.equal(headless.compacts.length, 0)
     assert.equal(headless.sent.length, 0)
     assert.equal(headless.notices.length, 0)
   })
-  await test('releases the guard when ctx.compact throws', async () => {
-    const h = new Harness()
-    h.compactError = new Error('stale context')
-    await assert.rejects(h.execute({}), /stale context/)
-    h.compactError = undefined
-    await h.execute({})
-    assert.equal(h.compacts.length, 1)
+  await test('does not start compaction while the session is busy', async () => {
+    const reason = 'the session became busy before compaction could start'
+    for (const busy of ['running', 'compacting', 'queued']) {
+      const h = new Harness()
+      await h.execute({})
+      h.idle = busy === 'queued'
+      h.pending = busy === 'queued'
+      h.signal = busy === 'running' ? new AbortController().signal : undefined
+      h.emit('agent_settled')
+      assert.equal(h.compacts.length, 0)
+      assert.equal(h.sent.length, 1)
+      assert.equal(h.sent[0][0].content, notStartedText(reason))
+      if (busy === 'running') {
+        assert.deepEqual(h.sent[0][1], FOLLOW_UP)
+        assert.equal(h.notices.length, 0)
+      } else {
+        assert.deepEqual(h.sent[0][1], { deliverAs: 'nextTurn' })
+        assert.deepEqual(h.notices,
+          [[`Context compaction was not started: ${reason}`, 'warning']])
+      }
+      h.idle = true
+      h.pending = false
+      h.signal = undefined
+      await h.request()
+      assert.equal(h.compacts.length, 1)
+    }
+    const headless = new Harness()
+    headless.hasUI = false
+    await headless.execute({})
+    headless.idle = false
+    headless.emit('agent_settled')
+    assert.equal(headless.compacts.length, 0)
+    assert.deepEqual(headless.sent[0][1], { deliverAs: 'nextTurn' })
+    assert.equal(headless.notices.length, 0)
   })
   await test('ignores callbacks that arrive after session_shutdown', async () => {
     const h = new Harness()
-    await h.execute({})
-    h.shutdown()
-    h.options().onComplete?.(compaction)
-    h.options().onError?.(new Error('late failure'))
+    const options = await h.request()
+    h.emit('session_shutdown')
+    options.onComplete?.(compaction)
+    options.onError?.(new Error('late failure'))
     assert.equal(h.sent.length, 0)
     await h.execute({})
-    h.options(1).onComplete?.(compaction)
+    h.emit('session_shutdown')
+    h.emit('agent_settled')
+    assert.equal(h.compacts.length, 1)
+    const next = await h.request()
+    next.onComplete?.(compaction)
     assert.equal(h.sent.length, 1)
   })
 }
