@@ -14,7 +14,10 @@ const require = createRequire(codingPackage);
 const { createJiti } = require('jiti');
 const jiti = createJiti(import.meta.url, {
   fsCache: false, moduleCache: false,
-  alias: { typebox: require.resolve('typebox') },
+  alias: {
+    typebox: require.resolve('typebox'),
+    '@earendil-works/pi-coding-agent': join(codingDir, 'dist/index.js'),
+  },
 });
 const directory = dirname(fileURLToPath(import.meta.url));
 const tests = await jiti.import(join(directory, 'compact-context.test.ts'));

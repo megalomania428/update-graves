@@ -2,12 +2,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type {
-  AgentToolResult, CompactOptions, CompactionResult, ContextUsage, ExtensionAPI,
-  ExtensionContext, ExtensionUIContext, SessionEntry, SessionMessageEntry, ToolDefinition
+  AgentToolResult, CompactOptions, CompactionEntry, CompactionResult, ContextUsage,
+  ExtensionAPI, ExtensionContext, ExtensionUIContext, SessionEntry, SessionMessageEntry,
+  ToolDefinition
 } from '@earendil-works/pi-coding-agent'
 import compactContext, {
   ALREADY_COMPACTED, COMPACT_CONTEXT_MESSAGE_TYPE, COMPACTION_CANCELLED,
-  SINGLE_CALL_REASON, autoCompactedText, continuationText, notStartedText, skippedText
+  SINGLE_CALL_REASON, autoCompactedText, continuationText, notStartedText, skippedText,
+  type ContinuationUsage
 } from '../extensions/compact-context'
 
 type Handler = (...args: unknown[]) => unknown
@@ -31,7 +33,10 @@ function strictFake<T extends object> (partial: Partial<T>): T {
   }) as T
 }
 const compaction: CompactionResult = {
-  summary: 'Offline summary', firstKeptEntryId: 'entry-1', tokensBefore: 1000
+  summary: 'Offline summary',
+  firstKeptEntryId: 'entry-1',
+  tokensBefore: 1000,
+  estimatedTokensAfter: 300
 }
 function assistantEntry (...ids: string[]): SessionEntry {
   const message: AssistantMessage = {
@@ -62,6 +67,51 @@ const WINDOW = 200000
 function usageOf (tokens: number): ContextUsage {
   return { tokens, contextWindow: WINDOW, percent: tokens / WINDOW * 100 }
 }
+const CALL_TOKENS = 50000
+const REQUESTED = 'Context compaction will start after this turn ends, then a ' +
+  'continuation message follows; do nothing else in this turn'
+// Pi estimates the context right after this compaction entry as 104 tokens.
+const COMPACTION_ENTRY: CompactionEntry = {
+  type: 'compaction',
+  id: 'compaction-1',
+  parentId: 'user-1',
+  timestamp: '',
+  summary: 'Offline summary',
+  firstKeptEntryId: 'user-1',
+  tokensBefore: 5000
+}
+const COMPACTED_BRANCH: SessionEntry[] = [
+  {
+    type: 'message',
+    id: 'user-1',
+    parentId: null,
+    timestamp: '',
+    message: { role: 'user', content: 'x'.repeat(400), timestamp: 0 }
+  },
+  COMPACTION_ENTRY
+]
+const COMPLETED: ContinuationUsage = {
+  tokensAtCall: CALL_TOKENS,
+  percentAtCall: 25,
+  tokensBefore: 1000,
+  percentBefore: 0.5,
+  tokensAfter: 300,
+  percentAfter: 0.15,
+  contextWindow: WINDOW,
+  minContextTokens: null
+}
+const AUTOMATIC: ContinuationUsage = {
+  ...COMPLETED,
+  tokensBefore: 5000,
+  percentBefore: 2.5,
+  tokensAfter: 104,
+  percentAfter: 0.05
+}
+function usageBlock (content: unknown): unknown {
+  const match = /\nContext usage:\n```json\n([\s\S]*?)\n```(?:\n|$)/.exec(String(content))
+  assert.ok(match !== null)
+  return JSON.parse(match[1])
+}
 class Harness {
   readonly hooks = new Map<string, Handler[]>()
   readonly tools: ToolDefinition[] = []
@@ -74,8 +124,8 @@ class Harness {
   idle = true
   pending = false
   signal: AbortSignal | undefined
-  // Without it the strict ctx has no getContextUsage and fails on access.
-  usage: (() => ContextUsage | undefined) | undefined
+  // Returning undefined models a session without a model or context window.
+  usage: () => ContextUsage | undefined = () => usageOf(CALL_TOKENS)
   readonly pi: ExtensionAPI
   constructor () {
     const on = (name: string, handler: Handler): void => {
@@ -117,7 +167,7 @@ class Harness {
       hasPendingMessages: () => this.pending,
       signal: this.signal,
       sessionManager: strictFake<SessionManager>({ getBranch }),
-      ...(this.usage !== undefined ? { getContextUsage: this.usage } : {})
+      getContextUsage: () => this.usage()
     })
   }
 
@@ -181,7 +231,14 @@ export async function runTests (): Promise<void> {
       const h = new Harness()
       const result = await h.execute({ instructions: '  keep files  ', next: ' step 2 ' })
       assert.deepEqual(JSON.parse(textOf(result)), result.details)
-      assert.equal((result.details as { success: boolean }).success, true)
+      assert.deepEqual(result.details, {
+        success: true,
+        tokens: CALL_TOKENS,
+        minContextTokens: null,
+        contextWindow: WINDOW,
+        percent: 25,
+        message: REQUESTED
+      })
       assert.equal(result.terminate, true)
       assert.match(textOf(result), /after this turn ends/)
       assert.equal(h.compacts.length, 0)
@@ -197,10 +254,18 @@ export async function runTests (): Promise<void> {
       const [message, options] = h.sent[0]
       assert.equal(message.customType, COMPACT_CONTEXT_MESSAGE_TYPE)
       assert.equal(message.display, true)
-      assert.equal(message.content, continuationText('step 2'))
+      assert.equal(message.content,
+        continuationText('step 2', undefined, false, COMPLETED))
       assert.match(String(message.content),
         /^Context compaction requested via compact_context has finished\.\n/)
       assert.match(String(message.content), /Next step noted before compaction:\nstep 2$/)
+      assert.deepEqual(usageBlock(message.content), COMPLETED)
+      assert.match(String(message.content),
+        /instructed\.\n\nContext usage:\n```json\n\{\n {2}"tokensAtCall": 50000,\n/)
+      assert.match(String(message.content),
+        /\n\}\n```\n\nNext step noted before compaction:\n/)
+      assert.deepEqual(message.details,
+        { error: undefined, next: 'step 2', ...COMPLETED })
       assert.doesNotMatch(String(message.content), /interrupted/)
       assert.deepEqual(options, FOLLOW_UP)
     })
@@ -209,7 +274,8 @@ export async function runTests (): Promise<void> {
     const options = await h.request({ instructions: ' ', next: '' })
     assert.equal(options.customInstructions, undefined)
     options.onComplete?.(compaction)
-    assert.equal(h.sent[0][0].content, continuationText(undefined))
+    assert.equal(h.sent[0][0].content,
+      continuationText(undefined, undefined, false, COMPLETED))
     assert.doesNotMatch(String(h.sent[0][0].content), /Next step/)
   })
   await test('rejects a second call while requested or compacting', async () => {
@@ -245,7 +311,7 @@ export async function runTests (): Promise<void> {
         tokens: 999,
         minContextTokens: 1000,
         contextWindow: WINDOW,
-        percent: 999 / WINDOW * 100,
+        percent: 0.5,
         message: skippedText(999, 1000)
       }
       assert.deepEqual(result.details, details)
@@ -258,6 +324,23 @@ export async function runTests (): Promise<void> {
       assert.equal(h.compacts.length, 0)
       assert.equal(h.sent.length, 0)
     })
+  await test('rounds the skipped percent to two decimals', async () => {
+    const h = new Harness()
+    h.usage = () => ({ tokens: 214846, contextWindow: 1000000, percent: 21.4846 })
+    const result = await h.execute({ minContextTokens: 222222 })
+    const details = {
+      success: true,
+      skipped: true,
+      reason: 'below-threshold',
+      tokens: 214846,
+      minContextTokens: 222222,
+      contextWindow: 1000000,
+      percent: 21.48,
+      message: skippedText(214846, 222222)
+    }
+    assert.deepEqual(result.details, details)
+    assert.deepEqual(JSON.parse(textOf(result)), details)
+  })
   await test('skips compaction when the context size is unknown', async () => {
     const message = skippedText(null, 1)
     assert.equal(message, 'Context compaction skipped: the context size is unknown. ' +
@@ -286,6 +369,8 @@ export async function runTests (): Promise<void> {
       reason: 'unknown',
       tokens: null,
       minContextTokens: 1,
+      contextWindow: null,
+      percent: null,
       message
     }
     assert.deepEqual(missing.details, unsized)
@@ -309,21 +394,57 @@ export async function runTests (): Promise<void> {
       assert.deepEqual(JSON.parse(textOf(result)), result.details)
       assert.equal((result.details as { skipped?: boolean }).skipped, undefined)
       assert.match(textOf(result), /after this turn ends/)
+      assert.deepEqual(result.details, {
+        success: true,
+        tokens: 1000,
+        minContextTokens: 1000,
+        contextWindow: WINDOW,
+        percent: 0.5,
+        message: REQUESTED
+      })
       assert.equal(h.compacts.length, 0)
       h.emit('agent_settled')
       assert.equal(h.compacts.length, 1)
       h.options().onComplete?.(compaction)
       assert.equal(h.sent.length, 1)
       assert.deepEqual(h.sent[0][1], FOLLOW_UP)
+      assert.equal(reads, 2)
+      assert.deepEqual(usageBlock(h.sent[0][0].content), {
+        ...COMPLETED, tokensAtCall: 1000, percentAtCall: 0.5, minContextTokens: 1000
+      })
     })
-  await test('does not read the context size without minContextTokens', async () => {
+  await test('reports the context size at call without minContextTokens', async () => {
     const h = new Harness()
-    assert.throws(() => h.context().getContextUsage(),
-      /Unexpected fake API: getContextUsage/)
+    let reads = 0
+    h.usage = () => {
+      reads += 1
+      return undefined
+    }
     const result = await h.execute({})
+    assert.equal(reads, 1)
     assert.equal(result.terminate, true)
+    assert.deepEqual(result.details, {
+      success: true,
+      tokens: null,
+      minContextTokens: null,
+      contextWindow: null,
+      percent: null,
+      message: REQUESTED
+    })
+    assert.deepEqual(JSON.parse(textOf(result)), result.details)
     h.emit('agent_settled')
     assert.equal(h.compacts.length, 1)
+    h.options().onComplete?.({ ...compaction, estimatedTokensAfter: undefined })
+    assert.deepEqual(usageBlock(h.sent[0][0].content), {
+      tokensAtCall: null,
+      percentAtCall: null,
+      tokensBefore: 1000,
+      percentBefore: null,
+      tokensAfter: null,
+      percentAfter: null,
+      contextWindow: null,
+      minContextTokens: null
+    })
   })
   await test('accepts an ordinary call after a skipped one', async () => {
     const h = new Harness()
@@ -336,7 +457,8 @@ export async function runTests (): Promise<void> {
     h.emit('agent_settled')
     assert.equal(h.compacts.length, 1)
     h.options().onComplete?.(compaction)
-    assert.equal(h.sent[0][0].content, continuationText('step 10'))
+    assert.equal(h.sent[0][0].content, continuationText('step 10', undefined, false,
+      { ...COMPLETED, tokensAtCall: 10, percentAtCall: 0.01 }))
   })
   await test('skips below minContextTokens even while messages are queued',
     async () => {
@@ -395,15 +517,18 @@ export async function runTests (): Promise<void> {
     })
   await test('reports an automatic compaction from turn_start', async () => {
     const h = new Harness()
+    h.branch = COMPACTED_BRANCH
     await h.execute({ next: 'step 9' })
-    h.emit('session_compact', { reason: 'threshold' })
+    h.emit('session_compact', { reason: 'threshold', compactionEntry: COMPACTION_ENTRY })
     h.emit('turn_start', { turnIndex: 1, timestamp: 0 })
     assert.equal(h.sent.length, 1)
     const [message, options] = h.sent[0]
     assert.equal(message.customType, COMPACT_CONTEXT_MESSAGE_TYPE)
-    assert.equal(message.content, autoCompactedText('step 9'))
+    assert.equal(message.content, autoCompactedText('step 9', AUTOMATIC))
     assert.match(String(message.content), /Do not call compact_context again/)
     assert.match(String(message.content), /Next step noted before compaction:\nstep 9$/)
+    assert.deepEqual(usageBlock(message.content), AUTOMATIC)
+    assert.deepEqual(message.details, { next: 'step 9', notice: 1, ...AUTOMATIC })
     assert.deepEqual(options, { triggerTurn: true, deliverAs: 'steer' })
     h.emit('agent_settled')
     assert.equal(h.compacts.length, 0)
@@ -434,13 +559,17 @@ export async function runTests (): Promise<void> {
   await test('skips compaction when Pi already compacted automatically', async () => {
     for (const reason of ['threshold', 'overflow']) {
       const h = new Harness()
+      h.branch = COMPACTED_BRANCH
       await h.execute({ next: 'step 5' })
-      h.emit('session_compact', { reason })
+      h.emit('session_compact', { reason, compactionEntry: COMPACTION_ENTRY })
       h.emit('agent_settled')
       assert.equal(h.compacts.length, 0)
       assert.equal(h.sent.length, 1)
       const [message, options] = h.sent[0]
-      assert.equal(message.content, continuationText('step 5', undefined, true))
+      assert.equal(message.content,
+        continuationText('step 5', undefined, true, AUTOMATIC))
+      assert.deepEqual(message.details,
+        { error: undefined, next: 'step 5', ...AUTOMATIC })
       assert.match(String(message.content), /compacted the context automatically/)
       assert.deepEqual(options, FOLLOW_UP)
       await h.execute({})
@@ -457,6 +586,8 @@ export async function runTests (): Promise<void> {
       h.emit('agent_settled')
       h.options().onError?.(new Error(ALREADY_COMPACTED))
       assert.equal(h.sent[0][0].content, continuationText('step 6'))
+      assert.doesNotMatch(String(h.sent[0][0].content), /Context usage/)
+      assert.deepEqual(h.sent[0][0].details, { error: undefined, next: 'step 6' })
       const fresh = new Harness()
       const options = await fresh.request({ next: 'step 7' })
       options.onError?.(new Error(ALREADY_COMPACTED))
@@ -472,6 +603,7 @@ export async function runTests (): Promise<void> {
     assert.equal(message.content, continuationText('step 3',
       new Error('Nothing to compact (session too small)')))
     assert.match(String(message.content), /failed: Nothing to compact/)
+    assert.doesNotMatch(String(message.content), /Context usage/)
     assert.deepEqual(sentOptions, FOLLOW_UP)
     await h.request()
     assert.equal(h.compacts.length, 2)
@@ -583,4 +715,28 @@ export async function runTests (): Promise<void> {
     next.onComplete?.(compaction)
     assert.equal(h.sent.length, 1)
   })
+  await test('estimates tokens after compaction when Pi omits the estimate', async () => {
+    const h = new Harness()
+    const options = await h.request({ minContextTokens: 1 })
+    h.branch = COMPACTED_BRANCH
+    options.onComplete?.({ ...compaction, estimatedTokensAfter: undefined })
+    assert.deepEqual(usageBlock(h.sent[0][0].content), {
+      ...COMPLETED, tokensAfter: 104, percentAfter: 0.05, minContextTokens: 1
+    })
+  })
+  await test('takes the context window at completion, then from the call snapshot',
+    async () => {
+      const h = new Harness()
+      const options = await h.request()
+      h.usage = () => ({ tokens: null, contextWindow: 100000, percent: null })
+      options.onComplete?.(compaction)
+      assert.deepEqual(usageBlock(h.sent[0][0].content), {
+        ...COMPLETED, percentBefore: 1, percentAfter: 0.3, contextWindow: 100000
+      })
+      const fallback = new Harness()
+      const next = await fallback.request()
+      fallback.usage = () => undefined
+      next.onComplete?.(compaction)
+      assert.deepEqual(usageBlock(fallback.sent[0][0].content), COMPLETED)
+    })
 }

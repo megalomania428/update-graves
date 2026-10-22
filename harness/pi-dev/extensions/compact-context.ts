@@ -1,6 +1,9 @@
 // cspell:ignore subsessions
 import { Type } from 'typebox'
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
+import {
+  buildSessionContext, estimateTokens, getLatestCompactionEntry, type ExtensionAPI,
+  type ExtensionContext
+} from '@earendil-works/pi-coding-agent'
 
 export const COMPACT_CONTEXT_MESSAGE_TYPE = 'compact-context'
 export const COMPACTION_CANCELLED = 'Compaction cancelled'
@@ -27,11 +30,32 @@ const CompactContextParams = Type.Object(
 
 type SendOptions = Parameters<ExtensionAPI['sendMessage']>[1]
 
+interface ContextSnapshot {
+  tokens: number | null
+  contextWindow: number | null
+  percent: number | null
+}
+
+export interface ContinuationUsage {
+  tokensAtCall: number | null
+  percentAtCall: number | null
+  tokensBefore: number | null
+  percentBefore: number | null
+  tokensAfter: number | null
+  percentAfter: number | null
+  contextWindow: number | null
+  minContextTokens: number | null
+}
+
 interface CompactRequest {
   generation: number
   instructions: string | undefined
   next: string | undefined
   signal: AbortSignal | undefined
+  minContextTokens: number | null
+  atCall: ContextSnapshot
+  // tokensBefore of the automatic compaction seen by session_compact.
+  tokensBefore: number | null
   compacted: boolean
   autoCompacted: boolean
   aborted: boolean
@@ -46,8 +70,60 @@ function optionalText (value: string | undefined): string | undefined {
   return text !== '' ? text : undefined
 }
 
+export function roundPercent (percent: number | null): number | null {
+  return percent === null ? null : Math.round(percent * 100) / 100
+}
+
+function percentOf (tokens: number | null, contextWindow: number | null): number | null {
+  return tokens === null || contextWindow === null
+    ? null
+    : roundPercent(tokens / contextWindow * 100)
+}
+
+function contextSnapshot (ctx: ExtensionContext): ContextSnapshot {
+  const usage = ctx.getContextUsage()
+  return {
+    tokens: usage?.tokens ?? null,
+    contextWindow: usage?.contextWindow ?? null,
+    percent: roundPercent(usage?.percent ?? null)
+  }
+}
+
+// The estimate Pi reports as estimatedTokensAfter: the context right after the latest
+// compaction entry of the branch.
+function estimateTokensAfter (ctx: ExtensionContext): number | null {
+  const branch = ctx.sessionManager.getBranch()
+  const compaction = getLatestCompactionEntry(branch)
+  if (compaction === null) return null
+  return buildSessionContext(branch, compaction.id).messages
+    .reduce((sum, message) => sum + estimateTokens(message), 0)
+}
+
+function continuationUsage (
+  ctx: ExtensionContext, current: CompactRequest, tokensBefore: number | null,
+  tokensAfter: number | null
+): ContinuationUsage {
+  const contextWindow =
+    ctx.getContextUsage()?.contextWindow ?? current.atCall.contextWindow
+  return {
+    tokensAtCall: current.atCall.tokens,
+    percentAtCall: current.atCall.percent,
+    tokensBefore,
+    percentBefore: percentOf(tokensBefore, contextWindow),
+    tokensAfter,
+    percentAfter: percentOf(tokensAfter, contextWindow),
+    contextWindow,
+    minContextTokens: current.minContextTokens
+  }
+}
+
+function usageLines (usage: ContinuationUsage | undefined): string[] {
+  if (usage === undefined) return []
+  return ['', 'Context usage:', '```json', JSON.stringify(usage, null, 2), '```']
+}
+
 export function continuationText (
-  next: string | undefined, error?: Error, automatic = false
+  next: string | undefined, error?: Error, automatic = false, usage?: ContinuationUsage
 ): string {
   const lines = error !== undefined
     ? [
@@ -60,6 +136,7 @@ export function continuationText (
       : ['Context compaction requested via compact_context has finished.']
   lines.push('Continue the task from where it stopped; do not call compact_context ' +
     'again unless explicitly instructed.')
+  lines.push(...usageLines(usage))
   if (next !== undefined) lines.push('', 'Next step noted before compaction:', next)
   return lines.join('\n')
 }
@@ -77,11 +154,14 @@ export function notStartedText (reason: string): string {
     'active skill still requires it.'
 }
 
-export function autoCompactedText (next: string | undefined): string {
+export function autoCompactedText (
+  next: string | undefined, usage?: ContinuationUsage
+): string {
   const lines = [
     'Context compaction requested via compact_context is no longer needed: Pi already ' +
       'compacted the context automatically after the request. Do not call ' +
-      'compact_context again; handle the new messages first, then continue the task.'
+      'compact_context again; handle the new messages first, then continue the task.',
+    ...usageLines(usage)
   ]
   if (next !== undefined) lines.push('', 'Next step noted before compaction:', next)
   return lines.join('\n')
@@ -115,12 +195,14 @@ export default function compactContext (pi: ExtensionAPI): void {
     reset()
     return true
   }
-  const resume = (current: CompactRequest, error?: Error, automatic = false): void => {
+  const resume = (
+    current: CompactRequest, error?: Error, automatic = false, usage?: ContinuationUsage
+  ): void => {
     pi.sendMessage({
       customType: COMPACT_CONTEXT_MESSAGE_TYPE,
-      content: continuationText(current.next, error, automatic),
+      content: continuationText(current.next, error, automatic, usage),
       display: true,
-      details: { error: error?.message, next: current.next }
+      details: { error: error?.message, next: current.next, ...usage }
     }, { triggerTurn: true, deliverAs: 'followUp' })
   }
   const notStarted = (reason: string, options: SendOptions, notice?: number): void => {
@@ -147,7 +229,7 @@ export default function compactContext (pi: ExtensionAPI): void {
     return { block: true, reason: SINGLE_CALL_REASON }
   })
 
-  pi.on('turn_start', () => {
+  pi.on('turn_start', (_event, ctx) => {
     if (state !== 'requested' || request === undefined) return
     const current = request
     reset()
@@ -159,11 +241,14 @@ export default function compactContext (pi: ExtensionAPI): void {
       notStarted('new messages arrived before the turn ended', steer, notice)
       return
     }
+    const usage = continuationUsage(
+      ctx, current, current.tokensBefore, estimateTokensAfter(ctx)
+    )
     pi.sendMessage({
       customType: COMPACT_CONTEXT_MESSAGE_TYPE,
-      content: autoCompactedText(current.next),
+      content: autoCompactedText(current.next, usage),
       display: true,
-      details: { next: current.next, notice }
+      details: { next: current.next, notice, ...usage }
     }, steer)
   })
 
@@ -179,7 +264,9 @@ export default function compactContext (pi: ExtensionAPI): void {
     if (request === undefined) return
     request.compacted = true
     const automatic = event.reason === 'threshold' || event.reason === 'overflow'
-    if (state === 'requested' && automatic) request.autoCompacted = true
+    if (state !== 'requested' || !automatic) return
+    request.autoCompacted = true
+    request.tokensBefore = event.compactionEntry.tokensBefore
   })
 
   pi.on('session_compact_failed', (event) => {
@@ -199,7 +286,10 @@ export default function compactContext (pi: ExtensionAPI): void {
     state = 'compacting'
     if (current.autoCompacted) {
       reset()
-      resume(current, undefined, true)
+      const usage = continuationUsage(
+        ctx, current, current.tokensBefore, estimateTokensAfter(ctx)
+      )
+      resume(current, undefined, true, usage)
       return
     }
     if (!ctx.isIdle() || ctx.hasPendingMessages()) {
@@ -218,8 +308,11 @@ export default function compactContext (pi: ExtensionAPI): void {
     try {
       ctx.compact({
         customInstructions: current.instructions,
-        onComplete: () => {
-          if (settle(current)) resume(current)
+        onComplete: (result) => {
+          if (!settle(current)) return
+          const tokensAfter = result.estimatedTokensAfter ?? estimateTokensAfter(ctx)
+          resume(current, undefined, false,
+            continuationUsage(ctx, current, result.tokensBefore, tokensAfter))
         },
         onError: (error) => {
           if (!settle(current)) return
@@ -259,19 +352,21 @@ export default function compactContext (pi: ExtensionAPI): void {
     async execute (_toolCallId, params, signal, _onUpdate, ctx) {
       if (state !== 'idle') throw new Error('Context compaction is already in progress')
       const { minContextTokens } = params
+      const atCall = contextSnapshot(ctx)
+      const usage = {
+        tokens: atCall.tokens,
+        minContextTokens: minContextTokens ?? null,
+        contextWindow: atCall.contextWindow,
+        percent: atCall.percent
+      }
       if (minContextTokens !== undefined) {
-        const usage = ctx.getContextUsage()
-        const tokens = usage?.tokens ?? null
+        const { tokens } = atCall
         if (tokens === null || tokens < minContextTokens) {
           const skipped = {
             success: true as const,
             skipped: true as const,
             reason: tokens === null ? 'unknown' as const : 'below-threshold' as const,
-            tokens,
-            minContextTokens,
-            ...(usage !== undefined
-              ? { contextWindow: usage.contextWindow, percent: usage.percent }
-              : {}),
+            ...usage,
             message: skippedText(tokens, minContextTokens)
           }
           return {
@@ -290,6 +385,9 @@ export default function compactContext (pi: ExtensionAPI): void {
         instructions: optionalText(params.instructions),
         next: optionalText(params.next),
         signal,
+        minContextTokens: minContextTokens ?? null,
+        atCall,
+        tokensBefore: null,
         compacted: false,
         autoCompacted: false,
         aborted: false
@@ -297,6 +395,7 @@ export default function compactContext (pi: ExtensionAPI): void {
       state = 'requested'
       const result = {
         success: true as const,
+        ...usage,
         message: 'Context compaction will start after this turn ends, then a ' +
           'continuation message follows; do nothing else in this turn'
       }
