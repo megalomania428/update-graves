@@ -144,7 +144,23 @@
  import type {
    AskUserCloseResponse,
    AskUserOutcome,
-@@ -171,6 +172,21 @@
+@@ -141,10 +142,12 @@
+ /**
+  * Tracked subsessions are worktree-scoped, so a requested target other than the
+  * parent's own cwd fails closed instead of being silently retargeted. The
+- * message names the rule and both supported ways to get work done elsewhere.
++ * message names the rule and the supported ways to get work done elsewhere;
++ * spawn_session is only suggested while that tool is enabled.
+  */
+-function subsessionCwdError(spawningCwd: string, requestedCwd: string): Error {
+-  return new Error(`A tracked subsession runs in this session's working directory (${spawningCwd}); ${requestedCwd} was requested. Instruct the child to work elsewhere from this workspace, or use spawn_session for an independent session in another workspace.`);
++function subsessionCwdError(spawningCwd: string, requestedCwd: string, spawnSessionAvailable: boolean): Error {
++  const alternative = spawnSessionAvailable ? ", or use spawn_session for an independent session in another workspace" : "";
++  return new Error(`A tracked subsession runs in this session's working directory (${spawningCwd}); ${requestedCwd} was requested. Instruct the child to work elsewhere from this workspace${alternative}.`);
+ }
+ 
+ function modelSpecOf(model: { provider: string; id: string }): string {
+@@ -171,6 +174,21 @@
    return new Error(`Unknown model "${modelSpec}". Pass an exact "provider/model-id".`);
  }
  
@@ -166,8 +182,72 @@
  function authLossWarningKey(sessionId: string, provider: string, modelId: string): string {
    return `${sessionId}:${provider}/${modelId}`;
  }
-@@ -1487,25 +1503,21 @@
-     if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
+@@ -1059,15 +1077,22 @@
+   heartbeatIntervalMs?: number;
+   workspaceActivity?: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity">;
+   /**
+-   * When provided, `spawn_session` is available to sessions whose creation
+-   * provenance permits delegation, scoped to the project's workspaces.
+-   * Omit to keep the capability disabled.
++   * Project-scope resolver shared by `spawn_session` and the tracked-subsession
++   * tools: it keeps every new session in a workspace of the spawning session's
++   * registered project. Omit to keep both capabilities disabled.
+    */
+   spawnTargets?: SpawnTargetResolver;
++  /**
++   * When true or omitted (and `spawnTargets` is provided), `spawn_session` is
++   * available to sessions whose creation provenance permits delegation. False
++   * keeps it off without affecting the tracked-subsession tools.
++   */
++  spawnSessionsEnabled?: boolean;
+   /**
+    * When true (and `spawnTargets` is provided), the tracked-subsession
+    * tools are available to sessions whose creation provenance permits
+-   * delegation. On by default; the operator opts out via config or environment.
++   * delegation, independent of `spawnSessionsEnabled`. On by default; the
++   * operator opts out via config or environment.
+    */
+   subsessionsEnabled?: boolean;
+   /**
+@@ -1184,6 +1209,7 @@
+   private readonly modelRuntime: ModelRuntime;
+   private readonly workspaceActivity: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity"> | undefined;
+   private readonly spawnTargets: SpawnTargetResolver | undefined;
++  private readonly spawnSessionsActive: boolean;
+   private readonly logger: PiSessionLogger;
+   private readonly now: () => Date;
+   private readonly notificationStore: SessionNotificationStore;
+@@ -1214,6 +1240,7 @@
+     this.sessionManager = deps.sessionManager;
+     this.modelRuntime = deps.modelRuntime;
+     this.spawnTargets = deps.spawnTargets;
++    this.spawnSessionsActive = this.spawnTargets !== undefined && deps.spawnSessionsEnabled !== false;
+     this.logger = deps.logger ?? noopLogger;
+     this.now = deps.now ?? (() => new Date());
+     this.notificationStore = deps.notificationStore ?? new SessionNotificationStore();
+@@ -1229,13 +1256,13 @@
+       deps.unreadPublicationRetryDelayMs ?? DEFAULT_UNREAD_PUBLICATION_RETRY_MS,
+     );
+     this.unreadPublicationRetryDelayMs = this.unreadPublicationRetryInitialMs;
+-    // Subsessions are gated behind their own flag, and they
+-    // also require the spawn capability (they share its project-scope resolver).
++    // Subsessions are gated behind their own flag, independent of spawn_session;
++    // both need the shared project-scope resolver.
+     const subsessionsActive = this.spawnTargets !== undefined && deps.subsessionsEnabled === true;
+     this.createRuntime = deps.createRuntime ?? createDefaultRuntimeFactory(
+       this.modelRuntime,
+       this.sessionManager,
+-      this.spawnTargets === undefined ? undefined : (input) => this.spawnSession(input),
++      this.spawnSessionsActive ? (input) => this.spawnSession(input) : undefined,
+       !subsessionsActive ? undefined : {
+         spawn: (input) => this.spawnSubsession(input),
+         list: (parentSessionId, parentSessionFile) => this.listSubsessions(parentSessionId, parentSessionFile),
+@@ -1484,28 +1511,24 @@
+    * as the spawning session so the new session is visible in the web UI.
+    */
+   async spawnSession(input: SpawnSessionInvocation): Promise<SpawnSessionResult> {
+-    if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
++    if (this.spawnTargets === undefined || !this.spawnSessionsActive) throw new Error("Spawning sessions is disabled");
      const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, input.cwd);
      if (!decision.allowed) throw spawnTargetError(decision);
 -    // A model spec overrides the inherited model. Only a spec resolves
@@ -198,7 +278,14 @@
      };
    }
  
-@@ -1526,18 +1538,14 @@
+@@ -1520,24 +1543,20 @@
+   async spawnSubsession(input: SpawnSubsessionInvocation): Promise<SpawnSubsessionResult> {
+     if (this.spawnTargets === undefined) throw new Error("Spawning sessions is disabled");
+     if (input.cwd !== undefined && input.cwd !== "" && !cwdPathsEqual(input.cwd, input.spawningCwd)) {
+-      throw subsessionCwdError(input.spawningCwd, input.cwd);
++      throw subsessionCwdError(input.spawningCwd, input.cwd, this.spawnSessionsActive);
+     }
+     // Resolved against the parent's own cwd only: this still refuses spawning
      // from an unregistered directory, which keeps the child visible in the UI.
      const decision = await this.spawnTargets.resolveSpawnTarget(input.spawningCwd, undefined);
      if (!decision.allowed) throw spawnTargetError(decision);
@@ -221,7 +308,7 @@
      const parentSessionFile = nonEmptyString(input.parentSessionFile);
      const link: TrackedSubsessionLink = {
        parentSessionId: input.parentSessionId,
-@@ -1551,13 +1559,13 @@
+@@ -1551,13 +1570,13 @@
      this.persistSubsessionChildMarker(input.parentSessionId, created.id);
      await this.prompt(created, input.prompt);
      this.logger.info(
@@ -237,10 +324,11 @@
      };
    }
  
-@@ -1700,6 +1708,55 @@
+@@ -1699,6 +1718,55 @@
+     return model;
    }
  
-   /**
++  /**
 +   * Resolve both the model and initial thinking level shared by
 +   * {@link spawnSession} and {@link spawnSubsession}. A `model` suffix
 +   * (`provider/model-id:level`) takes priority over the tool's own
@@ -289,7 +377,117 @@
 +    };
 +  }
 +
-+  /**
+   /**
     * Register the question set an agent wants the user to answer as the session's
     * open ask. Deliberately does not wait for the user: `ask_user` terminates the
-    * run and the submitted answers come back later as a follow-up message.
+--- a/src/server/sessiond.ts
++++ b/src/server/sessiond.ts
+@@ -251,7 +251,7 @@
+     // daemon startup must not depend on how long that takes.
+     machineStatus.notifyChanged();
+     const projectWorkspaceDeps = { projects, workspaces: workspaceProviders };
+-    const spawnTargets = config.spawnSessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
++    const spawnTargets = config.spawnSessions || config.subsessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
+     const sessions = new PiSessionService(eventHub, sessionServiceDependencies({
+       modelRuntime: auth.runtime,
+       agentDir: activeAgentProfile.dir,
+@@ -259,6 +259,7 @@
+       workspaceActivity,
+       logger: app.log,
+       ...(spawnTargets === undefined ? {} : { spawnTargets }),
++      spawnSessionsEnabled: config.spawnSessions,
+       subsessionsEnabled: config.subsessions,
+       askUserEnabled: config.askUser,
+       config: configService,
+--- a/src/server/sessiond/sessionServiceDependencies.ts
++++ b/src/server/sessiond/sessionServiceDependencies.ts
+@@ -23,9 +23,11 @@
+   catalogRefreshStatus: NonNullable<PiSessionServiceDependencies["catalogRefreshStatus"]>;
+   /** Live global config reader for request-time workspace-effective defaults (e.g. the attachments save folder). */
+   config: NonNullable<PiSessionServiceDependencies["config"]>;
+-  /** Omitted when the operator has not enabled session spawning. */
++  /** Omitted when the operator has enabled neither session spawning nor subsessions. */
+   spawnTargets?: NonNullable<PiSessionServiceDependencies["spawnTargets"]>;
+-  /** The operator's subsessions preference, which also requires spawning. */
++  /** The operator's spawn_session preference, independent of subsessions. */
++  spawnSessionsEnabled: boolean;
++  /** The operator's subsessions preference, independent of spawn_session. */
+   subsessionsEnabled: boolean;
+   /** Whether agents may post structured question sets to the browser. */
+   askUserEnabled: boolean;
+@@ -53,8 +55,9 @@
+     workspaceActivity: input.workspaceActivity,
+     logger: input.logger,
+     ...(input.spawnTargets === undefined ? {} : { spawnTargets: input.spawnTargets }),
+-    // Tracked subsessions share the spawn capability's project-scope resolver,
+-    // so they stay off unless spawning is configured too.
++    // spawn_session and tracked subsessions share the project-scope resolver but
++    // are switched independently, so each stays off without the resolver.
++    spawnSessionsEnabled: input.spawnTargets !== undefined && input.spawnSessionsEnabled,
+     subsessionsEnabled: input.spawnTargets !== undefined && input.subsessionsEnabled,
+     askUserEnabled: input.askUserEnabled,
+     appendSystemPromptSections: input.appendSystemPromptSections,
+--- a/src/server/sessiond/sessionServiceDependencies.test.ts
++++ b/src/server/sessiond/sessionServiceDependencies.test.ts
+@@ -26,6 +26,7 @@
+     onUnreadChanged: () => { /* no-op */ },
+     catalogRefreshStatus: { isRefreshInFlight: () => false },
+     config: { read: () => Promise.reject(new Error("config read not expected in this test")) },
++    spawnSessionsEnabled: false,
+     subsessionsEnabled: false,
+     askUserEnabled: true,
+     appendSystemPromptSections: [],
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -321,8 +321,8 @@
+  * Whether LLMs may start tracked child sessions via the spawn_subsession
+  * family of tools. On by default; set the env var `PI_WEB_SUBSESSIONS` or the
+  * `subsessions` config key to `false` to disable. The env var takes precedence
+- * over the config file. Subsessions also require spawnSessions to be enabled
+- * (they share the same project-scope resolver).
++ * over the config file. Independent of spawnSessions: disabling spawn_session
++ * keeps these tools available.
+  */
+ export function subsessionsEnabled(env: NodeJS.ProcessEnv = process.env, config: PiWebConfig = {}): boolean {
+   const fromEnv = env["PI_WEB_SUBSESSIONS"];
+--- a/src/shared/apiTypes.ts
++++ b/src/shared/apiTypes.ts
+@@ -203,8 +203,8 @@
+   /**
+    * When true, LLMs can start tracked child sessions via the
+    * spawn_subsession / list_subsessions / check_subsession / read_subsession
+-   * tools. On by default; set to `false` to disable. Requires spawnSessions
+-   * to be enabled.
++   * tools. On by default; set to `false` to disable. Independent of
++   * spawnSessions.
+    */
+   subsessions?: boolean;
+   /**
+--- a/src/client/src/components/settings/SettingsSessiondPanel.ts
++++ b/src/client/src/components/settings/SettingsSessiondPanel.ts
+@@ -23,8 +23,8 @@
+     // state, so an unset config file still shows the feature as enabled.
+     const effectiveSpawn = config?.effectiveConfig.spawnSessions !== false;
+     const subsessionsOverridden = config?.envOverrides.subsessions === true;
+-    // On by default; also requires spawn to be enabled.
+-    const effectiveSubsessions = config?.effectiveConfig.subsessions === true && effectiveSpawn;
++    // On by default; independent of the spawn_session toggle.
++    const effectiveSubsessions = config?.effectiveConfig.subsessions === true;
+     const askUserOverridden = config?.envOverrides.askUser === true;
+     const effectiveAskUser = config?.effectiveConfig.askUser === true;
+     return html`
+@@ -66,12 +66,12 @@
+               <input
+                 type="checkbox"
+                 .checked=${effectiveSubsessions}
+-                ?disabled=${this.loading || this.saving || subsessionsOverridden || !effectiveSpawn}
++                ?disabled=${this.loading || this.saving || subsessionsOverridden}
+                 @change=${(event: Event) => { void this.toggleSubsessions(event); }}
+               >
+               <span>Enable the <code>spawn_subsession</code> tools</span>
+             </label>
+-            <small>Agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires "Allow agents to start sessions". On by default.</small>
++            <small>Agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. On by default.</small>
+           </div>
+           <div class="field">
+             <span class="field-heading">
