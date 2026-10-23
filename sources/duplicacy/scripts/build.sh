@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # cspell:ignore ldflags trimpath goproxy modzip
-# cspell:ignore duplicacy gilbertchen xargs GOARCH lzma gomod endgroup
+# cspell:ignore duplicacy gilbertchen xargs GOARCH lzma gomod endgroup GOARM riscv ppc
 MODULE='duplicacy.invalid/v3'
 OUT_DIR="${GRAVES_OUT_DIR:?}"
 FILE_VERSION="${GRAVES_FILE_VERSION:?}"
@@ -61,7 +61,11 @@ test)
   ;;
 bin)
   sha="$(git rev-parse --short HEAD)"
-  for platform in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+  platforms=(
+    linux/amd64 linux/arm64 linux/386 linux/arm linux/riscv64 linux/ppc64le
+    darwin/amd64 darwin/arm64 windows/amd64 windows/386 freebsd/amd64 freebsd/arm64
+  )
+  for platform in "${platforms[@]}"; do
     os="${platform%/*}"
     arch="${platform#*/}"
     name="duplicacy-${FILE_VERSION}-${os}-${arch}"
@@ -70,9 +74,18 @@ bin)
       ext='.exe'
     fi
     step_begin "go build ${platform}"
-    CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" go build -trimpath -o \
+    # GOARM only affects linux/arm and is ignored by every other GOARCH
+    CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" GOARM=7 go build -trimpath -o \
       "${OUT_DIR}/${name}${ext}" \
       -ldflags "-s -w -X 'main.GitCommit=${sha} ${GRAVES_VERSION}'" ./duplicacy
+    if [[ "${os}" == 'linux' || "${os}" == 'freebsd' ]]; then
+      info="$(file -b "${OUT_DIR}/${name}")"
+      echo "${info}"
+      if [[ "${info}" != *'statically linked'* ]]; then
+        echo "${name} is not statically linked" >&2
+        exit 1
+      fi
+    fi
     step_end
     step_begin "archive ${name}"
     (

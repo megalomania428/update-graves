@@ -132,6 +132,25 @@ index 6b0bebe..fd13226 100755
  
  
  . ./test_functions.sh
+diff --git a/src/duplicacy_chunkoperator_test.go b/src/duplicacy_chunkoperator_test.go
+index 2e83309..88a9810 100644
+--- a/src/duplicacy_chunkoperator_test.go
++++ b/src/duplicacy_chunkoperator_test.go
+@@ -19,7 +19,13 @@ func TestChunkOperator(t *testing.T) {
+ 
+ 	rand.Seed(time.Now().UnixNano())
+ 	setTestingT(t)
+-	SetLoggingLevel(DEBUG)
++	// INFO instead of the upstream DEBUG keeps CI logs readable: the logging level is
++	// global, so DEBUG here leaked TRACE and DEBUG output into every later test.
++	// Switch back to DEBUG when investigating a failure of this test.
++	// Alternative: keep DEBUG and add "defer SetLoggingLevel(INFO)" right after it,
++	// which stops the leak into other tests but keeps the per-chunk DEBUG and TRACE
++	// output of this test.
++	SetLoggingLevel(INFO)
+ 
+ 	defer func() {
+ 		if r := recover(); r != nil {
 diff --git a/src/duplicacy_entry_test.go b/src/duplicacy_entry_test.go
 index 670a16b..6c7eae1 100644
 --- a/src/duplicacy_entry_test.go
