@@ -2,7 +2,7 @@
 upstream:
   url: https://github.com/jmfederico/pi-web.git
   ref: v1.202609.0
-  patch: 6
+  patch: 7
 targets:
   - name: npm
     image: ghcr.io/raven428/node-builder:latest

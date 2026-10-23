@@ -1,0 +1,2504 @@
+diff --git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+index 1e27ea0..cdb38c9 100644
+--- a/src/client/src/api/parsers.ts
++++ b/src/client/src/api/parsers.ts
+@@ -507,7 +507,7 @@ export function parseSessionDialogOpenedEvent(value: unknown): { type: "dialog.o
+   return { type: "dialog.opened", dialog: parsePendingExtensionDialog(record["dialog"]) };
+ }
+ 
+-export function parseSessionDialogClosedEvent(value: unknown): { type: "dialog.closed"; dialogId: string; reason: ExtensionDialogCloseReason; answer?: ExtensionDialogAnswer } {
++export function parseSessionDialogClosedEvent(value: unknown): { type: "dialog.closed"; dialogId: string; reason: ExtensionDialogCloseReason; answer?: ExtensionDialogAnswer; closedAt?: string } {
+   const record = requireRecord(value);
+   if (record["type"] !== "dialog.closed") throw new Error("Invalid dialog closed event type");
+   const reason = parseExtensionDialogCloseReason(record["reason"]);
+@@ -520,6 +520,7 @@ export function parseSessionDialogClosedEvent(value: unknown): { type: "dialog.c
+     dialogId: requireBoundedNonEmptyString(record, "dialogId", EXTENSION_DIALOG_ID_MAX_LENGTH),
+     reason,
+     ...(answer === undefined ? {} : { answer }),
++    ...optionalField("closedAt", optionalString(record, "closedAt")),
+   };
+ }
+ 
+@@ -583,12 +584,13 @@ function parseSessionRunningTool(value: unknown): SessionRunningTool {
+   const end = record["end"] === undefined ? undefined : requireRecord(record["end"]);
+   return {
+     ...optionalField("end", end === undefined
+-      ? undefined : { isError: requireBoolean(end, "isError") }),
++      ? undefined : { isError: requireBoolean(end, "isError"), ...optionalField("at", optionalString(end, "at")) }),
+     toolCallId: requireString(record, "toolCallId"),
+     toolName: requireString(record, "toolName"),
+     text: requireString(record, "text"),
+     ...optionalField("content", record["content"]),
+     ...optionalField("details", record["details"]),
++    ...optionalField("startedAt", optionalString(record, "startedAt")),
+   };
+ }
+ 
+@@ -598,6 +600,7 @@ function parseSessionRunningShell(value: unknown): SessionRunningShell {
+     command: requireString(record, "command"),
+     excludeFromContext: requireBoolean(record, "excludeFromContext"),
+     output: requireString(record, "output"),
++    ...optionalField("startedAt", optionalString(record, "startedAt")),
+     ...optionalField("end", record["end"] === undefined ? undefined : parseSessionRunningShellEnd(record["end"])),
+   };
+ }
+@@ -610,6 +613,7 @@ function parseSessionRunningShellEnd(value: unknown): NonNullable<SessionRunning
+     ...optionalField("truncated", parseOptionalBoolean(record["truncated"], "truncated")),
+     ...optionalField("fullOutputPath", optionalString(record, "fullOutputPath")),
+     ...optionalField("isError", parseOptionalBoolean(record["isError"], "isError")),
++    ...optionalField("at", optionalString(record, "at")),
+   };
+ }
+ 
+@@ -718,9 +722,9 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+       // guaranteed at this boundary.
+       return { type: "message.append", message: requirePresent(record, "message") };
+     case "assistant.delta":
+-      return { type: "assistant.delta", text: requireString(record, "text") };
++      return { type: "assistant.delta", text: requireString(record, "text"), ...optionalField("timestamp", optionalString(record, "timestamp")) };
+     case "assistant.thinking.delta":
+-      return { type: "assistant.thinking.delta", text: requireString(record, "text") };
++      return { type: "assistant.thinking.delta", text: requireString(record, "text"), ...optionalField("timestamp", optionalString(record, "timestamp")) };
+     case "tool.start":
+       return {
+         type: "tool.start",
+@@ -728,6 +732,7 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+         toolCallId: requireString(record, "toolCallId"),
+         summary: requireString(record, "summary"),
+         ...optionalField("args", record["args"]),
++        ...optionalField("at", optionalString(record, "at")),
+       };
+     case "tool.update":
+       return {
+@@ -747,12 +752,14 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+         isError: requireBoolean(record, "isError"),
+         ...optionalField("content", record["content"]),
+         ...optionalField("details", record["details"]),
++        ...optionalField("at", optionalString(record, "at")),
+       };
+     case "shell.start":
+       return {
+         type: "shell.start",
+         command: requireString(record, "command"),
+         ...optionalField("excludeFromContext", parseOptionalBoolean(record["excludeFromContext"], "excludeFromContext")),
++        ...optionalField("at", optionalString(record, "at")),
+       };
+     case "shell.chunk":
+       return { type: "shell.chunk", chunk: requireString(record, "chunk") };
+@@ -765,6 +772,7 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+         ...optionalField("truncated", parseOptionalBoolean(record["truncated"], "truncated")),
+         ...optionalField("fullOutputPath", optionalString(record, "fullOutputPath")),
+         ...optionalField("isError", parseOptionalBoolean(record["isError"], "isError")),
++        ...optionalField("at", optionalString(record, "at")),
+       };
+     case "agent.start":
+       return { type: "agent.start" };
+@@ -1226,6 +1234,7 @@ function parseTokens(value: unknown): SessionStatus["tokens"] {
+     cacheRead: requireNumber(record, "cacheRead"),
+     cacheWrite: requireNumber(record, "cacheWrite"),
+     total: requireNumber(record, "total"),
++    ...optionalField("reasoning", optionalNumber(record, "reasoning")),
+   };
+ }
+ 
+diff --git a/src/client/src/appState.ts b/src/client/src/appState.ts
+index 6eb1b39..ac0f5c4 100644
+--- a/src/client/src/appState.ts
++++ b/src/client/src/appState.ts
+@@ -103,6 +103,8 @@ export interface ClosedExtensionDialog {
+   reason: ExtensionDialogCloseReason;
+   /** Present only when `reason` is `"answered"`. */
+   answer?: ExtensionDialogAnswer;
++  /** Daemon time the dialog closed, when known. */
++  closedAt?: string;
+ }
+ 
+ /** `machineId` stays bound to the machine selected when the auth operation began. */
+diff --git a/src/client/src/chatGroups.test.ts b/src/client/src/chatGroups.test.ts
+index 92e5e17..be560b0 100644
+--- a/src/client/src/chatGroups.test.ts
++++ b/src/client/src/chatGroups.test.ts
+@@ -70,6 +70,18 @@ describe("groupChatMessages", () => {
+     ]);
+   });
+ 
++  it("gives a live call's result image the call's end time instead of the answer's metadata", () => {
++    const meta = { timestamp: "2026-07-13T22:00:00.000Z", completedAt: "2026-07-13T22:00:02.000Z", model: { provider: "test", id: "model" } };
++    const image = { type: "image" as const, mimeType: "image/webp", data: "QUJD" };
++    const call = { type: "toolExecution" as const, toolName: "read", summary: "a.webp", status: "success" as const, endedAt: "2026-07-13T22:00:05.000Z" };
++    const message: ChatLine = { role: "tool", parts: [call, image], meta };
++
++    expect(groupChatMessages([message])).toEqual([
++      { kind: "group", startIndex: 0, endIndex: 0, messages: [{ role: "tool", parts: [call], meta }] },
++      { kind: "tool-image", index: 0, message: { role: "tool", parts: [image], meta: { timestamp: "2026-07-13T22:00:05.000Z" } }, toolName: "read" },
++    ]);
++  });
++
+   it("keeps user images as ordinary messages", () => {
+     const image = { type: "image" as const, mimeType: "image/png", data: "QUJD" };
+     const message: ChatLine = { role: "user", parts: [image] };
+diff --git a/src/client/src/chatGroups.ts b/src/client/src/chatGroups.ts
+index 21e7d4b..4268ba7 100644
+--- a/src/client/src/chatGroups.ts
++++ b/src/client/src/chatGroups.ts
+@@ -57,7 +57,7 @@ export function groupChatMessages(messages: ChatLine[], indexOffset = 0, eventLi
+       const readableMessage = { role, parts: readableParts, ...metadata };
+       if (isToolImageMessage(readableMessage)) {
+         const toolName = toolNameFromParts(technicalParts);
+-        groups.push({ kind: "tool-image", message: readableMessage, index: absoluteIndex, ...(toolName === undefined ? {} : { toolName }) });
++        groups.push({ kind: "tool-image", message: toolImageMessage(readableMessage, technicalParts), index: absoluteIndex, ...(toolName === undefined ? {} : { toolName }) });
+       } else {
+         groups.push({ kind: "message", message: readableMessage, index: absoluteIndex });
+       }
+@@ -83,6 +83,18 @@ export function chatGroupPartLabel(part: number, partCount: number): string {
+   return `part ${String(part)}/${String(partCount)}`;
+ }
+ 
++/**
++ * A live call line holds its result images under the answer's metadata, which
++ * the call's card already shows; the images get the call's end time instead,
++ * as a stored tool result has.
++ */
++function toolImageMessage(message: ChatLine, technicalParts: ChatPart[]): ChatLine {
++  const calls = technicalParts.flatMap((part) => part.type === "toolExecution" ? [part] : []);
++  if (calls.length === 0) return message;
++  const endedAt = calls.at(-1)?.endedAt;
++  return { role: message.role, parts: message.parts, ...(message.source === undefined ? {} : { source: message.source }), ...(endedAt === undefined ? {} : { meta: { timestamp: endedAt } }) };
++}
++
+ function isToolImageMessage(message: ChatLine): boolean {
+   return message.role === "tool" && message.parts.length > 0 && message.parts.every((part) => part.type === "image");
+ }
+diff --git a/src/client/src/chatHistoryCache.ts b/src/client/src/chatHistoryCache.ts
+index f6c1c94..12ddba1 100644
+--- a/src/client/src/chatHistoryCache.ts
++++ b/src/client/src/chatHistoryCache.ts
+@@ -1,4 +1,4 @@
+-const CACHE_PREFIX = "pi-web:chat-history:v2:";
++const CACHE_PREFIX = "pi-web:chat-history:v3:";
+ const CACHE_TTL_MS = 30 * 60 * 1000;
+ 
+ export interface RawMessagePage {
+diff --git a/src/client/src/chatMessages.ts b/src/client/src/chatMessages.ts
+index 3c93a48..c9b2bfd 100644
+--- a/src/client/src/chatMessages.ts
++++ b/src/client/src/chatMessages.ts
+@@ -1,6 +1,6 @@
+ import { ASK_USER_ANSWERS_CUSTOM_TYPE } from "../../shared/apiTypes";
+ import { parseAskUserOutcome } from "./api/parsers";
+-import type { ChatLine, ChatPart, ToolExecutionPart, ToolPreview } from "./components/shared";
++import type { ChatLine, ChatPart, ChatUsage, ToolExecutionPart, ToolPreview } from "./components/shared";
+ 
+ export function normalizeMessages(messages: unknown[]): ChatLine[] {
+   return coalesceToolExecutions(messages.flatMap(normalizeMessage)).filter((message) => message.parts.length > 0);
+@@ -15,37 +15,43 @@ export function withMessageMeta(line: ChatLine, rawMessage: unknown): ChatLine {
+   return meta === undefined ? line : { ...line, meta };
+ }
+ 
+-export function appendText(messages: ChatLine[], role: ChatLine["role"], text: string): ChatLine[] {
++export function appendText(messages: ChatLine[], role: ChatLine["role"], text: string, timestamp?: string): ChatLine[] {
+   if (text === "") return messages;
+   const last = messages.at(-1);
+   const lastPart = last?.parts.at(-1);
+   if (last?.role === role && lastPart?.type === "text") {
+     return [
+       ...messages.slice(0, -1),
+-      { ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: lastPart.text + text }] },
++      withStartTimestamp({ ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: lastPart.text + text }] }, timestamp),
+     ];
+   }
+-  if (last?.role === role) return [...messages.slice(0, -1), { ...last, parts: [...last.parts, { type: "text", text }] }];
+-  return [...messages, textMessage(role, text)];
++  if (last?.role === role) return [...messages.slice(0, -1), withStartTimestamp({ ...last, parts: [...last.parts, { type: "text", text }] }, timestamp)];
++  return [...messages, withStartTimestamp(textMessage(role, text), timestamp)];
+ }
+ 
+-export function appendThinking(messages: ChatLine[], text: string): ChatLine[] {
++export function appendThinking(messages: ChatLine[], text: string, timestamp?: string): ChatLine[] {
+   if (text === "") return messages;
+   const last = messages.at(-1);
+   const lastPart = last?.parts.at(-1);
+   if (last?.role === "assistant" && lastPart?.type === "thinking") {
+     return [
+       ...messages.slice(0, -1),
+-      { ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: lastPart.text + text }] },
++      withStartTimestamp({ ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: lastPart.text + text }] }, timestamp),
+     ];
+   }
+-  if (last?.role === "assistant") return [...messages.slice(0, -1), { ...last, parts: [...last.parts, { type: "thinking", text }] }];
+-  return [...messages, { role: "assistant", parts: [{ type: "thinking", text }] }];
++  if (last?.role === "assistant") return [...messages.slice(0, -1), withStartTimestamp({ ...last, parts: [...last.parts, { type: "thinking", text }] }, timestamp)];
++  return [...messages, withStartTimestamp({ role: "assistant", parts: [{ type: "thinking", text }] }, timestamp)];
++}
++
++/** Give a streamed line its start time once, without touching metadata it already has. */
++function withStartTimestamp(line: ChatLine, timestamp: string | undefined): ChatLine {
++  if (timestamp === undefined || line.meta?.timestamp !== undefined) return line;
++  return { ...line, meta: { ...line.meta, timestamp } };
+ }
+ 
+ export function normalizeMessage(message: unknown): ChatLine[] {
+   if (isChatLine(message)) return [message];
+-  if (getString(message, "role") === "bashExecution") return [withMessageMeta(normalizeBashExecution(message), message)];
++  if (getString(message, "role") === "bashExecution") return [withBashEndTime(withMessageMeta(normalizeBashExecution(message), message))];
+   const rawRole = getString(message, "role");
+   const role = normalizeRole(rawRole);
+   const contentParts = normalizeContent(getProperty(message, "content"), message);
+@@ -62,7 +68,10 @@ export function normalizeMessage(message: unknown): ChatLine[] {
+   const displayRole = role === "assistant" && visible.length > 0 && visible.every((part) => part.type === "skillRead") ? "skill" : role;
+   const lines = visible.length > 0 ? [withMessageMeta({ role: displayRole, parts: visible, ...(source === undefined ? {} : { source }) }, message)] : [];
+   const errorLine = assistantErrorLine(message);
+-  return errorLine === undefined ? lines : [...lines, withMessageMeta(errorLine, message)];
++  if (errorLine === undefined) return lines;
++  // The error line repeats its answer's metadata; sharing the object lets headers count its usage and turn once.
++  const answerMeta = lines[0]?.meta;
++  return [...lines, answerMeta === undefined ? withMessageMeta(errorLine, message) : { ...errorLine, meta: answerMeta }];
+ }
+ 
+ function assistantErrorLine(message: unknown): ChatLine | undefined {
+@@ -108,16 +117,43 @@ function normalizeSource(message: unknown): ChatLine["source"] | undefined {
+ 
+ function normalizeMeta(message: unknown): ChatLine["meta"] | undefined {
+   const timestamp = normalizeTimestamp(getProperty(message, "timestamp"));
++  const completedAt = normalizeTimestamp(getProperty(message, "completedAt"));
++  const stopReason = completedAt === undefined ? undefined : getString(message, "stopReason");
++  // A streamed answer gets its counters only once it has finished.
++  const usage = getString(message, "role") === "assistant" && completedAt === undefined ? undefined : normalizeUsage(message);
+   const model = normalizeModel(message);
+   const thinkingLevel = getString(message, "thinkingLevel");
+-  if (timestamp === undefined && model === undefined && (thinkingLevel === undefined || thinkingLevel === "")) return undefined;
++  if (timestamp === undefined && completedAt === undefined && usage === undefined && model === undefined && (thinkingLevel === undefined || thinkingLevel === "")) return undefined;
+   return {
+     ...(timestamp === undefined ? {} : { timestamp }),
++    ...(completedAt === undefined ? {} : { completedAt }),
++    ...(usage === undefined ? {} : { usage }),
++    ...(stopReason === undefined || stopReason === "" ? {} : { stopReason }),
+     ...(model === undefined ? {} : { model }),
+     ...(thinkingLevel === undefined || thinkingLevel === "" ? {} : { thinkingLevel }),
+   };
+ }
+ 
++/** Pi usage counters; `totalTokens` falls back to the sum of the four counts and `reasoning` stays absent when unreported. */
++function normalizeUsage(message: unknown): ChatUsage | undefined {
++  const usage = getProperty(message, "usage");
++  const input = getNumber(usage, "input");
++  const output = getNumber(usage, "output");
++  if (input === undefined || output === undefined) return undefined;
++  const cacheRead = getNumber(usage, "cacheRead") ?? 0;
++  const cacheWrite = getNumber(usage, "cacheWrite") ?? 0;
++  const reported = getNumber(usage, "totalTokens");
++  const reasoning = getNumber(usage, "reasoning");
++  return {
++    input,
++    output,
++    cacheRead,
++    cacheWrite,
++    totalTokens: reported === undefined || reported <= 0 ? input + output + cacheRead + cacheWrite : reported,
++    ...(reasoning === undefined ? {} : { reasoning }),
++  };
++}
++
+ function normalizeTimestamp(value: unknown): string | undefined {
+   if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+   if (typeof value !== "string" || value === "") return undefined;
+@@ -152,6 +188,12 @@ function normalizeBashExecution(message: unknown): ChatLine {
+   return { role: "bash", parts: [{ type: "text", text: lines.join("\n") }] };
+ }
+ 
++/** Pi stamps a `!` result when the command finishes, so its stored time is the end, not the start. */
++function withBashEndTime(line: ChatLine): ChatLine {
++  const end = line.meta?.timestamp;
++  return end === undefined ? line : { ...line, meta: { completedAt: end } };
++}
++
+ function normalizeRole(role: unknown): ChatLine["role"] {
+   if (role === "assistant") return "assistant";
+   if (role === "user") return "user";
+@@ -245,6 +287,9 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+   for (const line of lines) {
+     let passthroughParts: ChatPart[] = [];
+     const metadata = { ...(line.source === undefined ? {} : { source: line.source }), ...(line.meta === undefined ? {} : { meta: line.meta }) };
++    // Pi starts a call after its answer ends; with several calls in one answer they share that start, so only a lone call gets it.
++    const callCount = line.parts.filter((part) => part.type === "toolCall" || part.type === "skillRead").length;
++    const loneCallStart = line.role === "assistant" && callCount === 1 ? line.meta?.completedAt : undefined;
+     const flushPassthrough = () => {
+       if (passthroughParts.length === 0) return;
+       result.push({ role: line.role, parts: passthroughParts, ...metadata });
+@@ -254,7 +299,7 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+     for (const part of line.parts) {
+       if (part.type === "toolCall") {
+         flushPassthrough();
+-        const execution = toolExecutionFromCall(part);
++        const execution = toolExecutionFromCall(part, loneCallStart);
+         const lineIndex = result.length;
+         result.push({ role: "tool", parts: [execution], ...metadata });
+         if (execution.toolCallId !== undefined) pendingTools.set(execution.toolCallId, { lineIndex, partIndex: 0 });
+@@ -263,7 +308,7 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+ 
+       if (part.type === "toolResult") {
+         const target = part.toolCallId === undefined ? undefined : pendingTools.get(part.toolCallId);
+-        if (target !== undefined && mergeToolResultInto(result, target, part)) {
++        if (target !== undefined && mergeToolResultInto(result, target, part, line.meta?.timestamp, line.meta?.usage)) {
+           pendingTools.delete(part.toolCallId ?? "");
+           continue;
+         }
+@@ -278,7 +323,7 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+   return result;
+ }
+ 
+-function toolExecutionFromCall(part: Extract<ChatPart, { type: "toolCall" }>): ToolExecutionPart {
++function toolExecutionFromCall(part: Extract<ChatPart, { type: "toolCall" }>, startedAt?: string): ToolExecutionPart {
+   return {
+     type: "toolExecution",
+     ...(part.toolCallId === undefined ? {} : { toolCallId: part.toolCallId }),
+@@ -286,10 +331,11 @@ function toolExecutionFromCall(part: Extract<ChatPart, { type: "toolCall" }>): T
+     summary: part.summary,
+     ...(part.args === undefined ? {} : { args: part.args }),
+     status: "pending",
++    ...(startedAt === undefined ? {} : { startedAt }),
+   };
+ }
+ 
+-function mergeToolResultInto(lines: ChatLine[], target: { lineIndex: number; partIndex: number }, result: Extract<ChatPart, { type: "toolResult" }>): boolean {
++function mergeToolResultInto(lines: ChatLine[], target: { lineIndex: number; partIndex: number }, result: Extract<ChatPart, { type: "toolResult" }>, endedAt?: string, usage?: ChatUsage): boolean {
+   const line = lines[target.lineIndex];
+   const current = line?.parts[target.partIndex];
+   if (line === undefined || current?.type !== "toolExecution") return false;
+@@ -301,6 +347,8 @@ function mergeToolResultInto(lines: ChatLine[], target: { lineIndex: number; par
+     ...(result.content === undefined ? {} : { content: result.content }),
+     ...(result.details === undefined ? {} : { details: result.details }),
+     ...(preview === undefined ? {} : { preview }),
++    ...(endedAt === undefined ? {} : { endedAt }),
++    ...(usage === undefined ? {} : { usage }),
+   };
+   lines[target.lineIndex] = { ...line, parts: [...line.parts.slice(0, target.partIndex), next, ...line.parts.slice(target.partIndex + 1)] };
+   return true;
+diff --git a/src/client/src/chatMeta.test.ts b/src/client/src/chatMeta.test.ts
+new file mode 100644
+index 0000000..faac02e
+--- /dev/null
++++ b/src/client/src/chatMeta.test.ts
+@@ -0,0 +1,302 @@
++import { describe, expect, it } from "vitest";
++import { chatGroupMetaSegments, chatMessageMetaSegments, chatMetaFirstIndexes, chatSpanSegments, chatTokenSegment, chatToolAnswerHeaderIndexes, chatTurnDurations, formatChatDuration, formatChatTimestamp, formatChatTokens, metaSegmentsText, sumChatUsage } from "./chatMeta";
++import type { ChatLine, ChatUsage } from "./components/shared";
++
++const local = (seconds: number) => new Date(2026, 9, 22, 14, 5, seconds).toISOString();
++const titles = { duration: "Run time", start: "Started at", end: "Finished at" };
++const usage: ChatUsage = { input: 126, output: 66, cacheRead: 63_488, cacheWrite: 1234, reasoning: 15, totalTokens: 64_914 };
++
++describe("formatChatTimestamp", () => {
++  it("formats local time as YYYY-MM-DD HH:mm:ss", () => {
++    expect(formatChatTimestamp(local(31))).toBe("2026-10-22 14:05:31");
++  });
++
++  it("returns undefined for a missing or invalid value", () => {
++    expect(formatChatTimestamp(undefined)).toBeUndefined();
++    expect(formatChatTimestamp("not a date")).toBeUndefined();
++  });
++});
++
++describe("formatChatDuration", () => {
++  it("uses seconds, minutes and hours without spaces", () => {
++    expect(formatChatDuration(0)).toBe("0s");
++    expect(formatChatDuration(45_000)).toBe("45s");
++    expect(formatChatDuration(59_500)).toBe("1m0s");
++    expect(formatChatDuration(65_000)).toBe("1m5s");
++    expect(formatChatDuration(3_723_000)).toBe("1h2m3s");
++  });
++
++  it("rejects negative spans", () => {
++    expect(formatChatDuration(-1)).toBeUndefined();
++  });
++});
++
++describe("formatChatTokens", () => {
++  it("keeps up to two decimals without trailing zeros", () => {
++    expect(formatChatTokens(126)).toBe("126");
++    expect(formatChatTokens(1234)).toBe("1.23k");
++    expect(formatChatTokens(63_488)).toBe("63.49k");
++    expect(formatChatTokens(48_000)).toBe("48k");
++    expect(formatChatTokens(4200)).toBe("4.2k");
++    expect(formatChatTokens(999_999)).toBe("1M");
++    expect(formatChatTokens(1_234_567)).toBe("1.23M");
++  });
++});
++
++describe("chatTokenSegment", () => {
++  it("shows the six counters with tooltips", () => {
++    expect(metaSegmentsText([chatTokenSegment(usage)])).toBe("↑126 ↓66 ⤴1.23k ⤵63.49k ∴15 Σ64.91k");
++    expect(chatTokenSegment(usage).map((piece) => piece.title)).toEqual([
++      "Input tokens",
++      "Output tokens, reasoning included",
++      "Cache write tokens",
++      "Cache read tokens",
++      "Reasoning tokens, part of the output",
++      "Total tokens",
++    ]);
++  });
++
++  it("marks a missing reasoning breakdown", () => {
++    const unreported: ChatUsage = { input: 126, output: 66, cacheRead: 63_488, cacheWrite: 1234, totalTokens: 64_914 };
++    const piece = chatTokenSegment(unreported, " (scope)")[4];
++    expect(piece).toEqual({ text: "∴∅", title: "Reasoning tokens: not reported by the provider (scope)" });
++  });
++});
++
++describe("sumChatUsage", () => {
++  it("counts a shared usage object once and sums reported reasoning only", () => {
++    const other: ChatUsage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10 };
++    const meta = { usage };
++    const lines: ChatLine[] = [
++      { role: "assistant", parts: [{ type: "text", text: "a" }], meta },
++      { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", usage: other }], meta },
++    ];
++    expect(sumChatUsage(lines)).toEqual({ input: 127, output: 68, cacheRead: 63_491, cacheWrite: 1238, totalTokens: 64_924, reasoning: 15 });
++    expect(sumChatUsage([{ role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", usage: other }] }])?.reasoning).toBeUndefined();
++    expect(sumChatUsage([{ role: "user", parts: [{ type: "text", text: "hi" }] }])).toBeUndefined();
++  });
++});
++
++describe("chatSpanSegments", () => {
++  it("puts the duration before the start date and the zone into the date tooltip", () => {
++    const segments = chatSpanSegments(local(0), local(65), titles);
++    expect(metaSegmentsText(segments)).toBe("1m5s · 2026-10-22 14:05:00");
++    expect(segments[0]?.[0]?.title).toBe("Run time");
++    expect(segments[1]?.[0]?.title).toMatch(/^Started at: 2026-10-22 14:05:00 GMT[+-]\d\d:\d\d/);
++  });
++
++  it("shows only the start while running and only the end when the start is unknown", () => {
++    expect(metaSegmentsText(chatSpanSegments(local(0), undefined, titles))).toBe("2026-10-22 14:05:00");
++    const endOnly = chatSpanSegments(undefined, local(9), titles);
++    expect(metaSegmentsText(endOnly)).toBe("2026-10-22 14:05:09");
++    expect(endOnly[0]?.[0]?.title).toMatch(/^Finished at: /);
++    expect(chatSpanSegments(undefined, undefined, titles)).toEqual([]);
++  });
++});
++
++describe("chatMessageMetaSegments", () => {
++  it("orders tokens, durations, date and model:level", () => {
++    const line: ChatLine = {
++      role: "assistant",
++      parts: [],
++      meta: { timestamp: local(0), completedAt: local(12), usage, model: { provider: "p", id: "vendor/model" }, thinkingLevel: "high" },
++    };
++    const segments = chatMessageMetaSegments(line, 185_000);
++    expect(metaSegmentsText(segments)).toBe("↑126 ↓66 ⤴1.23k ⤵63.49k ∴15 Σ64.91k · 12s Σ 3m5s · 2026-10-22 14:05:00 · model:high");
++    expect(segments[1]?.map((piece) => piece.title)).toEqual(["Generation time of this message", "Whole turn time: from the user message to the end of this answer"]);
++    expect(segments[3]?.[0]?.title).toBe("Model and reasoning level");
++  });
++
++  it("returns no segments without metadata", () => {
++    expect(chatMessageMetaSegments({ role: "user", parts: [] })).toEqual([]);
++  });
++
++  it("titles the duration of an answer shown on its tool card as generation time", () => {
++    const line: ChatLine = { role: "tool", parts: [], meta: { timestamp: local(0), completedAt: local(2) } };
++    expect(chatMessageMetaSegments(line)[0]?.[0]?.title).toBe(chatMessageMetaSegments({ ...line, role: "assistant" })[0]?.[0]?.title);
++    expect(chatMessageMetaSegments({ ...line, role: "bash" })[0]?.[0]?.title).toBe("Run time");
++  });
++});
++
++describe("chatTurnDurations", () => {
++  const user: ChatLine = { role: "user", parts: [{ type: "text", text: "go" }], meta: { timestamp: local(0) } };
++  const step: ChatLine = { role: "assistant", parts: [{ type: "text", text: "step" }], meta: { timestamp: local(1), completedAt: local(2), stopReason: "toolUse" } };
++  const tool: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success" }] };
++  const final: ChatLine = { role: "assistant", parts: [{ type: "text", text: "done" }], meta: { timestamp: local(3), completedAt: local(5), stopReason: "stop" } };
++
++  it("measures a turn from the user line to the final answer", () => {
++    expect(chatTurnDurations([user, step, tool, final], 10)).toEqual(new Map([[13, 5000]]));
++  });
++
++  it("skips a turn made of a single answer", () => {
++    expect(chatTurnDurations([user, final]).size).toBe(0);
++  });
++
++  it("skips answers without a user line before them", () => {
++    expect(chatTurnDurations([step, final]).size).toBe(0);
++  });
++
++  it("moves the total from a retried error answer to the final answer", () => {
++    const failed: ChatLine = { role: "assistant", parts: [{ type: "text", text: "oops" }], meta: { timestamp: local(1), completedAt: local(2), stopReason: "error" } };
++    expect(chatTurnDurations([user, failed, final])).toEqual(new Map([[2, 5000]]));
++  });
++
++  it("keeps the start for a steer and starts a follow-up after the previous turn", () => {
++    const steer: ChatLine = { role: "user", parts: [{ type: "text", text: "also" }], meta: { timestamp: local(2) } };
++    expect(chatTurnDurations([user, step, tool, steer, final])).toEqual(new Map([[4, 5000]]));
++    const followUp: ChatLine = { role: "user", parts: [{ type: "text", text: "next" }], meta: { timestamp: local(1) } };
++    const nextFinal: ChatLine = { role: "assistant", parts: [{ type: "text", text: "ok" }], meta: { timestamp: local(6), completedAt: local(9), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, tool, final, followUp, step, nextFinal]).get(6)).toBe(4000);
++  });
++
++  it("ignores a user line without a time", () => {
++    const optimistic: ChatLine = { role: "user", parts: [{ type: "text", text: "!ls" }] };
++    expect(chatTurnDurations([user, step, optimistic, tool, final])).toEqual(new Map([[4, 5000]]));
++  });
++
++  it("treats a system error line as the answer and skips the repeat of an answer", () => {
++    const errorMeta = { timestamp: local(3), completedAt: local(4), stopReason: "error" };
++    const failedText: ChatLine = { role: "assistant", parts: [{ type: "text", text: "partial" }], meta: errorMeta };
++    const failedCall: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "pending" }], meta: errorMeta };
++    const failure: ChatLine = { role: "system", parts: [{ type: "text", text: "Model response failed" }], meta: errorMeta };
++    const failureCopy: ChatLine = { ...failure, meta: { ...errorMeta } };
++    const later: ChatLine = { role: "user", parts: [{ type: "text", text: "again" }], meta: { timestamp: local(50) } };
++    expect(chatTurnDurations([user, step, tool, failure, later, final])).toEqual(new Map([[3, 4000]]));
++    expect(chatTurnDurations([user, step, tool, failedText, failureCopy])).toEqual(new Map([[3, 4000]]));
++    expect(chatTurnDurations([user, failedText, failedCall, failure, later, final])).toEqual(new Map([[1, 4000]]));
++    expect(chatTurnDurations([user, failure, later, final]).size).toBe(0);
++  });
++
++  it("gives no second total to answers after a closed turn", () => {
++    const later: ChatLine = { role: "assistant", parts: [{ type: "text", text: "later" }], meta: { timestamp: local(20), completedAt: local(30), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, tool, final, step, later])).toEqual(new Map([[3, 5000]]));
++  });
++
++  it("starts a new turn after a turn that ended without an answer", () => {
++    const stopped: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "error", startedAt: local(2), endedAt: local(4) }] };
++    const later: ChatLine = { role: "user", parts: [{ type: "text", text: "next" }], meta: { timestamp: local(40) } };
++    const nextStep: ChatLine = { role: "assistant", parts: [{ type: "text", text: "step" }], meta: { timestamp: local(41), completedAt: local(42), stopReason: "toolUse" } };
++    const nextFinal: ChatLine = { role: "assistant", parts: [{ type: "text", text: "ok" }], meta: { timestamp: local(50), completedAt: local(55), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, stopped, later, nextStep, tool, nextFinal])).toEqual(new Map([[6, 15000]]));
++  });
++
++  it("starts a new turn at a custom message after a turn ended by a tool", () => {
++    const asked: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "ask_user", summary: "ask", status: "success", startedAt: local(2), endedAt: local(4) }] };
++    const answers: ChatLine = { role: "system", parts: [{ type: "text", text: "answers" }], meta: { timestamp: local(40) } };
++    const nextStep: ChatLine = { role: "assistant", parts: [{ type: "text", text: "step" }], meta: { timestamp: local(41), completedAt: local(42), stopReason: "toolUse" } };
++    const nextFinal: ChatLine = { role: "assistant", parts: [{ type: "text", text: "ok" }], meta: { timestamp: local(50), completedAt: local(55), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, asked, answers, nextStep, tool, nextFinal])).toEqual(new Map([[6, 15000]]));
++  });
++
++  it("keeps the turn at a custom message during its work", () => {
++    const running: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", startedAt: local(2), endedAt: local(4) }] };
++    const notice: ChatLine = { role: "system", parts: [{ type: "text", text: "notice" }], meta: { timestamp: local(3) } };
++    const done: ChatLine = { role: "assistant", parts: [{ type: "text", text: "done" }], meta: { timestamp: local(5), completedAt: local(10), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, running, notice, done])).toEqual(new Map([[4, 10000]]));
++  });
++
++  it("keeps the turn at a custom message stored right after the calls it follows", () => {
++    const running: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", startedAt: local(2), endedAt: local(4) }] };
++    const notice: ChatLine = { role: "system", parts: [{ type: "text", text: "notice" }], meta: { timestamp: new Date(new Date(local(4)).getTime() + 2).toISOString() } };
++    const done: ChatLine = { role: "assistant", parts: [{ type: "text", text: "done" }], meta: { timestamp: local(5), completedAt: local(10), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, running, notice, done])).toEqual(new Map([[4, 10000]]));
++  });
++
++  it("keeps a steer after a call of unknown time", () => {
++    const steer: ChatLine = { role: "user", parts: [{ type: "text", text: "also" }], meta: { timestamp: local(5) } };
++    const done: ChatLine = { role: "assistant", parts: [{ type: "text", text: "done" }], meta: { timestamp: local(6), completedAt: local(15), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, tool, steer, done])).toEqual(new Map([[4, 15000]]));
++  });
++
++  it("starts a new turn at a prompt after a call that never ended", () => {
++    const call: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "running" }], ...(step.meta === undefined ? {} : { meta: step.meta }) };
++    const later: ChatLine = { role: "user", parts: [{ type: "text", text: "next" }], meta: { timestamp: local(600) } };
++    const nextStep: ChatLine = { role: "assistant", parts: [{ type: "text", text: "step" }], meta: { timestamp: local(601), completedAt: local(602), stopReason: "toolUse" } };
++    const nextFinal: ChatLine = { role: "assistant", parts: [{ type: "text", text: "ok" }], meta: { timestamp: local(603), completedAt: local(605), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, call, later, nextStep, tool, nextFinal])).toEqual(new Map([[6, 5000]]));
++  });
++
++  it("keeps the turn at a custom message stored after a compaction between its steps", () => {
++    const running: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", startedAt: local(2), endedAt: local(4) }] };
++    const compaction: ChatLine = { role: "system", source: "compaction", parts: [{ type: "text", text: "Compacted history" }], meta: { timestamp: local(30) } };
++    const notice: ChatLine = { role: "system", parts: [{ type: "text", text: "notice" }], meta: { timestamp: new Date(new Date(local(30)).getTime() + 2).toISOString() } };
++    const done: ChatLine = { role: "assistant", parts: [{ type: "text", text: "done" }], meta: { timestamp: local(31), completedAt: local(40), stopReason: "stop" } };
++    expect(chatTurnDurations([user, step, running, compaction, notice, done])).toEqual(new Map([[5, 40000]]));
++  });
++});
++
++describe("chatGroupMetaSegments", () => {
++  const lines: ChatLine[] = [
++    { role: "assistant", parts: [{ type: "thinking", text: "hm" }], meta: { timestamp: local(0), completedAt: local(3), usage } },
++    { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", startedAt: local(4), endedAt: local(65) }] },
++  ];
++
++  it("shows the tokens, the span and the first date", () => {
++    const segments = chatGroupMetaSegments(lines, false);
++    expect(metaSegmentsText(segments)).toBe("↑126 ↓66 ⤴1.23k ⤵63.49k ∴15 Σ64.91k · 1m5s · 2026-10-22 14:05:00");
++    expect(segments[0]?.[0]?.title).toBe("Input tokens (sum in this group)");
++  });
++
++  it("shows no span for a live group", () => {
++    expect(metaSegmentsText(chatGroupMetaSegments(lines, true))).toBe("↑126 ↓66 ⤴1.23k ⤵63.49k ∴15 Σ64.91k · 2026-10-22 14:05:00");
++  });
++
++  it("returns nothing without any time or usage", () => {
++    expect(chatGroupMetaSegments([{ role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "running" }] }], false)).toEqual([]);
++  });
++
++  it("counts an answer split around its text only in the group of its first line", () => {
++    const meta = { timestamp: local(0), completedAt: local(1), usage };
++    const answer: ChatLine = { role: "assistant", parts: [{ type: "thinking", text: "hm" }], meta };
++    const call: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", startedAt: local(2), endedAt: local(4) }], meta };
++    const next: ChatLine = { role: "assistant", parts: [{ type: "thinking", text: "next" }], meta: { timestamp: local(5), completedAt: local(6) } };
++    const firstIndexes = chatMetaFirstIndexes([answer, call, next], 10);
++    expect(metaSegmentsText(chatGroupMetaSegments([call, next], false, 11, firstIndexes))).toBe("5s · 2026-10-22 14:05:01");
++    expect(metaSegmentsText(chatGroupMetaSegments([answer], false, 10, firstIndexes))).toBe("↑126 ↓66 ⤴1.23k ⤵63.49k ∴15 Σ64.91k · 1s · 2026-10-22 14:05:00");
++  });
++
++  it("shows no span while a call of the group runs", () => {
++    const done: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success", startedAt: local(1), endedAt: local(3) }] };
++    const runningCall: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "running", startedAt: local(2) }] };
++    expect(metaSegmentsText(chatGroupMetaSegments([done, runningCall], false))).toBe("2026-10-22 14:05:01");
++  });
++});
++
++describe("chatToolAnswerHeaderIndexes", () => {
++  const card = (meta: ChatLine["meta"]): ChatLine => ({ role: "tool", parts: [{ type: "toolExecution", toolName: "bash", summary: "ls", status: "success" }], ...(meta === undefined ? {} : { meta }) });
++
++  it("marks the first card of an answer made only of calls", () => {
++    const meta = { timestamp: local(0), completedAt: local(2) };
++    expect(chatToolAnswerHeaderIndexes([{ role: "user", parts: [], meta: { timestamp: local(0) } }, card(meta), card(meta)], 10)).toEqual(new Set([11]));
++  });
++
++  it("leaves the header of an answer with text on its text line", () => {
++    const meta = { timestamp: local(0), completedAt: local(2) };
++    expect(chatToolAnswerHeaderIndexes([{ role: "assistant", parts: [{ type: "text", text: "Checking" }], meta }, card(meta)], 0)).toEqual(new Set());
++  });
++
++  it("marks the first card of an answer still streaming", () => {
++    const meta = { timestamp: local(0), model: { provider: "test", id: "model" } };
++    expect(chatToolAnswerHeaderIndexes([card(meta), card(meta)], 4)).toEqual(new Set([4]));
++  });
++
++  it("leaves the header of a streaming answer to its text streamed after the calls", () => {
++    const meta = { timestamp: local(0), model: { provider: "test", id: "model" } };
++    expect(chatToolAnswerHeaderIndexes([card(meta), { role: "assistant", parts: [{ type: "text", text: "Done" }], meta: { timestamp: local(1) } }], 7)).toEqual(new Set());
++  });
++
++  it("keeps the header of a finished answer made only of calls before a later answer", () => {
++    const meta = { timestamp: local(0), completedAt: local(2), model: { provider: "test", id: "model" } };
++    expect(chatToolAnswerHeaderIndexes([card(meta), { role: "assistant", parts: [{ type: "text", text: "Done" }], meta: { timestamp: local(3) } }], 7)).toEqual(new Set([7]));
++  });
++
++  it("ignores cards without an answer's metadata", () => {
++    expect(chatToolAnswerHeaderIndexes([card(undefined), card({ timestamp: local(3) })], 0)).toEqual(new Set());
++  });
++
++  it("marks a live call card that also holds its result image", () => {
++    const meta = { timestamp: local(0), completedAt: local(2) };
++    const withImage: ChatLine = { role: "tool", parts: [{ type: "toolExecution", toolName: "read", summary: "a.png", status: "success" }, { type: "image", mimeType: "image/png", data: "AA==" }], meta };
++    expect(chatToolAnswerHeaderIndexes([withImage], 3)).toEqual(new Set([3]));
++  });
++});
+diff --git a/src/client/src/chatMeta.ts b/src/client/src/chatMeta.ts
+new file mode 100644
+index 0000000..f654bff
+--- /dev/null
++++ b/src/client/src/chatMeta.ts
+@@ -0,0 +1,379 @@
++import type { ChatLine, ChatUsage } from "./components/shared";
++
++/** One hoverable piece of a card header: its visible text and tooltip. */
++interface MetaPiece {
++  text: string;
++  title: string;
++}
++
++/** Pieces shown together, separated by spaces; header segments are joined with ` · `. */
++export type MetaSegment = readonly MetaPiece[];
++
++/** Tooltips for a unit of work: its duration, its start and its end. */
++export interface ChatSpanTitles {
++  duration: string;
++  start: string;
++  end: string;
++}
++
++const GENERATION_TITLE = "Generation time of this message";
++const TURN_TITLE = "Whole turn time: from the user message to the end of this answer";
++/**
++ * Pi stores a custom message delivered during a turn when it records it, right
++ * after the calls it follows; one that comes this much later waited for a person
++ * or a subsession, after a tool ended the turn.
++ */
++const CUSTOM_TURN_GAP_MS = 1000;
++
++/** Plain text of header segments, for accessible labels and tests. */
++export function metaSegmentsText(segments: readonly MetaSegment[]): string {
++  return segments.map((segment) => segment.map((piece) => piece.text).join(" ")).join(" · ");
++}
++
++/** Parse an ISO timestamp into epoch milliseconds, or undefined when absent or invalid. */
++function chatTimeMs(value: string | undefined): number | undefined {
++  if (value === undefined || value === "") return undefined;
++  const time = Date.parse(value);
++  return Number.isFinite(time) ? time : undefined;
++}
++
++function pad(part: number): string {
++  return String(part).padStart(2, "0");
++}
++
++/** Local `YYYY-MM-DD HH:mm:ss`, independent of the browser locale. */
++export function formatChatTimestamp(value: string | undefined): string | undefined {
++  const time = chatTimeMs(value);
++  if (time === undefined) return undefined;
++  const date = new Date(time);
++  return `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
++}
++
++/** The browser's IANA zone, resolved once: `Intl` resolution is slow and the zone does not change under a page. */
++let chatTimeZoneName: string | undefined;
++
++/** `GMT+03:00 (Europe/Moscow)`: the browser zone offset at that instant and its IANA name. */
++function formatChatTimeZone(time: number): string {
++  const offset = -new Date(time).getTimezoneOffset();
++  const sign = offset < 0 ? "-" : "+";
++  chatTimeZoneName ??= Intl.DateTimeFormat().resolvedOptions().timeZone;
++  const zone = chatTimeZoneName;
++  return `GMT${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}${zone === "" ? "" : ` (${zone})`}`;
++}
++
++/** The local date, with the zone repeated in its tooltip. */
++function chatDatePiece(value: string | undefined, title: string): MetaPiece | undefined {
++  const time = chatTimeMs(value);
++  const text = formatChatTimestamp(value);
++  if (time === undefined || text === undefined) return undefined;
++  return { text, title: `${title}: ${text} ${formatChatTimeZone(time)}` };
++}
++
++/** `45s`, `1m5s` or `1h2m3s`; undefined for a negative or non-finite span. */
++export function formatChatDuration(ms: number): string | undefined {
++  if (!Number.isFinite(ms) || ms < 0) return undefined;
++  const total = Math.round(ms / 1000);
++  const seconds = total % 60;
++  const minutes = Math.floor(total / 60) % 60;
++  const hours = Math.floor(total / 3600);
++  if (hours > 0) return `${String(hours)}h${String(minutes)}m${String(seconds)}s`;
++  if (minutes > 0) return `${String(minutes)}m${String(seconds)}s`;
++  return `${String(seconds)}s`;
++}
++
++/** Milliseconds between two ISO timestamps, when both are known and ordered. */
++function chatDurationMs(start: string | undefined, end: string | undefined): number | undefined {
++  const startMs = chatTimeMs(start);
++  const endMs = chatTimeMs(end);
++  return startMs === undefined || endMs === undefined || endMs < startMs ? undefined : endMs - startMs;
++}
++
++function durationPiece(ms: number | undefined, title: string, prefix = ""): MetaPiece | undefined {
++  const text = ms === undefined ? undefined : formatChatDuration(ms);
++  return text === undefined ? undefined : { text: `${prefix}${text}`, title };
++}
++
++/** A segment of the known pieces, or nothing when none is known. */
++function segmentOf(...pieces: (MetaPiece | undefined)[]): MetaSegment[] {
++  const known = pieces.filter((piece): piece is MetaPiece => piece !== undefined);
++  return known.length === 0 ? [] : [known];
++}
++
++/**
++ * `<duration> · <date>` for a unit of work: the date is the start when known,
++ * otherwise the end; the duration needs both. Pass no end while work runs.
++ */
++export function chatSpanSegments(start: string | undefined, end: string | undefined, titles: ChatSpanTitles): MetaSegment[] {
++  const date = chatDatePiece(start, titles.start) ?? chatDatePiece(end, titles.end);
++  return [...segmentOf(durationPiece(chatDurationMs(start, end), titles.duration)), ...segmentOf(date)];
++}
++
++/** `126`, `1.23k`, `63.49k`, `48k`, `1.2M`: up to two decimals without trailing zeros. */
++export function formatChatTokens(count: number): string {
++  if (!Number.isFinite(count)) return "0";
++  if (count < 1000) return String(Math.round(count));
++  const thousands = Number((count / 1000).toFixed(2));
++  if (thousands < 1000) return `${String(thousands)}k`;
++  return `${String(Number((count / 1_000_000).toFixed(2)))}M`;
++}
++
++/** The six token counters; `∴∅` when the provider reported no reasoning breakdown. `scope` ends every tooltip. */
++export function chatTokenSegment(usage: ChatUsage, scope = ""): MetaSegment {
++  return [
++    { text: `↑${formatChatTokens(usage.input)}`, title: `Input tokens${scope}` },
++    { text: `↓${formatChatTokens(usage.output)}`, title: `Output tokens, reasoning included${scope}` },
++    { text: `⤴${formatChatTokens(usage.cacheWrite)}`, title: `Cache write tokens${scope}` },
++    { text: `⤵${formatChatTokens(usage.cacheRead)}`, title: `Cache read tokens${scope}` },
++    usage.reasoning === undefined
++      ? { text: "∴∅", title: `Reasoning tokens: not reported by the provider${scope}` }
++      : { text: `∴${formatChatTokens(usage.reasoning)}`, title: `Reasoning tokens, part of the output${scope}` },
++    { text: `Σ${formatChatTokens(usage.totalTokens)}`, title: `Total tokens${scope}` },
++  ];
++}
++
++/**
++ * Usage summed over every distinct usage object in `messages`: lines split from
++ * one answer, its error line and a tool card with its merged result share the
++ * same object, so each is counted once. Reasoning sums only reported values and
++ * stays undefined when none was reported.
++ */
++export function sumChatUsage(messages: readonly ChatLine[]): ChatUsage | undefined {
++  const usages = new Set<ChatUsage>();
++  for (const line of messages) {
++    if (line.meta?.usage !== undefined) usages.add(line.meta.usage);
++    for (const part of line.parts) {
++      if (part.type === "toolExecution" && part.usage !== undefined) usages.add(part.usage);
++    }
++  }
++  if (usages.size === 0) return undefined;
++  const all = [...usages];
++  const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
++  const reasoning = all.flatMap((usage) => (usage.reasoning === undefined ? [] : [usage.reasoning]));
++  return {
++    input: sum(all.map((usage) => usage.input)),
++    output: sum(all.map((usage) => usage.output)),
++    cacheRead: sum(all.map((usage) => usage.cacheRead)),
++    cacheWrite: sum(all.map((usage) => usage.cacheWrite)),
++    totalTokens: sum(all.map((usage) => usage.totalTokens)),
++    ...(reasoning.length === 0 ? {} : { reasoning: sum(reasoning) }),
++  };
++}
++
++/** Only the model name: everything up to the last `/`, the provider included, is dropped. */
++function chatModelName(message: ChatLine): string | undefined {
++  const model = message.meta?.model;
++  const id = model?.responseId ?? model?.id;
++  if (id === undefined || id === "") return undefined;
++  const name = id.slice(id.lastIndexOf("/") + 1);
++  return name === "" ? undefined : name;
++}
++
++/**
++ * Header of a chat line: `<tokens> · <generation>[ Σ <turn>] · <date> · <model>[:<level>]`,
++ * every part optional. Answers and error lines time their generation, other lines their run.
++ */
++export function chatMessageMetaSegments(message: ChatLine, turnDurationMs?: number): MetaSegment[] {
++  const meta = message.meta;
++  // Only a shell line has a run time; a start and an end elsewhere are an answer's, shared by its tool and skill lines.
++  const answer = message.role !== "bash";
++  const bash = message.role === "bash";
++  const date = chatDatePiece(meta?.timestamp, bash ? "Started at" : "Message time") ?? chatDatePiece(meta?.completedAt, bash ? "Finished at" : "Message time");
++  const modelLevel = [chatModelName(message), meta?.thinkingLevel].filter((part): part is string => part !== undefined && part !== "").join(":");
++  return [
++    ...(meta?.usage === undefined ? [] : [chatTokenSegment(meta.usage)]),
++    ...segmentOf(
++      durationPiece(chatDurationMs(meta?.timestamp, meta?.completedAt), answer ? GENERATION_TITLE : "Run time"),
++      durationPiece(turnDurationMs, TURN_TITLE, "Σ "),
++    ),
++    ...segmentOf(date),
++    ...segmentOf(modelLevel === "" ? undefined : { text: modelLevel, title: "Model and reasoning level" }),
++  ];
++}
++
++/**
++ * Whole-turn durations keyed by absolute message index (`indexOffset + i`). A
++ * turn starts at a user line, no earlier than the previous turn's end, so a
++ * queued follow-up does not count its wait; a user line right after a tool or
++ * skill line of a running turn is a steer and keeps the start, unless it comes
++ * after the last known instant of that work (the turn was stopped or ended by a
++ * tool); a user line with no valid time (an optimistic `!` line) is ignored. A
++ * custom message line (ask_user answers, a subsession notice) starts a turn as
++ * well, but only when no turn runs: none yet, the last one has its final answer,
++ * or it was ended by a tool and the line comes over a second after its work (pi
++ * stores one delivered during the work right after it). A final answer
++ * has `completedAt` and a stop reason other than `toolUse`; an `error` answer
++ * that pi retries (more work follows) becomes work of the turn. Lines split from
++ * the pending answer (they share its meta object) do not close it. Turns with no
++ * other assistant, tool or skill line before the final answer are skipped, and
++ * a closed turn gets no second total until the next turn starts.
++ */
++export function chatTurnDurations(messages: readonly ChatLine[], indexOffset = 0): Map<number, number> {
++  const durations = new Map<number, number>();
++  let turnStart: number | undefined;
++  let lastEnd: number | undefined;
++  let workLines = 0;
++  let lastWorkRole: ChatLine["role"] | undefined;
++  let pending: { index: number; end: number; stopReason: string; meta: ChatLine["meta"] } | undefined;
++  // The latest known instant of the running turn's work: pi stamps a steer when it is queued, while that work runs.
++  let lastWorkTime: number | undefined;
++  const noteWork = (line: ChatLine) => {
++    const values = [line.meta?.timestamp, line.meta?.completedAt, ...line.parts.flatMap((part) => part.type === "toolExecution" ? [part.startedAt, part.endedAt] : [])];
++    let known = false;
++    for (const value of values) {
++      const time = chatTimeMs(value);
++      if (time === undefined) continue;
++      known = true;
++      if (lastWorkTime === undefined || time > lastWorkTime) lastWorkTime = time;
++    }
++    // A call of unknown time may have run until any later instant, so the end of the work is unknown. A card
++    // with its answer's times but no end is a call that never ended: those times stay its lower bound.
++    if (!known && (line.role === "tool" || line.role === "skill")) lastWorkTime = undefined;
++  };
++  const startTurn = (start: number) => {
++    turnStart = lastEnd === undefined ? start : Math.max(start, lastEnd);
++    workLines = 0;
++    lastWorkRole = undefined;
++    lastWorkTime = undefined;
++  };
++  const close = () => {
++    if (pending === undefined) return;
++    if (turnStart !== undefined && workLines > 0 && pending.end >= turnStart) durations.set(pending.index, pending.end - turnStart);
++    lastEnd = pending.end;
++    pending = undefined;
++    turnStart = undefined;
++    workLines = 0;
++    lastWorkRole = undefined;
++    lastWorkTime = undefined;
++  };
++  messages.forEach((line, index) => {
++    if (line.role === "user") {
++      const start = chatTimeMs(line.meta?.timestamp);
++      if (start === undefined) return;
++      close();
++      // A line after the work of a turn that ended without an answer (stopped, or ended by a tool) starts a new turn.
++      if (turnStart !== undefined && (lastWorkRole === "tool" || lastWorkRole === "skill") && (lastWorkTime === undefined || start <= lastWorkTime)) return;
++      startTurn(start);
++      return;
++    }
++    // An error answer without text shows only as a system error line carrying the answer's metadata.
++    const errorLine = line.role === "system" && line.meta?.stopReason === "error";
++    if (line.source !== undefined) {
++      // Pi records a message delivered during a turn after the compaction it ran between the turn's steps.
++      if (lastWorkTime !== undefined) noteWork(line);
++      return;
++    }
++    if (line.role === "system" && !errorLine) {
++      // Pi delivers ask_user answers and subsession notices as custom messages that trigger a run of their own.
++      const start = chatTimeMs(line.meta?.timestamp);
++      if (start === undefined) return;
++      const endedByTool = (lastWorkRole === "tool" || lastWorkRole === "skill") && lastWorkTime !== undefined && start - lastWorkTime > CUSTOM_TURN_GAP_MS;
++      if (pending === undefined && turnStart !== undefined && !endedByTool) return;
++      close();
++      startTurn(start);
++      return;
++    }
++    if (line.role !== "assistant" && line.role !== "tool" && line.role !== "skill" && !errorLine) return;
++    noteWork(line);
++    if (pending !== undefined && line.meta !== undefined && line.meta === pending.meta) {
++      // A tool call or the error line of the pending answer itself.
++      if (errorLine) return;
++      workLines += 1;
++      lastWorkRole = line.role;
++      return;
++    }
++    const stopReason = line.meta?.stopReason;
++    const end = chatTimeMs(line.meta?.completedAt);
++    // The error line after an answer with text repeats that answer.
++    if (errorLine && (end === undefined || (pending?.stopReason === "error" && pending.end === end))) return;
++    if (pending !== undefined) {
++      if (pending.stopReason === "error") {
++        pending = undefined;
++        workLines += 1;
++      } else {
++        close();
++      }
++    }
++    if ((line.role === "assistant" || errorLine) && stopReason !== undefined && stopReason !== "toolUse" && end !== undefined) {
++      pending = { index: indexOffset + index, end, stopReason, meta: line.meta };
++      return;
++    }
++    workLines += 1;
++    lastWorkRole = line.role;
++  });
++  close();
++  return durations;
++}
++
++/**
++ * `<tokens> · <span> · <date>` for an events group: tokens of the usage inside,
++ * the span from the earliest to the latest known instant and the first date; a
++ * live group, or one with a call still running, shows no span. An answer split
++ * around its text has lines in two groups: its metadata (tokens, generation
++ * times) counts only in the group of its first line (`firstIndexes`, absolute
++ * indexes; `startIndex` is the group's); other groups keep only its end, when
++ * its calls start, and calls always add their own times.
++ */
++export function chatGroupMetaSegments(messages: readonly ChatLine[], live: boolean, startIndex = 0, firstIndexes?: ReadonlyMap<NonNullable<ChatLine["meta"]>, number>): MetaSegment[] {
++  const owned = messages.map((line, offset): ChatLine => {
++    const firstIndex = line.meta === undefined ? undefined : firstIndexes?.get(line.meta);
++    if (firstIndex === undefined || firstIndex === startIndex + offset) return line;
++    const completedAt = line.meta?.completedAt;
++    return { role: line.role, parts: line.parts, ...(completedAt === undefined ? {} : { meta: { completedAt } }) };
++  });
++  const usage = sumChatUsage(owned);
++  const tokens = usage === undefined ? [] : [chatTokenSegment(usage, " (sum in this group)")];
++  let first = Number.POSITIVE_INFINITY;
++  let last = Number.NEGATIVE_INFINITY;
++  let running = false;
++  const add = (value: string | undefined) => {
++    const time = chatTimeMs(value);
++    if (time === undefined) return;
++    first = Math.min(first, time);
++    last = Math.max(last, time);
++  };
++  for (const line of owned) {
++    add(line.meta?.timestamp);
++    add(line.meta?.completedAt);
++    for (const part of line.parts) {
++      if (part.type !== "toolExecution") continue;
++      if (part.status === "running") running = true;
++      add(part.startedAt);
++      add(part.endedAt);
++    }
++  }
++  if (first > last) return tokens;
++  const span = live || running || last === first ? undefined : durationPiece(last - first, "Time from the first to the last event of this group");
++  return [...tokens, ...segmentOf(span), ...segmentOf(chatDatePiece(new Date(first).toISOString(), "Time of the first event"))];
++}
++
++/** Absolute index of the first line carrying each metadata object, for `chatGroupMetaSegments`. */
++export function chatMetaFirstIndexes(messages: readonly ChatLine[], start: number): Map<NonNullable<ChatLine["meta"]>, number> {
++  const indexes = new Map<NonNullable<ChatLine["meta"]>, number>();
++  for (const [offset, line] of messages.entries()) {
++    if (line.meta !== undefined && !indexes.has(line.meta)) indexes.set(line.meta, start + offset);
++  }
++  return indexes;
++}
++
++/**
++ * Absolute indexes of the tool cards that carry the header of an answer made
++ * only of tool calls: the first card of each such answer. An answer with text
++ * keeps its header on the text line, which shares the metadata object; so does
++ * a streaming answer whose text or thinking arrived after its calls.
++ */
++export function chatToolAnswerHeaderIndexes(messages: readonly ChatLine[], start: number): Set<number> {
++  const firstCards = new Map<NonNullable<ChatLine["meta"]>, number>();
++  const shown = new Set<NonNullable<ChatLine["meta"]>>();
++  const lastAnswerLine = messages.reduce((last, line, offset) => line.role === "assistant" ? offset : last, -1);
++  for (const [offset, line] of messages.entries()) {
++    const meta = line.meta;
++    // An answer's metadata, streaming or finished, has a model or `completedAt`; a tool result's has neither.
++    if (meta === undefined || (meta.model === undefined && meta.completedAt === undefined)) continue;
++    // A live call line also holds the images its result returned; the call still renders as a card.
++    const toolOnly = line.role === "tool" && line.parts.some((part) => part.type === "toolExecution");
++    if (!toolOnly) shown.add(meta);
++    else if (!firstCards.has(meta)) firstCards.set(meta, start + offset);
++  }
++  // A streaming answer is the tail: an assistant line after its first card is its own and shows the header.
++  return new Set([...firstCards].flatMap(([meta, index]) => shown.has(meta) || (meta.completedAt === undefined && index - start < lastAnswerLine) ? [] : [index]));
++}
+diff --git a/src/client/src/chatTranscript.test.ts b/src/client/src/chatTranscript.test.ts
+index 04f4243..7c4372c 100644
+--- a/src/client/src/chatTranscript.test.ts
++++ b/src/client/src/chatTranscript.test.ts
+@@ -307,6 +307,7 @@ describe("applyTranscriptEvent", () => {
+         resultText: "Read image file [image/png]",
+         content: finalContent,
+         details: { source: "message.end" },
++        endedAt: timestamp,
+       }, finalImage],
+       meta: { timestamp },
+     };
+@@ -599,3 +600,66 @@ describe("applyTranscriptEvent", () => {
+     ]);
+   });
+ });
++
++describe("tool-only answers", () => {
++  const answer = {
++    role: "assistant",
++    content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } }],
++    timestamp: Date.parse("2026-10-22T10:00:00.000Z"),
++    completedAt: "2026-10-22T10:00:02.000Z",
++    stopReason: "toolUse",
++    usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 },
++  };
++
++  it("keeps the answer metadata on a pending tool card that tool.start fills in", () => {
++    const ended = applyTranscriptEvent([], { type: "message.end", message: answer }) ?? [];
++    expect(ended).toHaveLength(1);
++    expect(ended[0]?.meta?.usage?.totalTokens).toBe(15);
++    expect(applyTranscriptEvent(ended, { type: "message.end", message: answer })).toEqual(ended);
++    const started = applyTranscriptEvent(ended, { type: "tool.start", toolName: "bash", toolCallId: "call-1", summary: "ls", at: "2026-10-22T10:00:03.000Z" }) ?? [];
++    expect(started).toHaveLength(1);
++    expect(started[0]?.parts[0]).toMatchObject({ type: "toolExecution", status: "running", startedAt: "2026-10-22T10:00:03.000Z" });
++    expect(started[0]?.meta).toBe(ended[0]?.meta);
++  });
++
++  it("gives the final metadata and call to a card seeded from the join-time partial", () => {
++    const partial = { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "l" } }], timestamp: answer.timestamp };
++    const seeded = seedStreamingPartial([], partial);
++    expect(seeded).toHaveLength(1);
++    expect(seeded[0]?.meta?.completedAt).toBeUndefined();
++    const ended = applyTranscriptEvent(seeded, { type: "message.end", message: answer }) ?? [];
++    expect(ended).toHaveLength(1);
++    expect(ended[0]?.meta?.completedAt).toBe("2026-10-22T10:00:02.000Z");
++    expect(ended[0]?.meta?.usage?.totalTokens).toBe(15);
++    expect(ended[0]?.parts[0]).toMatchObject({ type: "toolExecution", toolCallId: "call-1", status: "pending", summary: "ls", args: { command: "ls" } });
++    expect(ended[0]?.parts[0]).not.toEqual(seeded[0]?.parts[0]);
++    const started = applyTranscriptEvent(ended, { type: "tool.start", toolName: "bash", toolCallId: "call-1", summary: "ls", at: "2026-10-22T10:00:03.000Z" }) ?? [];
++    expect(started).toHaveLength(1);
++    expect(started[0]?.meta).toBe(ended[0]?.meta);
++  });
++
++  it("takes the started call over a seeded card cut mid-stream", () => {
++    const partial = {
++      role: "assistant",
++      content: [{ type: "text", text: "Building" }, { type: "toolCall", id: "call-2", name: "bash", arguments: { command: "npm run bu" } }],
++      timestamp: answer.timestamp,
++    };
++    const seeded = seedStreamingPartial([], partial);
++    const started = applyTranscriptEvent(seeded, { type: "tool.start", toolName: "bash", toolCallId: "call-2", summary: "npm run build", args: { command: "npm run build" }, at: "2026-10-22T10:00:03.000Z" }) ?? [];
++    expect(started).toHaveLength(seeded.length);
++    const card = started.flatMap((line) => line.parts).find((part) => part.type === "toolExecution");
++    expect(card).toMatchObject({ toolCallId: "call-2", status: "running", summary: "npm run build", args: { command: "npm run build" } });
++  });
++
++  it("gives the calls of an answer with text the answer metadata, as history does", () => {
++    const mixed = { ...answer, content: [{ type: "text", text: "Checking" }, ...answer.content] };
++    const ended = applyTranscriptEvent([], { type: "message.end", message: mixed }) ?? [];
++    expect(ended.map((line) => line.role)).toEqual(normalizeMessages([mixed]).map((line) => line.role));
++    expect(ended.map((line) => line.role)).toEqual(["assistant", "tool"]);
++    expect(ended[1]?.meta).toBe(ended[0]?.meta);
++    expect(ended[1]?.parts[0]).toMatchObject({ type: "toolExecution", toolCallId: "call-1", status: "pending" });
++    const again = applyTranscriptEvent(ended, { type: "message.end", message: mixed }) ?? [];
++    expect(again).toEqual(ended);
++    expect(again[1]?.meta).toBe(again[0]?.meta);
++  });
++});
+diff --git a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
+index a01f1c2..ea3d247 100644
+--- a/src/client/src/chatTranscript.ts
++++ b/src/client/src/chatTranscript.ts
+@@ -1,6 +1,6 @@
+ import type { SessionStreamSnapshot } from "./api";
+ import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
+-import type { ChatLine, ToolExecutionPart } from "./components/shared";
++import type { ChatLine, ChatUsage, ToolExecutionPart } from "./components/shared";
+ import { appendShellChunk, finalizeShellMessage, shellStartMessage } from "./shellMessages";
+ import type { SessionUiEvent } from "./sessionSocket";
+ 
+@@ -19,6 +19,8 @@ interface ToolResultUpdate {
+   content: unknown;
+   details: unknown;
+   presentation: ToolResultPresentation;
++  endedAt?: string;
++  usage?: ChatUsage;
+ }
+ 
+ /**
+@@ -49,15 +51,17 @@ export function seedStreamingPartial(messages: ChatLine[], partial: unknown): Ch
+  */
+ export function seedRunningWork(messages: ChatLine[], snapshot: Pick<SessionStreamSnapshot, "tools" | "shells">): ChatLine[] {
+   const seeded = (snapshot.tools ?? []).reduce((next, tool) => {
+-    const updated = updateToolExecution(next, tool.toolCallId,
+-      (part) => mergeToolExecutionUpdate(part, { type: "tool.update", ...tool }));
++    const updated = updateToolExecution(next, tool.toolCallId, (part) => {
++      const merged = mergeToolExecutionUpdate(part, { type: "tool.update", ...tool });
++      return tool.startedAt === undefined ? merged : { ...merged, startedAt: tool.startedAt };
++    });
+     if (updated === next || tool.end === undefined) return updated;
+     return applyTranscriptEvent(updated, {
+-      type: "tool.end", ...tool, isError: tool.end.isError,
++      type: "tool.end", ...tool, isError: tool.end.isError, ...(tool.end.at === undefined ? {} : { at: tool.end.at }),
+     }) ?? updated;
+   }, messages);
+   return (snapshot.shells ?? []).reduce((next, shell) => {
+-    const started = [...next, shellStartMessage(shell.command, shell.excludeFromContext)];
++    const started = [...next, shellStartMessage(shell.command, shell.excludeFromContext, shell.startedAt)];
+     const output = shell.output === "" ? started : appendShellChunk(started, shell.output);
+     return shell.end === undefined ? output : finalizeShellMessage(output, { type: "shell.end", ...shell.end, output: shell.output });
+   }, seeded);
+@@ -65,8 +69,8 @@ export function seedRunningWork(messages: ChatLine[], snapshot: Pick<SessionStre
+ 
+ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
+   if (event.type === "message.append") return appendNewMessage(messages, event.message);
+-  if (event.type === "assistant.delta") return appendText(messages, "assistant", event.text);
+-  if (event.type === "assistant.thinking.delta") return appendThinking(messages, event.text);
++  if (event.type === "assistant.delta") return appendText(messages, "assistant", event.text, event.timestamp);
++  if (event.type === "assistant.thinking.delta") return appendThinking(messages, event.text, event.timestamp);
+   if (event.type === "tool.start") return appendToolExecutionStart(messages, event);
+   if (event.type === "tool.update") return updateToolExecution(messages, event.toolCallId, (part) => mergeToolExecutionUpdate(part, event));
+   if (event.type === "tool.end") {
+@@ -78,9 +82,10 @@ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent
+       content: event.content,
+       details: event.details,
+       presentation: toolResultPresentation({ role: "toolResult", content: event.content }),
++      ...(event.at === undefined ? {} : { endedAt: event.at }),
+     });
+   }
+-  if (event.type === "shell.start") return [...messages, shellStartMessage(event.command, event.excludeFromContext)];
++  if (event.type === "shell.start") return [...messages, shellStartMessage(event.command, event.excludeFromContext, event.at)];
+   if (event.type === "shell.chunk") return appendShellChunk(messages, event.chunk);
+   if (event.type === "shell.end") return finalizeShellMessage(messages, event);
+   if (event.type === "command.output") return [...messages, textMessage(event.level === "error" ? "system" : "tool", event.message)];
+@@ -98,8 +103,10 @@ function applyFinalMessage(messages: ChatLine[], rawMessage: unknown): ChatLine[
+   const displayEnded = ended
+     .map((line) => line.role === "assistant" ? withoutToolCalls(line) : line)
+     .filter((line) => line.parts.length > 0);
+-  if (displayEnded.length === 0) return messages;
+-  return displayEnded.reduce((next, line) => applyFinalLine(next, line), messages);
++  // The answer's own lines first, then its call cards, then its error line – the history order.
++  const answered = updateBeforeAnswerCards(messages, ended, (lines) => displayEnded.filter((line) => line.role !== "system").reduce((next, line) => applyFinalLine(next, line), lines));
++  const withCards = withAnswerToolCards(answered, ended);
++  return displayEnded.filter((line) => line.role === "system").reduce((next, line) => applyFinalLine(next, line), withCards);
+ }
+ 
+ function applyFinalLine(messages: ChatLine[], displayEnded: ChatLine): ChatLine[] {
+@@ -130,6 +137,84 @@ function withoutToolCalls(message: ChatLine): ChatLine {
+   return { ...message, parts: message.parts.filter((part) => part.type !== "toolCall") };
+ }
+ 
++/**
++ * Apply `update` to the lines in front of the trailing tool cards of the
++ * answer's own calls and keep those cards behind the result: a repeated
++ * `message.end`, the join-time partial or an early `tool.start` leave them right
++ * after the answer's earlier text line, which has to be replaced, not followed.
++ */
++function updateBeforeAnswerCards(messages: ChatLine[], ended: ChatLine[], update: (lines: ChatLine[]) => ChatLine[]): ChatLine[] {
++  const callIds = new Set(ended.flatMap((line) => line.parts.flatMap((part) => part.type === "toolCall" && part.toolCallId !== undefined ? [part.toolCallId] : [])));
++  const isOwnCard = (line: ChatLine | undefined) => line?.role === "tool" && line.parts.length > 0 && line.parts.every((part) => part.type === "toolExecution" && part.toolCallId !== undefined && callIds.has(part.toolCallId));
++  let start = messages.length;
++  while (start > 0 && isOwnCard(messages[start - 1])) start -= 1;
++  if (start === messages.length) return update(messages);
++  const head = messages.slice(0, start);
++  const updated = update(head);
++  return updated === head ? messages : [...updated, ...messages.slice(start)];
++}
++
++/**
++ * As history coalescing does (an aborted answer included), the calls of a
++ * finished answer become pending tool cards carrying the answer's metadata
++ * (time, tokens) – the same object as on the answer's text line, if any;
++ * `tool.start` then fills them in. Cards that already exist – seeded from the
++ * join-time partial or started before this `message.end` – get the final
++ * metadata and the final call (its summary and arguments may have been cut
++ * mid-stream); a repeated `message.end` moves them to its new metadata object, the one its text line now has. Skill reads are
++ * `skillRead` parts, not calls.
++ */
++function withAnswerToolCards(messages: ChatLine[], ended: ChatLine[]): ChatLine[] {
++  const answer = ended.find((line) => line.role === "assistant");
++  const meta = answer?.meta;
++  if (answer === undefined || meta === undefined) return messages;
++  const calls = new Map(answer.parts.flatMap((part) => part.type === "toolCall" && part.toolCallId !== undefined && part.toolCallId !== "" ? [[part.toolCallId, part] as const] : []));
++  const callOf = (part: ChatLine["parts"][number]) => part.type === "toolExecution" && part.toolCallId !== undefined ? calls.get(part.toolCallId) : undefined;
++  const isOwnCard = (line: ChatLine) => line.meta !== meta && line.parts.some((part) => callOf(part) !== undefined);
++  const finalize = (line: ChatLine): ChatLine => ({
++    ...line,
++    meta,
++    parts: line.parts.map((part) => {
++      const call = callOf(part);
++      if (part.type !== "toolExecution" || call === undefined) return part;
++      return { ...part, summary: call.summary, ...(call.args === undefined ? {} : { args: call.args }) };
++    }),
++  });
++  const seeded = messages.some(isOwnCard) ? messages.map((line) => isOwnCard(line) ? finalize(line) : line) : messages;
++  const cards = answer.parts.flatMap((part): ChatLine[] => {
++    if (part.type !== "toolCall" || part.toolCallId === undefined || part.toolCallId === "") return [];
++    const callId = part.toolCallId;
++    if (seeded.some((line) => line.parts.some((existing) => existing.type === "toolExecution" && existing.toolCallId === callId))) return [];
++    const execution: ToolExecutionPart = {
++      type: "toolExecution",
++      toolCallId: part.toolCallId,
++      toolName: part.toolName,
++      summary: part.summary,
++      ...(part.args === undefined ? {} : { args: part.args }),
++      status: "pending",
++    };
++    return [{ role: "tool", parts: [execution], meta }];
++  });
++  return cards.length === 0 ? seeded : [...seeded, ...cards];
++}
++
++/**
++ * `tool.start` for a call already shown as a pending card – by a tool-only
++ * answer or by the join-time partial. The started call replaces the summary and
++ * arguments, which a partial may have cut mid-stream.
++ */
++function startPendingToolExecution(messages: ChatLine[], event: Extract<SessionUiEvent, { type: "tool.start" }>): ChatLine[] {
++  const pending = messages.some((line) => line.parts.some((part) => part.type === "toolExecution" && part.toolCallId === event.toolCallId && part.status === "pending"));
++  if (!pending) return messages;
++  return updateToolExecution(messages, event.toolCallId, (part) => ({
++    ...part,
++    status: "running",
++    summary: event.summary || summarizeArgs(event.args),
++    ...(event.args === undefined ? {} : { args: event.args }),
++    ...(event.at === undefined ? {} : { startedAt: event.at }),
++  }));
++}
++
+ function parseSkillReadPath(path: string | undefined): { name: string; path: string } | undefined {
+   if (path === undefined || path === "") return undefined;
+   const normalized = path.replace(/\\/g, "/");
+@@ -142,8 +227,10 @@ function parseSkillReadPath(path: string | undefined): { name: string; path: str
+ function appendToolExecutionStart(messages: ChatLine[], event: Extract<SessionUiEvent, { type: "tool.start" }>): ChatLine[] {
+   const skillRead = event.toolName === "read" ? parseSkillReadPath(getString(event.args, "path")) : undefined;
+   if (skillRead !== undefined) {
+-    return appendLine(messages, { role: "skill", parts: [{ type: "skillRead", ...skillRead, ...(event.toolCallId === "" ? {} : { toolCallId: event.toolCallId }) }] });
++    return appendLine(messages, { role: "skill", parts: [{ type: "skillRead", ...skillRead, ...(event.toolCallId === "" ? {} : { toolCallId: event.toolCallId }) }], ...(event.at === undefined ? {} : { meta: { timestamp: event.at } }) });
+   }
++  const started = startPendingToolExecution(messages, event);
++  if (started !== messages) return started;
+ 
+   const part: ToolExecutionPart = {
+     type: "toolExecution",
+@@ -152,6 +239,7 @@ function appendToolExecutionStart(messages: ChatLine[], event: Extract<SessionUi
+     summary: event.summary || summarizeArgs(event.args),
+     ...(event.args === undefined ? {} : { args: event.args }),
+     status: "running",
++    ...(event.at === undefined ? {} : { startedAt: event.at }),
+   };
+   return [...messages, { role: "tool", parts: [part] }];
+ }
+@@ -169,7 +257,7 @@ function mergeToolExecutionUpdate(part: ToolExecutionPart, event: Extract<Sessio
+ }
+ 
+ function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate): ChatLine[] {
+-  const { toolCallId, toolName, text, isError, content, details, presentation } = result;
++  const { toolCallId, toolName, text, isError, content, details, presentation, endedAt, usage } = result;
+   const updated = updateToolExecution(messages, toolCallId, (part) => {
+     const preview = previewFromDetails(details) ?? part.preview;
+     return {
+@@ -179,6 +267,8 @@ function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate):
+       ...(content === undefined ? {} : { content }),
+       ...(details === undefined ? {} : { details }),
+       ...(preview === undefined ? {} : { preview }),
++      ...(part.endedAt !== undefined || endedAt === undefined ? {} : { endedAt }),
++      ...(usage === undefined ? {} : { usage }),
+     };
+   }, (line) => reconcileToolResultPresentation(line, presentation));
+ 
+@@ -195,6 +285,8 @@ function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate):
+       ...(content === undefined ? {} : { content }),
+       ...(details === undefined ? {} : { details }),
+       ...(preview === undefined ? {} : { preview }),
++      ...(endedAt === undefined ? {} : { endedAt }),
++      ...(usage === undefined ? {} : { usage }),
+     };
+     finalized = [...messages, reconcileToolResultPresentation({ role: "tool", parts: [part] }, presentation)];
+   }
+@@ -245,7 +337,7 @@ function updateToolExecution(
+ 
+ function reconcileToolResultPresentation(line: ChatLine, presentation: ToolResultPresentation): ChatLine {
+   const next = { ...line, parts: [...line.parts.filter((part) => part.type !== "image"), ...presentation.images] };
+-  return presentation.meta === undefined ? next : { ...next, meta: presentation.meta };
++  return presentation.meta === undefined || line.meta !== undefined ? next : { ...next, meta: presentation.meta };
+ }
+ 
+ function toolResultPresentation(message: unknown): ToolResultPresentation {
+@@ -259,6 +351,9 @@ function toolResultFromRawMessage(message: unknown): ToolResultUpdate | undefine
+   if (getString(message, "role") !== "toolResult") return undefined;
+   const toolCallId = getString(message, "toolCallId");
+   const content = getProperty(message, "content");
++  const presentation = toolResultPresentation(message);
++  const endedAt = presentation.meta?.timestamp;
++  const usage = presentation.meta?.usage;
+   return {
+     ...(toolCallId === undefined ? {} : { toolCallId }),
+     toolName: getString(message, "toolName") ?? "tool",
+@@ -266,7 +361,9 @@ function toolResultFromRawMessage(message: unknown): ToolResultUpdate | undefine
+     isError: getBoolean(message, "isError") === true,
+     content,
+     details: getProperty(message, "details"),
+-    presentation: toolResultPresentation(message),
++    presentation,
++    ...(endedAt === undefined ? {} : { endedAt }),
++    ...(usage === undefined ? {} : { usage }),
+   };
+ }
+ 
+diff --git a/src/client/src/components/AskUserCard.ts b/src/client/src/components/AskUserCard.ts
+index 97eed33..e501553 100644
+--- a/src/client/src/components/AskUserCard.ts
++++ b/src/client/src/components/AskUserCard.ts
+@@ -21,6 +21,10 @@ import {
+   type AskDraftAnswer,
+   type AskDraftAnswers,
+ } from "../askDrafts";
++import { chatSpanSegments, type ChatSpanTitles } from "../chatMeta";
++import { renderMetaSegments } from "./shared";
++
++const ASK_TIME_TITLES: ChatSpanTitles = { duration: "Time from asking to closing", start: "Asked at", end: "Closed at" };
+ 
+ export type AskUserSubmitCallback = (askId: string, submission: AskUserSubmission) => void | Promise<void>;
+ 
+@@ -76,9 +80,12 @@ export class AskUserCard extends LitElement {
+       <article class="card open-card" aria-labelledby="ask-user-heading" @dblclick=${selectInlineCodeOnDoubleClick}>
+         <header class="card-header">
+           <h2 id="ask-user-heading">Questions</h2>
+-          <span class="header-status" role="status" aria-live="polite" aria-atomic="true">
+-            ${count} of ${ask.questions.length} answered
+-          </span>
++          <div class="header-trailing">
++            <span class="header-status" role="status" aria-live="polite" aria-atomic="true">
++              ${count} of ${ask.questions.length} answered
++            </span>
++            ${this.renderHeaderTime(ask.askedAt, undefined)}
++          </div>
+         </header>
+         <form class="ask-form" @submit=${(event: SubmitEvent) => { this.handleSubmit(event, ask); }}>
+           <div class="questions">
+@@ -193,7 +200,10 @@ export class AskUserCard extends LitElement {
+       <article class="card record-card" aria-labelledby="ask-user-record-heading" @dblclick=${selectInlineCodeOnDoubleClick}>
+         <header class="card-header">
+           <h2 id="ask-user-record-heading">Questions</h2>
+-          <span class=${`header-status ${outcome.reason}`}>${recordLabel}</span>
++          <div class="header-trailing">
++            <span class=${`header-status ${outcome.reason}`}>${recordLabel}</span>
++            ${this.renderHeaderTime(outcome.askedAt, outcome.closedAt)}
++          </div>
+         </header>
+         <p class="record-summary">
+           ${outcome.reason === "superseded"
+@@ -207,6 +217,11 @@ export class AskUserCard extends LitElement {
+     `;
+   }
+ 
++  private renderHeaderTime(start: string, end: string | undefined): TemplateResult | null {
++    const segments = chatSpanSegments(start, end, ASK_TIME_TITLES);
++    return segments.length === 0 ? null : html`<span class="header-time">${renderMetaSegments(segments)}</span>`;
++  }
++
+   private renderQuestionRecord(outcome: AskUserOutcome, record: AskUserQuestionRecord, index: number): TemplateResult {
+     const answer = this.displayedRecordAnswer(outcome, record);
+     return html`
+@@ -452,6 +467,8 @@ export class AskUserCard extends LitElement {
+       text-transform: uppercase;
+     }
+     .header-status { flex: 0 1 auto; color: var(--pi-muted); font-size: 11px; text-align: end; }
++    .header-trailing { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 8px; }
++    .header-time { flex: 0 0 auto; color: var(--pi-dim); font-size: 11px; white-space: nowrap; }
+     .header-status.submitted { color: var(--pi-success); }
+     .header-status.superseded { color: var(--pi-warning); }
+     .questions { display: grid; padding-top: 8px; }
+diff --git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
+index 7ac270d..9ac3bb9 100644
+--- a/src/client/src/components/ChatView.test.ts
++++ b/src/client/src/components/ChatView.test.ts
+@@ -246,26 +246,39 @@ describe("ChatView notification tray wiring", () => {
+ });
+ 
+ describe("chatMessageMetadataLabel", () => {
+-  it("uses one full date and model label without a model prefix", () => {
+-    const timestamp = "2026-07-10T19:15:30.000Z";
+-    const formattedTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
++  const timestamp = new Date(2026, 6, 10, 19, 15, 30).toISOString();
+ 
++  it("uses the local date and the model name without its provider", () => {
+     expect(chatMessageMetadataLabel({
+       role: "assistant",
+       parts: [],
+-      meta: { timestamp, model: { provider: "provider", id: "model" } },
+-    })).toBe(`${formattedTimestamp} · provider/model`);
++      meta: { timestamp, model: { provider: "provider", id: "vendor/model" } },
++    })).toBe("2026-07-10 19:15:30 · model");
+   });
+ 
+-  it("appends the thinking level after the model when present", () => {
+-    const timestamp = "2026-07-10T19:15:30.000Z";
+-    const formattedTimestamp = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(timestamp));
+-
++  it("joins the thinking level to the model with a colon", () => {
+     expect(chatMessageMetadataLabel({
+       role: "assistant",
+       parts: [],
+       meta: { timestamp, model: { provider: "provider", id: "model" }, thinkingLevel: "high" },
+-    })).toBe(`${formattedTimestamp} · provider/model · high`);
++    })).toBe("2026-07-10 19:15:30 · model:high");
++  });
++
++  it("puts the generation and turn durations before the date", () => {
++    const completedAt = new Date(2026, 6, 10, 19, 15, 42).toISOString();
++    expect(chatMessageMetadataLabel({
++      role: "assistant",
++      parts: [],
++      meta: { timestamp, completedAt, model: { id: "model" }, thinkingLevel: "high" },
++    }, 185_000)).toBe("12s Σ 3m5s · 2026-07-10 19:15:30 · model:high");
++  });
++
++  it("puts the token counters first", () => {
++    expect(chatMessageMetadataLabel({
++      role: "assistant",
++      parts: [],
++      meta: { timestamp, usage: { input: 126, output: 66, cacheRead: 63_488, cacheWrite: 1234, totalTokens: 64_914 } },
++    })).toBe("↑126 ↓66 ⤴1.23k ⤵63.49k ∴∅ Σ64.91k · 2026-07-10 19:15:30");
+   });
+ });
+ 
+diff --git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
+index 9a87336..8bd049d 100644
+--- a/src/client/src/components/ChatView.ts
++++ b/src/client/src/components/ChatView.ts
+@@ -4,6 +4,7 @@ import { repeat } from "lit/directives/repeat.js";
+ import { ChatDisclosureController } from "../chatDisclosure";
+ import { chatCardKey, chatCardOpen, eventsGroupDisclosureMode, groupDisclosureOpen, lastDisclosureCards, lastEventsGroupIndex, type PiWebPartDisclosureKind } from "../chatDisclosureModes";
+ import { chatGroupPartLabel, DEFAULT_EVENTS_GROUP_LIMIT, groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGroups";
++import { chatGroupMetaSegments, chatMessageMetaSegments, chatMetaFirstIndexes, chatToolAnswerHeaderIndexes, chatTurnDurations, metaSegmentsText, type MetaSegment } from "../chatMeta";
+ import { writeClipboardText } from "../clipboard";
+ import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
+ import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
+@@ -28,7 +29,7 @@ import {
+ } from "../sessionNotifications";
+ import type { ChatLine, ChatPart } from "./shared";
+ import type { FormattedText } from "./FormattedText";
+-import { chatStyles, renderSessionWarningIcon } from "./shared";
++import { chatStyles, renderMetaSegments, renderSessionWarningIcon } from "./shared";
+ import "./AskUserCard";
+ import "./ExtensionDialogCard";
+ import type { ExtensionDialogAnswerCallback, ExtensionDialogCancelCallback, ExtensionDialogDismissCallback } from "./ExtensionDialogCard";
+@@ -37,7 +38,6 @@ import "./ConversationMeter";
+ import "./FormattedText";
+ import "./ToolExecutionView";
+ 
+-const messageTimestampFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" });
+ const notificationTimestampFormatter = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
+ 
+ function renderNotificationDisclosureIcon(collapsed: boolean) {
+@@ -200,26 +200,9 @@ export function chatSessionWarningRows(status: SessionStatus | undefined): ChatS
+   }));
+ }
+ 
+-export function chatMessageMetadataLabel(message: ChatLine): string {
+-  const timestamp = message.meta?.timestamp;
+-  const time = timestamp === undefined ? undefined : formatMessageTimestamp(timestamp);
+-  const model = chatMessageModelLabel(message);
+-  const parts = [time, model, message.meta?.thinkingLevel].filter((part): part is string => part !== undefined && part !== "");
+-  return parts.length === 0 ? "No Pi message metadata available" : parts.join(" · ");
+-}
+-
+-function formatMessageTimestamp(timestamp: string): string | undefined {
+-  const date = new Date(timestamp);
+-  if (!Number.isFinite(date.getTime())) return undefined;
+-  return messageTimestampFormatter.format(date);
+-}
+-
+-function chatMessageModelLabel(message: ChatLine): string | undefined {
+-  const model = message.meta?.model;
+-  if (model === undefined) return undefined;
+-  const id = model.responseId ?? model.id;
+-  if (id === undefined || id === "") return model.provider;
+-  return model.provider !== undefined && model.provider !== "" ? `${model.provider}/${id}` : id;
++export function chatMessageMetadataLabel(message: ChatLine, turnDurationMs?: number): string {
++  const segments = chatMessageMetaSegments(message, turnDurationMs);
++  return segments.length === 0 ? "No Pi message metadata available" : metaSegmentsText(segments);
+ }
+ 
+ @customElement("chat-view")
+@@ -283,7 +266,12 @@ export class ChatView extends LitElement {
+   private stickyChunkKeys: ReadonlySet<string> = new Set();
+   private previousDefaultOpenChunkKeys: ReadonlySet<string> = new Set();
+   private lastDisclosureCardsCache = new Map<PiWebPartDisclosureKind, string>();
+-  private readonly messageMetaCache = new WeakMap<ChatLine, string>();
++  private readonly messageMetaCache = new WeakMap<ChatLine, { label: string; segments: MetaSegment[] }>();
++  private turnDurationsCache = new Map<number, number>();
++  private toolAnswerHeaders = new Set<number>();
++  private metaFirstIndexes = new Map<NonNullable<ChatLine["meta"]>, number>();
++  /** Turn totals of final answers shown only as a group line (no text): their header is in the group body. */
++  private groupTurnDurations = new Map<number, number>();
+   private readonly messageCopyTextCache = new WeakMap<ChatLine, string>();
+   private lastScrollTop = 0;
+   private lastClientHeight = 0;
+@@ -749,6 +737,11 @@ export class ChatView extends LitElement {
+     this.groupedMessagesStart = this.messageStart;
+     this.groupedMessagesLimit = this.eventsGroupLimit;
+     this.groupedMessagesCache = groupChatMessages(this.messages, this.messageStart, this.eventsGroupLimit);
++    this.turnDurationsCache = chatTurnDurations(this.messages, this.messageStart);
++    this.toolAnswerHeaders = chatToolAnswerHeaderIndexes(this.messages, this.messageStart);
++    this.metaFirstIndexes = chatMetaFirstIndexes(this.messages, this.messageStart);
++    const messageIndexes = new Set(this.groupedMessagesCache.flatMap((group) => group.kind === "message" ? [group.index] : []));
++    this.groupTurnDurations = new Map([...this.turnDurationsCache].filter(([index]) => !messageIndexes.has(index)));
+     this.lastDisclosureCardsCache = lastDisclosureCards(this.groupedMessagesCache);
+     return this.groupedMessagesCache;
+   }
+@@ -992,7 +985,7 @@ export class ChatView extends LitElement {
+     return html`
+       ${this.renderScrollMarker(this.messageScrollMarkerId(index))}
+       <article class=${toolOnly || askUserRecordOnly ? shellClass : `msg ${message.role}`} data-index=${index} data-scroll-anchor-id=${this.messageAnchorKey(index)}>
+-        ${toolOnly || askUserRecordOnly ? null : this.renderMessageHeader(message, String(index))}
++        ${toolOnly || askUserRecordOnly ? null : this.renderMessageHeader(message, String(index), message.role, this.turnDurationsCache.get(index))}
+         ${message.parts.map((part, partIndex) => this.renderPart(part, message, index, partIndex))}
+       </article>
+     `;
+@@ -1028,12 +1021,18 @@ export class ChatView extends LitElement {
+         <summary>
+           <b class="label">${chatMessageGroupLabel(isLiveTail)}</b>
+           <span>${partLabel}${summarizeChatGroup(messages)}</span>
++          ${this.renderGroupMeta(messages, startIndex, isLiveTail)}
+         </summary>
+         ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
+       </details>
+     `;
+   }
+ 
++  private renderGroupMeta(messages: ChatLine[], startIndex: number, isLiveTail: boolean) {
++    const segments = chatGroupMetaSegments(messages, isLiveTail, startIndex, this.metaFirstIndexes);
++    return segments.length === 0 ? null : html`<small class="group-time">${renderMetaSegments(segments)}</small>`;
++  }
++
+   private renderMessageGroupBody(messages: ChatLine[], startIndex: number) {
+     return html`
+       <div class="group-body">
+@@ -1041,7 +1040,7 @@ export class ChatView extends LitElement {
+           const toolOnly = this.isToolExecutionOnlyMessage(message);
+           return html`
+             <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
+-              ${toolOnly ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`)}
++              ${toolOnly && !this.toolAnswerHeaders.has(startIndex + offset) ? null : this.renderMessageHeader(message, `${String(startIndex)}:${String(offset)}`, toolOnly ? "assistant" : message.role, this.groupTurnDurations.get(startIndex + offset))}
+               ${message.parts.map((part, partIndex) => this.renderPart(part, message, startIndex + offset, partIndex))}
+             </section>
+           `;
+@@ -1054,15 +1053,15 @@ export class ChatView extends LitElement {
+     return html`<span class="scroll-marker" data-marker-id=${markerId} aria-hidden="true"></span>`;
+   }
+ 
+-  private renderMessageHeader(message: ChatLine, key: string, label: string = message.role) {
+-    const meta = this.messageMetaLabel(message);
++  private renderMessageHeader(message: ChatLine, key: string, label: string = message.role, turnDurationMs?: number) {
++    const meta = this.messageMeta(message, turnDurationMs);
+     const expanded = this.expandedMetaKey === key;
+     return html`
+       <div class="msg-header">
+         <b class="label">${label}</b>
+         <div class="msg-header-trailing">
+           ${this.renderMessageActions(message, key)}
+-          <span class=${expanded ? "msg-meta expanded" : "msg-meta"} role="button" tabindex="0" title=${meta} aria-label=${meta} aria-expanded=${String(expanded)} @click=${() => { this.expandedMetaKey = expanded ? undefined : key; }} @keydown=${(event: KeyboardEvent) => { this.onMetaKeydown(event, key, expanded); }}>${meta}</span>
++          <span class=${expanded ? "msg-meta expanded" : "msg-meta"} role="button" tabindex="0" title=${meta.label} aria-label=${meta.label} aria-expanded=${String(expanded)} @click=${() => { this.expandedMetaKey = expanded ? undefined : key; }} @keydown=${(event: KeyboardEvent) => { this.onMetaKeydown(event, key, expanded); }}>${meta.segments.length === 0 ? meta.label : renderMetaSegments(meta.segments)}</span>
+         </div>
+       </div>
+     `;
+@@ -1113,12 +1112,13 @@ export class ChatView extends LitElement {
+   }
+ 
+ 
+-  private messageMetaLabel(message: ChatLine): string {
++  private messageMeta(message: ChatLine, turnDurationMs?: number): { label: string; segments: MetaSegment[] } {
+     const cached = this.messageMetaCache.get(message);
+     if (cached !== undefined) return cached;
+-    const label = chatMessageMetadataLabel(message);
+-    this.messageMetaCache.set(message, label);
+-    return label;
++    const segments = chatMessageMetaSegments(message, turnDurationMs);
++    const meta = { label: segments.length === 0 ? "No Pi message metadata available" : metaSegmentsText(segments), segments };
++    this.messageMetaCache.set(message, meta);
++    return meta;
+   }
+ 
+   private renderPart(part: ChatPart, message: ChatLine | undefined, index: number, partIndex: number) {
+diff --git a/src/client/src/components/ExtensionDialogCard.ts b/src/client/src/components/ExtensionDialogCard.ts
+index f33a5f8..97d4468 100644
+--- a/src/client/src/components/ExtensionDialogCard.ts
++++ b/src/client/src/components/ExtensionDialogCard.ts
+@@ -8,6 +8,10 @@ import {
+   type PendingExtensionDialog,
+ } from "../../../shared/apiTypes";
+ import type { ClosedExtensionDialog } from "../appState";
++import { chatSpanSegments, type ChatSpanTitles } from "../chatMeta";
++import { renderMetaSegments } from "./shared";
++
++const DIALOG_TIME_TITLES: ChatSpanTitles = { duration: "Time from opening to closing", start: "Opened at", end: "Closed at" };
+ 
+ export type ExtensionDialogAnswerCallback = (dialogId: string, value: ExtensionDialogAnswer) => void | Promise<void>;
+ export type ExtensionDialogCancelCallback = (dialogId: string) => void | Promise<void>;
+@@ -129,12 +133,15 @@ export class ExtensionDialogCard extends LitElement {
+       <article class="card open-card" aria-labelledby="extension-dialog-heading">
+         <header class="card-header">
+           <h2 id="extension-dialog-heading">${dialog.title}</h2>
+-          ${countdown === undefined
+-            ? null
+-            // Decorative only — no live region: a polite region would queue one
+-            // announcement per second. The daemon-owned dialog.closed event is
+-            // the real signal, and the settled card announces the outcome.
+-            : html`<span class="header-status countdown">${countdown}</span>`}
++          <div class="header-trailing">
++            ${countdown === undefined
++              ? null
++              // Decorative only — no live region: a polite region would queue one
++              // announcement per second. The daemon-owned dialog.closed event is
++              // the real signal, and the settled card announces the outcome.
++              : html`<span class="header-status countdown">${countdown}</span>`}
++            ${this.renderHeaderTime(dialog.askedAt, undefined)}
++          </div>
+         </header>
+         ${this.renderOpenBody(dialog)}
+       </article>
+@@ -198,7 +205,10 @@ export class ExtensionDialogCard extends LitElement {
+       <article class="card closed-card" aria-labelledby="extension-dialog-closed-heading">
+         <header class="card-header">
+           <h2 id="extension-dialog-closed-heading">${closed.dialog.title}</h2>
+-          <span class=${`header-status ${closed.reason}`}>${extensionDialogCloseLabel(closed.reason)}</span>
++          <div class="header-trailing">
++            <span class=${`header-status ${closed.reason}`}>${extensionDialogCloseLabel(closed.reason)}</span>
++            ${this.renderHeaderTime(closed.dialog.askedAt, closed.closedAt)}
++          </div>
+         </header>
+         <p class="closed-summary">${extensionDialogCloseSummary(closed)}</p>
+         <footer class="dialog-footer">
+@@ -208,6 +218,11 @@ export class ExtensionDialogCard extends LitElement {
+     `;
+   }
+ 
++  private renderHeaderTime(start: string, end: string | undefined): TemplateResult | null {
++    const segments = chatSpanSegments(start, end, DIALOG_TIME_TITLES);
++    return segments.length === 0 ? null : html`<span class="header-time">${renderMetaSegments(segments)}</span>`;
++  }
++
+   private answerDialog(dialog: PendingExtensionDialog, value: ExtensionDialogAnswer): void {
+     this.closeWith(dialog, () => this.onAnswer?.(dialog.dialogId, value));
+   }
+@@ -309,6 +324,8 @@ export class ExtensionDialogCard extends LitElement {
+       overflow-wrap: anywhere;
+     }
+     .header-status { flex: 0 0 auto; color: var(--pi-muted); font-size: 11px; text-align: end; }
++    .header-trailing { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 8px; }
++    .header-time { flex: 0 0 auto; color: var(--pi-dim); font-size: 11px; white-space: nowrap; }
+     .header-status.answered { color: var(--pi-success); }
+     .header-status.timeout, .header-status.aborted, .header-status.session-ended { color: var(--pi-warning); }
+     .dialog-message {
+diff --git a/src/client/src/components/StatusBar.ts b/src/client/src/components/StatusBar.ts
+index 91b6c17..79d3576 100644
+--- a/src/client/src/components/StatusBar.ts
++++ b/src/client/src/components/StatusBar.ts
+@@ -1,8 +1,11 @@
+ import { LitElement, html } from "lit";
+ import { customElement, property } from "lit/decorators.js";
+ import type { SessionStatus } from "../api";
++import { chatTokenSegment } from "../chatMeta";
+ import { formatCost, formatTokenCount } from "../utils/format";
+-import { renderSessionWarningIcon, statusBarStyles } from "./shared";
++import { renderMetaSegments, renderSessionWarningIcon, statusBarStyles, type ChatUsage } from "./shared";
++
++const SESSION_TOKEN_SCOPE = " (session: all branches and compacted history)";
+ 
+ export interface StatusBarWarningControlContent {
+   countText: string;
+@@ -18,6 +21,17 @@ export function statusBarWarningControlContent(count: number, expanded: boolean)
+   };
+ }
+ 
++function statusUsage(tokens: SessionStatus["tokens"]): ChatUsage {
++  return {
++    input: tokens.input,
++    output: tokens.output,
++    cacheRead: tokens.cacheRead,
++    cacheWrite: tokens.cacheWrite,
++    totalTokens: tokens.total,
++    ...(tokens.reasoning === undefined ? {} : { reasoning: tokens.reasoning }),
++  };
++}
++
+ @customElement("status-bar")
+ export class StatusBar extends LitElement {
+   @property({ attribute: false }) status?: SessionStatus;
+@@ -55,8 +69,7 @@ export class StatusBar extends LitElement {
+             <span>${warningControl.countText}</span>
+           </button>
+         `}
+-        <span>↑${formatTokenCount(tokens.input)}</span>
+-        <span>↓${formatTokenCount(tokens.output)}</span>
++        <span class="tokens">${renderMetaSegments([chatTokenSegment(statusUsage(tokens), SESSION_TOKEN_SCOPE)])}</span>
+         <span class="context">${contextText}</span>
+         <span>${formatCost(status.cost)}</span>
+         ${status.pendingMessageCount > 0 ? html`<span>${String(status.pendingMessageCount)} queued</span>` : null}
+diff --git a/src/client/src/components/ToolExecutionView.ts b/src/client/src/components/ToolExecutionView.ts
+index 16fa4f2..165758a 100644
+--- a/src/client/src/components/ToolExecutionView.ts
++++ b/src/client/src/components/ToolExecutionView.ts
+@@ -5,8 +5,10 @@ import { toolArgsCardVisible, toolContentCardVisible } from "../chatDisclosureMo
+ import type { CodeHighlightLine } from "../codeHighlight";
+ import { languageForPath } from "../codeLanguage";
+ import type { CodeLanguage } from "../codeLanguage";
+-import type { ToolExecutionPart } from "./shared";
++import { chatSpanSegments, chatTokenSegment, type ChatSpanTitles } from "../chatMeta";
++import { renderMetaSegments, type ToolExecutionPart } from "./shared";
+ 
++const TOOL_TIME_TITLES: ChatSpanTitles = { duration: "Run time", start: "Started at", end: "Finished at" };
+ const MAX_COLLAPSED_DIFF_LINES = 180;
+ let codeHighlightModulePromise: Promise<typeof import("../codeHighlight")> | undefined;
+ 
+@@ -339,6 +341,10 @@ export class ToolExecutionView extends LitElement {
+     const isLive = execution.status === "pending" || execution.status === "running";
+     const previewError = isLive && preview?.error !== undefined && preview.error !== "" ? preview.error : undefined;
+     const target = toolTarget(execution, path);
++    const meta = [
++      ...(execution.usage === undefined ? [] : [chatTokenSegment(execution.usage, " (reported by the tool)")]),
++      ...chatSpanSegments(execution.startedAt, isLive ? undefined : execution.endedAt, TOOL_TIME_TITLES),
++    ];
+ 
+     return html`
+       <section class=${`tool-card ${execution.status}`}>
+@@ -352,6 +358,7 @@ export class ToolExecutionView extends LitElement {
+             ${editCountLabel(execution) === undefined ? null : html`<span>${editCountLabel(execution)}</span>`}
+             ${diffStats === undefined ? null : html`<span class="diff-stats"><b class="added">+${diffStats.added}</b><span>/</span><b class="removed">-${diffStats.removed}</b></span>`}
+             <span class="status-label">${statusLabel(execution.status)}</span>
++            ${meta.length === 0 ? null : html`<span class="tool-time">${renderMetaSegments(meta)}</span>`}
+           </div>
+         </div>
+ 
+@@ -605,6 +612,7 @@ export class ToolExecutionView extends LitElement {
+     .added, .diff .added { color: var(--pi-success); }
+     .removed, .diff .removed { color: var(--pi-danger); }
+     .status-label { text-transform: uppercase; letter-spacing: .04em; color: var(--pi-muted); }
++    .tool-time { color: var(--pi-dim); font-size: 11px; white-space: nowrap; }
+     .notice { margin: 0; color: var(--pi-warning); }
+     .muted { margin: 0; color: var(--pi-muted); }
+     .text-body, .result-body { border-top: 1px solid var(--pi-border-muted); padding-top: 6px; }
+diff --git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
+index 8ebd153..cf73091 100644
+--- a/src/client/src/components/shared.ts
++++ b/src/client/src/components/shared.ts
+@@ -1,6 +1,7 @@
+-import { css, svg, type TemplateResult } from "lit";
++import { css, html, svg, type TemplateResult } from "lit";
+ import type { AskUserOutcome } from "../../../shared/apiTypes";
+ import type { SessionWarningSeverity } from "../api";
++import type { MetaSegment } from "../chatMeta";
+ 
+ /** Shared downstream shadow for content passing beneath sticky scroll controls. */
+ export const scrollHideShadow = css`0 8px 18px var(--pi-shadow-soft)`;
+@@ -52,6 +53,22 @@ export interface ToolExecutionPart {
+   content?: unknown;
+   details?: unknown;
+   preview?: ToolPreview;
++  /** Server time the call started, when known. */
++  startedAt?: string;
++  /** Server time the call finished, when known. */
++  endedAt?: string;
++  /** Usage the tool result reported itself (extensions only), not the model's. */
++  usage?: ChatUsage;
++}
++
++/** Token counters of a finished message; `reasoning` is part of `output` and absent when not reported. */
++export interface ChatUsage {
++  input: number;
++  output: number;
++  cacheRead: number;
++  cacheWrite: number;
++  reasoning?: number;
++  totalTokens: number;
+ }
+ 
+ export type ChatPart =
+@@ -75,9 +92,20 @@ export interface ChatLine {
+     model?: { provider?: string; id?: string; responseId?: string };
+     /** Thinking level the assistant message was generated with, when known. */
+     thinkingLevel?: string;
++    /** When the message finished: the session entry time or the live end of an answer or `!` command. */
++    completedAt?: string;
++    /** Assistant stop reason, kept only together with `completedAt`. */
++    stopReason?: string;
++    /** Token counters of a finished answer, tool result or summary. */
++    usage?: ChatUsage;
+   };
+ }
+ 
++/** Header segments as hoverable pieces: spaces inside a segment, ` · ` between segments. */
++export function renderMetaSegments(segments: readonly MetaSegment[]): TemplateResult {
++  return html`${segments.map((segment, index) => html`${index === 0 ? "" : " · "}${segment.map((piece, pieceIndex) => html`${pieceIndex === 0 ? "" : " "}<span class="meta-piece" title=${piece.title}>${piece.text}</span>`)}`)}`;
++}
++
+ export interface CompletionItem {
+   kind: "command" | "file" | "model";
+   replaceFrom: number;
+@@ -396,6 +424,7 @@ export const chatStyles = css`
+   .msg.event-group > summary { position: sticky; top: -26px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); }
+   .msg.event-group.live > summary { border-bottom-color: var(--pi-success-border); background: var(--pi-success-bg); color: var(--pi-success); }
+   .msg.event-group > summary .label { margin: 0; }
++  .msg.event-group > summary .group-time { flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; font: 11px system-ui, sans-serif; white-space: nowrap; opacity: .75; }
+   .group-body { padding: 0 12px 12px; }
+   .chat-image { display: block; max-width: 100%; max-height: 320px; margin: 8px 0 0; border: 1px solid var(--pi-border-muted); border-radius: 8px; object-fit: contain; cursor: zoom-in; }
+   .chat-image:focus-visible { outline: 2px solid var(--pi-accent, var(--pi-success-border)); outline-offset: 2px; }
+diff --git a/src/client/src/controllers/sessionController.extensionDialogs.test.ts b/src/client/src/controllers/sessionController.extensionDialogs.test.ts
+index cb2f043..4fd7c72 100644
+--- a/src/client/src/controllers/sessionController.extensionDialogs.test.ts
++++ b/src/client/src/controllers/sessionController.extensionDialogs.test.ts
+@@ -194,7 +194,7 @@ describe("SessionController extension dialog answers", () => {
+     await controller.answerDialog("dialog-1", true);
+ 
+     expect(answerCalls).toEqual([{ dialogId: "dialog-1", value: true, machineId: "local" }]);
+-    expect(state.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "answered", answer: true }]);
++    expect(state.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "answered", answer: true, closedAt: "2026-07-20T00:01:00.000Z" }]);
+     expect(state.pendingDialogs).toEqual([]);
+     expect(state.status).toEqual(closedStatus);
+   });
+@@ -224,7 +224,7 @@ describe("SessionController extension dialog answers", () => {
+     await controller.cancelDialog("dialog-1");
+ 
+     expect(cancelCalls).toEqual(["dialog-1"]);
+-    expect(state.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "cancelled" }]);
++    expect(state.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "cancelled", closedAt: "2026-07-20T00:01:00.000Z" }]);
+     expect(state.pendingDialogs).toEqual([]);
+   });
+ 
+diff --git a/src/client/src/controllers/sessionController.startupDialogs.test.ts b/src/client/src/controllers/sessionController.startupDialogs.test.ts
+index e756a6f..7415924 100644
+--- a/src/client/src/controllers/sessionController.startupDialogs.test.ts
++++ b/src/client/src/controllers/sessionController.startupDialogs.test.ts
+@@ -192,7 +192,7 @@ describe("SessionController session_start dialog startup reachability", () => {
+ 
+     expect(answerCalls).toEqual([{ sessionId: BACKEND_SESSION_ID, dialogId: "dialog-1", value: true, machineId: "local" }]);
+     expect(harness.state.current.pendingDialogs).toEqual([]);
+-    expect(harness.state.current.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "answered", answer: true }]);
++    expect(harness.state.current.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "answered", answer: true, closedAt: "2026-07-20T00:01:00.000Z" }]);
+     expect(harness.state.current.error).toBe("");
+ 
+     // The answer settled the hook daemon-side, so the create resolves and the
+@@ -225,7 +225,7 @@ describe("SessionController session_start dialog startup reachability", () => {
+ 
+     expect(cancelCalls).toEqual([{ sessionId: BACKEND_SESSION_ID, dialogId: "dialog-1" }]);
+     expect(harness.state.current.pendingDialogs).toEqual([]);
+-    expect(harness.state.current.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "cancelled" }]);
++    expect(harness.state.current.closedDialogs).toEqual([{ dialog: dialog("dialog-1"), reason: "cancelled", closedAt: "2026-07-20T00:01:00.000Z" }]);
+     resolveBackendSession(harness);
+     await start;
+   });
+diff --git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
+index 237803a..e301f23 100644
+--- a/src/client/src/controllers/sessionController.ts
++++ b/src/client/src/controllers/sessionController.ts
+@@ -1058,7 +1058,7 @@ export class SessionController {
+       const outcome: ExtensionDialogOutcome | undefined = response.outcome;
+       if (outcome !== undefined) {
+         const dialog = this.getState().pendingDialogs.find((pending) => pending.dialogId === outcome.dialogId);
+-        if (dialog !== undefined) this.recordClosedDialog({ dialog, reason: outcome.reason, ...(outcome.answer === undefined ? {} : { answer: outcome.answer }) });
++        if (dialog !== undefined) this.recordClosedDialog({ dialog, reason: outcome.reason, closedAt: outcome.closedAt, ...(outcome.answer === undefined ? {} : { answer: outcome.answer }) });
+       }
+       // Both outcomes carry the recomputed status, so no follow-up status
+       // request is needed to learn what the session's open dialogs are now.
+@@ -1091,7 +1091,7 @@ export class SessionController {
+       const outcome: ExtensionDialogOutcome | undefined = response.outcome;
+       if (outcome !== undefined) {
+         const dialog = this.getState().pendingDialogs.find((candidate) => candidate.dialogId === outcome.dialogId);
+-        if (dialog !== undefined) this.recordClosedDialog({ dialog, reason: outcome.reason, ...(outcome.answer === undefined ? {} : { answer: outcome.answer }) });
++        if (dialog !== undefined) this.recordClosedDialog({ dialog, reason: outcome.reason, closedAt: outcome.closedAt, ...(outcome.answer === undefined ? {} : { answer: outcome.answer }) });
+       }
+       this.applyPendingStartStatus(pending, response.sessionStatus);
+     } catch (error) {
+@@ -1600,13 +1600,13 @@ export class SessionController {
+     this.setState({ pendingDialogs: [...state.pendingDialogs, dialog] });
+   }
+ 
+-  private applyClosedDialog(dialogId: string, reason: ExtensionDialogCloseReason, answer: ExtensionDialogAnswer | undefined): void {
++  private applyClosedDialog(dialogId: string, reason: ExtensionDialogCloseReason, answer: ExtensionDialogAnswer | undefined, closedAt?: string): void {
+     // A close for a dialog that is not on screen is already reflected here
+     // (e.g. the answering browser's own response landed first), so it must not
+     // clear or duplicate other cards.
+     const dialog = this.getState().pendingDialogs.find((pending) => pending.dialogId === dialogId);
+     if (dialog === undefined) return;
+-    this.recordClosedDialog({ dialog, reason, ...(answer === undefined ? {} : { answer }) });
++    this.recordClosedDialog({ dialog, reason, ...(answer === undefined ? {} : { answer }), ...(closedAt === undefined ? {} : { closedAt }) });
+   }
+ 
+   private recordClosedDialog(closed: ClosedExtensionDialog): void {
+@@ -1708,7 +1708,7 @@ export class SessionController {
+       return;
+     }
+     if (event.type === "dialog.closed") {
+-      this.applyClosedDialog(event.dialogId, event.reason, event.answer);
++      this.applyClosedDialog(event.dialogId, event.reason, event.answer, event.closedAt);
+       return;
+     }
+     const transcript = this.transcripts.applyLiveEvent(this.getState().messages, event);
+@@ -1831,7 +1831,7 @@ export class SessionController {
+       return;
+     }
+     if (event.type === "dialog.closed") {
+-      this.applyClosedDialog(event.dialogId, event.reason, event.answer);
++      this.applyClosedDialog(event.dialogId, event.reason, event.answer, event.closedAt);
+       return;
+     }
+     if (event.type === "status.update") this.applyPendingStartStatus(pending, event.status);
+diff --git a/src/client/src/shellMessages.ts b/src/client/src/shellMessages.ts
+index db1b735..f264d14 100644
+--- a/src/client/src/shellMessages.ts
++++ b/src/client/src/shellMessages.ts
+@@ -2,8 +2,9 @@ import { textMessage } from "./chatMessages";
+ import type { ChatLine } from "./components/shared";
+ import type { SessionUiEvent } from "./sessionSocket";
+ 
+-export function shellStartMessage(command: string, excludeFromContext?: boolean): ChatLine {
+-  return textMessage("bash", `${excludeFromContext === true ? "excluded from context\n\n" : ""}$ ${command}`);
++export function shellStartMessage(command: string, excludeFromContext?: boolean, startedAt?: string): ChatLine {
++  const line = textMessage("bash", `${excludeFromContext === true ? "excluded from context\n\n" : ""}$ ${command}`);
++  return startedAt === undefined ? line : { ...line, meta: { timestamp: startedAt } };
+ }
+ 
+ export function appendShellChunk(messages: ChatLine[], chunk: string): ChatLine[] {
+@@ -25,8 +26,9 @@ export function finalizeShellMessage(messages: ChatLine[], event: Extract<Sessio
+   if (event.cancelled === true) notes.push("cancelled");
+   if (event.truncated === true) notes.push("output truncated");
+   if (event.fullOutputPath !== undefined && event.fullOutputPath !== "") notes.push(`full output: ${event.fullOutputPath}`);
+-  if (notes.length === 0) return messages;
+-  return [...messages.slice(0, -1), { ...last, parts: [...last.parts.slice(0, -1), { ...lastPart, text: `${lastPart.text}\n\n${notes.join("\n")}` }] }];
++  const completed = event.at === undefined ? last : { ...last, meta: { ...last.meta, completedAt: event.at } };
++  if (notes.length === 0) return completed === last ? messages : [...messages.slice(0, -1), completed];
++  return [...messages.slice(0, -1), { ...completed, parts: [...last.parts.slice(0, -1), { ...lastPart, text: `${lastPart.text}\n\n${notes.join("\n")}` }] }];
+ }
+ 
+ function hasShellOutput(text: string): boolean {
+diff --git a/src/server/sessions/piSessionService.extensionDialogs.test.ts b/src/server/sessions/piSessionService.extensionDialogs.test.ts
+index 1661a7e..e45dee3 100644
+--- a/src/server/sessions/piSessionService.extensionDialogs.test.ts
++++ b/src/server/sessions/piSessionService.extensionDialogs.test.ts
+@@ -164,7 +164,7 @@ describe("PiSessionService.answerDialog", () => {
+     expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "answered", answer: true },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "answered", answer: true, closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     await service.dispose();
+   });
+@@ -265,7 +265,7 @@ describe("PiSessionService extension dialog timeout", () => {
+     expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "timeout" },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "timeout", closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     await service.dispose();
+   });
+@@ -316,7 +316,7 @@ describe("PiSessionService extension dialog signal", () => {
+     expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "cancelled" },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "cancelled", closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     await service.dispose();
+   });
+@@ -395,7 +395,7 @@ describe("PiSessionService extension dialog run end and teardown", () => {
+     expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "session-ended" },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "session-ended", closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     // The replacement runtime is bound with a fresh UI context of its own.
+     expect(replacement.calls.bindExtensions).toHaveLength(1);
+@@ -416,7 +416,7 @@ describe("PiSessionService extension dialog abort request", () => {
+     expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "aborted" },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "aborted", closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     const statuses = events.sessionEvents.flatMap(({ event }) => (event.type === "status.update" ? [event.status] : []));
+     expect(statuses.at(-1)?.pendingDialogs).toBeUndefined();
+@@ -463,7 +463,7 @@ describe("PiSessionService extension dialog abort request", () => {
+     expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "aborted" },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "aborted", closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     fake.session.abort = healthyAbort;
+     await service.dispose();
+@@ -496,7 +496,7 @@ describe("PiSessionService extension dialog abort request", () => {
+     await expect(consent).resolves.toBe(false);
+     expect(dialogEvents(events).map(({ event }) => event)).toEqual([
+       { type: "dialog.opened", dialog: openDialog(events) },
+-      { type: "dialog.closed", dialogId: "dialog-1", reason: "aborted" },
++      { type: "dialog.closed", dialogId: "dialog-1", reason: "aborted", closedAt: "2026-02-01T10:00:00.000Z" },
+     ]);
+     await service.dispose();
+   });
+diff --git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
+index d9ef4a6..7dd84f1 100644
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts
+@@ -9,6 +9,8 @@ import { SessionNotificationStore } from "./sessionNotificationStore.js";
+ import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime, type RuntimeCreator, type SessionGateway } from "./piSessionService.testSupport.js";
+ 
+ const TEST_AGENT_DIR = "/tmp/pi-web-test-agent";
++// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- `expect.any` yields `any`; server times are only checked for presence.
++const SERVER_TIME: string = expect.any(String);
+ 
+ function deferred<T = void>() {
+   let resolve!: (value: T | PromiseLike<T>) => void;
+@@ -119,6 +121,34 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
+     }
+   });
+ 
++  it("sums the status Σ as the cards do", async () => {
++    const usage = (totalTokens: number, input: number, output: number) => ({ input, output, cacheRead: 0, cacheWrite: 0, totalTokens });
++    const entries = [
++      { type: "message", message: { role: "assistant", usage: usage(130, 100, 20) } },
++      { type: "message", message: { role: "assistant", usage: usage(0, 10, 5) } },
++    ];
++    const fake = fakeRuntime("sigma-session", {
++      sessionManager: fakeSessionManager("/workspace", { getEntries: () => entries }),
++      getSessionStats: () => ({ sessionId: "sigma-session", totalMessages: 2, userMessages: 0, assistantMessages: 2, toolCalls: 0, tokens: { input: 110, output: 25, cacheRead: 0, cacheWrite: 0, total: 135 }, cost: 0 }),
++    });
++    const service = new PiSessionService(new CapturingSessionEventHub(), {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      createAgentRuntime: runtimeCreator(fake.runtime),
++      sessionManager: sessionGateway([]),
++      heartbeatIntervalMs: 60_000,
++    });
++    try {
++      await service.start("/workspace");
++
++      const status = await service.status(sessionRef("sigma-session"));
++
++      expect(status.tokens).toEqual({ input: 110, output: 25, cacheRead: 0, cacheWrite: 0, total: 145 });
++    } finally {
++      await service.dispose();
++    }
++  });
++
+   it("shares one runtime when concurrent cold lookups resolve to the same session", async () => {
+     const sessionId = "single-flight-session";
+     const createStarted = deferred();
+@@ -1549,14 +1579,14 @@ describe("PiSessionService.streamSnapshot", () => {
+       fake.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "bash" });
+ 
+       expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools).toEqual([
+-        { toolCallId: "call-1", toolName: "bash", text: "line 1\nline 2", content: [{ type: "text", text: "line 1\nline 2" }], details: { truncation: { truncated: true } } },
+-        { toolCallId: "call-2", toolName: "ask_user", text: "" },
++        { toolCallId: "call-1", toolName: "bash", text: "line 1\nline 2", content: [{ type: "text", text: "line 1\nline 2" }], details: { truncation: { truncated: true } }, startedAt: SERVER_TIME },
++        { toolCallId: "call-2", toolName: "ask_user", text: "", startedAt: SERVER_TIME },
+       ]);
+ 
+       fake.emit({ type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: { content: [{ type: "text", text: "done" }] }, isError: false });
+       expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools?.[0]).toMatchObject({ toolCallId: "call-1", text: "done", end: { isError: false } });
+       fake.emit({ type: "message_end", message: { role: "toolResult", toolCallId: "call-1", toolName: "bash", content: [{ type: "text", text: "done" }], isError: false } });
+-      expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools).toEqual([{ toolCallId: "call-2", toolName: "ask_user", text: "" }]);
++      expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools).toEqual([{ toolCallId: "call-2", toolName: "ask_user", text: "", startedAt: SERVER_TIME }]);
+ 
+       // An aborted run may never end its tools; the run end forgets them.
+       fake.emit({ type: "agent_end", messages: [] });
+@@ -1590,10 +1620,10 @@ describe("PiSessionService.streamSnapshot", () => {
+       await service.shell(sessionRef("snap-shell"), "!!sleep 60");
+       await vi.waitFor(() => { expect(onChunk).toBeDefined(); });
+ 
+-      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells).toEqual([{ command: "sleep 60", excludeFromContext: true, output: "" }]);
++      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells).toEqual([{ command: "sleep 60", excludeFromContext: true, output: "", startedAt: SERVER_TIME }]);
+       onChunk?.("a\n");
+       onChunk?.("b\n");
+-      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells).toEqual([{ command: "sleep 60", excludeFromContext: true, output: "a\nb\n" }]);
++      expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells).toEqual([{ command: "sleep 60", excludeFromContext: true, output: "a\nb\n", startedAt: SERVER_TIME }]);
+       // The tail cut must not leave the low half of a surrogate pair at the start.
+       onChunk?.(`\u{1F600}${"x".repeat(999_999)}`);
+       expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells?.[0]?.output).toBe("x".repeat(999_999));
+@@ -1637,7 +1667,7 @@ describe("PiSessionService.streamSnapshot", () => {
+       await vi.waitFor(() => { expect(hub.sessionEvents.some(({ event }) => event.type === "shell.end")).toBe(true); });
+ 
+       expect((await service.streamSnapshot(sessionRef("snap-deferred"))).shells).toEqual([
+-        { command: "make", excludeFromContext: false, output: "done\n", end: { exitCode: 2, cancelled: false, truncated: false } },
++        { command: "make", excludeFromContext: false, output: "done\n", end: { exitCode: 2, cancelled: false, truncated: false, at: SERVER_TIME }, startedAt: SERVER_TIME },
+       ]);
+ 
+       // The run end flushes the deferred results into history.
+@@ -1722,7 +1752,7 @@ describe("consistent running-work snapshots", () => {
+       expect(before.messagePage?.messages).toEqual([]);
+       expect(before.shells).toEqual([{
+         command: "make", excludeFromContext: false, output: "done\n",
+-        end: { exitCode: 0, cancelled: false, truncated: false },
++        end: { exitCode: 0, cancelled: false, truncated: false, at: SERVER_TIME }, startedAt: SERVER_TIME,
+       }]);
+       // SDK flush is synchronous and drains the entire pending queue.
+       append(f.branch, bashMessage("make"));
+@@ -1812,7 +1842,7 @@ describe("consistent running-work snapshots", () => {
+         append(f.branch, result);
+         f.stream.streamingMessage = undefined;
+         const after = await f.service.streamSnapshot(f.ref);
+-        expect(after.tools).toEqual([{ toolCallId: "B", toolName: "read", text: "" }]);
++        expect(after.tools).toEqual([{ toolCallId: "B", toolName: "read", text: "", startedAt: SERVER_TIME }]);
+         expect(after.messagePage?.messages).toEqual([call, result]);
+         f.fake.emit({ type: "agent_end", messages: [] });
+         expect((await f.service.streamSnapshot(f.ref)).tools).toBeUndefined();
+@@ -1874,7 +1904,7 @@ describe("consistent running-work snapshots", () => {
+       const middle = await f.service.streamSnapshot(f.ref);
+       expect(middle.messagePage?.messages).toEqual([bashMessage("same")]);
+       expect(middle.shells).toEqual([
+-        { command: "same", excludeFromContext: false, output: "done\n" },
++        { command: "same", excludeFromContext: false, output: "done\n", startedAt: SERVER_TIME },
+       ]);
+       second.resolve({ output: "done\n", exitCode: 0,
+         cancelled: false, truncated: false });
+diff --git a/src/server/sessions/piSessionService.messages.test.ts b/src/server/sessions/piSessionService.messages.test.ts
+index 50d0e61..e340120 100644
+--- a/src/server/sessions/piSessionService.messages.test.ts
++++ b/src/server/sessions/piSessionService.messages.test.ts
+@@ -63,7 +63,8 @@ describe("PiSessionService", () => {
+ 
+       const messageEnds = events.sessionEvents.map(({ event }) => event).filter((event) => event.type === "message.end");
+       expect(messageEnds).toEqual([
+-        { type: "message.end", message: { role: "assistant", provider: "openai", model: "gpt-4.1", content: [{ type: "text", text: "answer" }], thinkingLevel: "high" } },
++        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- `expect.any` yields `any`; the live end time is only checked for presence.
++        { type: "message.end", message: { role: "assistant", provider: "openai", model: "gpt-4.1", content: [{ type: "text", text: "answer" }], thinkingLevel: "high", completedAt: expect.any(String) } },
+         { type: "message.end", message: { role: "user", content: [{ type: "text", text: "next" }] } },
+       ]);
+       await service.dispose();
+diff --git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+index 69789f0..8ff7537 100644
+--- a/src/server/sessions/piSessionService.ts
++++ b/src/server/sessions/piSessionService.ts
+@@ -1991,6 +1991,7 @@ export class PiSessionService implements SessionRouteService {
+       dialogId: outcome.dialogId,
+       reason: outcome.reason,
+       ...(outcome.answer === undefined ? {} : { answer: outcome.answer }),
++      closedAt: outcome.closedAt,
+     });
+   }
+ 
+@@ -2430,6 +2431,7 @@ export class PiSessionService implements SessionRouteService {
+             command: shell.command,
+             excludeFromContext: shell.excludeFromContext,
+             output: runningShellOutputTail(shell.output),
++            ...(shell.startedAt === undefined ? {} : { startedAt: shell.startedAt }),
+             ...(shell.end === undefined ? {} : { end: { ...shell.end } }),
+           })),
+         }),
+@@ -2673,7 +2675,8 @@ export class PiSessionService implements SessionRouteService {
+     }
+ 
+     this.publishActivity(session, "running bash", "active", command);
+-    const running: SessionRunningShell = { command, excludeFromContext: isExcluded, output: "" };
++    const startedAt = new Date().toISOString();
++    const running: SessionRunningShell = { command, excludeFromContext: isExcluded, output: "", startedAt };
+     this.runningShells.set(session, [...(this.runningShells.get(session) ?? []), running]);
+     const finalizations = this.shellFinalizations.get(session) ?? new Map<
+       SessionRunningShell, { started: boolean; completion: Promise<void> }
+@@ -2685,7 +2688,7 @@ export class PiSessionService implements SessionRouteService {
+     };
+     finalizations.set(running, finalization);
+     this.shellFinalizations.set(session, finalizations);
+-    this.events.publish(session.sessionId, { type: "shell.start", command, excludeFromContext: isExcluded });
++    this.events.publish(session.sessionId, { type: "shell.start", command, excludeFromContext: isExcluded, at: startedAt });
+     void this.runSessionEntryMutation(session, "run a shell command", () => {
+       finalization.started = true;
+       return session.executeBash(command, (chunk) => {
+@@ -2704,6 +2707,7 @@ export class PiSessionService implements SessionRouteService {
+         cancelled: result.cancelled,
+         truncated: result.truncated,
+         ...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
++        at: new Date().toISOString(),
+       };
+       // A result deferred by an active run stays visible to joining clients until pi records it.
+       // `end` skips `output`: the client needs it only to tell whether there was any, and the
+@@ -2716,7 +2720,7 @@ export class PiSessionService implements SessionRouteService {
+     }).catch((error: unknown) => {
+       const message = error instanceof Error ? error.message : String(error);
+       this.clearRunningShell(session, running);
+-      this.events.publish(session.sessionId, { type: "shell.end", output: message, isError: true });
++      this.events.publish(session.sessionId, { type: "shell.end", output: message, isError: true, at: new Date().toISOString() });
+       this.events.publish(session.sessionId, { type: "session.error", message });
+       this.publishActivity(session, "bash failed", "error", message);
+       this.publishStatus(session);
+@@ -4016,9 +4020,9 @@ export class PiSessionService implements SessionRouteService {
+       toolCallId: event.toolCallId, toolName: event.toolName, text: event.text,
+       ...(event.content === undefined ? {} : { content: event.content }),
+       ...(event.details === undefined ? {} : { details: event.details }),
+-      end: { isError: event.isError },
++      end: { isError: event.isError, ...(event.at === undefined ? {} : { at: event.at }) },
+     });
+-    else if (event.type === "tool.start") tools.set(event.toolCallId, { toolCallId: event.toolCallId, toolName: event.toolName, text: "" });
++    else if (event.type === "tool.start") tools.set(event.toolCallId, { toolCallId: event.toolCallId, toolName: event.toolName, text: "", ...(event.at === undefined ? {} : { startedAt: event.at }) });
+     else {
+       // Merge like the client's live `tool.update`: empty text and absent content/details keep the previous ones.
+       const previous = tools.get(event.toolCallId);
+@@ -4030,6 +4034,7 @@ export class PiSessionService implements SessionRouteService {
+         text: event.text === "" ? previous?.text ?? "" : event.text,
+         ...(content === undefined ? {} : { content }),
+         ...(details === undefined ? {} : { details }),
++        ...(previous?.startedAt === undefined ? {} : { startedAt: previous.startedAt }),
+       });
+     }
+     if (tools.size === 0) this.runningTools.delete(session);
+@@ -4423,7 +4428,7 @@ export class PiSessionService implements SessionRouteService {
+       pendingMessageCount: this.pendingMessageCount(session),
+       queuedMessages: queuedMessagesFromSession(session, this.compactionQueuedMessages(session.sessionId)),
+       messageCount,
+-      tokens: stats.tokens,
++      tokens: withReasoningTokens(stats.tokens, session.sessionManager),
+       cost: stats.cost,
+       ...(contextUsage === undefined ? {} : { contextUsage }),
+       ...(warnings.length === 0 ? {} : { warnings }),
+@@ -4936,6 +4941,71 @@ function annotateAssistantThinkingLevel(message: unknown, thinkingLevel: string
+   return { ...message, thinkingLevel };
+ }
+ 
++/**
++ * Attach when an assistant answer finished: the session entry time in history,
++ * the `message_end` time live. Pi keeps only the start in `timestamp`.
++ */
++function withAssistantCompletedAt(message: unknown, completedAt: string | undefined): unknown {
++  if (completedAt === undefined || !isRecord(message) || message["role"] !== "assistant") return message;
++  return { ...message, completedAt };
++}
++
++/** The session entry time, for messages rebuilt from non-message entries. */
++function entryTimestamp(entry: Record<string, unknown>): { timestamp?: string } {
++  const timestamp = getString(entry, "timestamp");
++  return timestamp === undefined || timestamp === "" ? {} : { timestamp };
++}
++
++/** The LLM usage pi stores on compaction and branch summary entries. */
++function entryUsage(entry: Record<string, unknown>): { usage?: unknown } {
++  return isRecord(entry["usage"]) ? { usage: entry["usage"] } : {};
++}
++
++/**
++ * Pi's session token totals with reasoning and Σ summed over the same entries
++ * `getSessionStats` counts: it skips reasoning, and its total adds the four
++ * counters, while a card's Σ is the provider's `totalTokens` (the four counters
++ * only when that is absent or 0). Reasoning stays absent when no provider
++ * reported a breakdown.
++ */
++function withReasoningTokens(tokens: ClientSessionStatus["tokens"], sessionManager: PiSessionManager): ClientSessionStatus["tokens"] {
++  let reasoning: number | undefined;
++  let total: number | undefined;
++  for (const entry of sessionManager.getEntries?.() ?? []) {
++    const type = getProperty(entry, "type");
++    const message = type === "message" ? getProperty(entry, "message") : undefined;
++    const role = getProperty(message, "role");
++    const usage = type === "compaction" || type === "branch_summary"
++      ? getProperty(entry, "usage")
++      : role === "assistant" || role === "toolResult" ? getProperty(message, "usage") : undefined;
++    const value = getProperty(usage, "reasoning");
++    if (typeof value === "number" && Number.isFinite(value)) reasoning = (reasoning ?? 0) + value;
++    const entryTotal = usageTotal(usage);
++    if (entryTotal !== undefined) total = (total ?? 0) + entryTotal;
++  }
++  if (reasoning === undefined && total === undefined) return tokens;
++  return { ...tokens, ...(total === undefined ? {} : { total }), ...(reasoning === undefined ? {} : { reasoning }) };
++}
++
++/** A card's Σ, as the client's `normalizeUsage` computes it; none without input and output counts. */
++function usageTotal(usage: unknown): number | undefined {
++  const count = (key: string) => {
++    const value = getProperty(usage, key);
++    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
++  };
++  const input = count("input");
++  const output = count("output");
++  if (input === undefined || output === undefined) return undefined;
++  const reported = count("totalTokens");
++  return reported === undefined || reported <= 0 ? input + output + (count("cacheRead") ?? 0) + (count("cacheWrite") ?? 0) : reported;
++}
++
++/** Pi's millisecond `timestamp` of the streamed message as ISO, for live deltas. */
++function streamedMessageStart(event: unknown): { timestamp?: string } {
++  const value = getProperty(getProperty(event, "message"), "timestamp");
++  return typeof value === "number" && Number.isFinite(value) ? { timestamp: new Date(value).toISOString() } : {};
++}
++
+ function historyMessages(session: PiAgentSession): unknown[] {
+   return historyMessagesFromEntries(session.sessionManager.getBranch());
+ }
+@@ -4947,14 +5017,14 @@ function historyMessagesFromEntries(entries: readonly unknown[]): unknown[] {
+   let thinkingLevel: string | undefined;
+   for (const entry of entries) {
+     if (!isRecord(entry)) continue;
+-    if (entry["type"] === "message") messages.push(annotateAssistantThinkingLevel(entry["message"], thinkingLevel));
++    if (entry["type"] === "message") messages.push(withAssistantCompletedAt(annotateAssistantThinkingLevel(entry["message"], thinkingLevel), getString(entry, "timestamp")));
+     else if (entry["type"] === "thinking_level_change") {
+       const level = getString(entry, "thinkingLevel");
+       if (level !== undefined) thinkingLevel = level;
+     }
+-    else if (entry["type"] === "custom_message" && entry["display"] === true) messages.push({ role: "custom", content: entry["content"], customType: entry["customType"], details: entry["details"] });
+-    else if (entry["type"] === "compaction") messages.push({ role: "system", source: "compaction", content: `Compacted history:\n\n${stringValue(entry["summary"])}` });
+-    else if (entry["type"] === "branch_summary") messages.push({ role: "system", source: "branch_summary", content: `Branch summary:\n\n${stringValue(entry["summary"])}` });
++    else if (entry["type"] === "custom_message" && entry["display"] === true) messages.push({ role: "custom", content: entry["content"], customType: entry["customType"], details: entry["details"], ...entryTimestamp(entry) });
++    else if (entry["type"] === "compaction") messages.push({ role: "system", source: "compaction", content: `Compacted history:\n\n${stringValue(entry["summary"])}`, ...entryTimestamp(entry), ...entryUsage(entry) });
++    else if (entry["type"] === "branch_summary") messages.push({ role: "system", source: "branch_summary", content: `Branch summary:\n\n${stringValue(entry["summary"])}`, ...entryTimestamp(entry), ...entryUsage(entry) });
+   }
+   return messages;
+ }
+@@ -5033,14 +5103,14 @@ function toClientEvent(event: unknown, thinkingLevel?: string): SessionUiEvent {
+   const eventType = getString(event, "type");
+   const assistantMessageEvent = getProperty(event, "assistantMessageEvent");
+   if (eventType === "message_update" && getString(assistantMessageEvent, "type") === "text_delta") {
+-    return { type: "assistant.delta", text: getString(assistantMessageEvent, "delta") ?? "" };
++    return { type: "assistant.delta", text: getString(assistantMessageEvent, "delta") ?? "", ...streamedMessageStart(event) };
+   }
+   if (eventType === "message_update" && getString(assistantMessageEvent, "type") === "thinking_delta") {
+-    return { type: "assistant.thinking.delta", text: getString(assistantMessageEvent, "delta") ?? "" };
++    return { type: "assistant.thinking.delta", text: getString(assistantMessageEvent, "delta") ?? "", ...streamedMessageStart(event) };
+   }
+   if (eventType === "tool_execution_start") {
+     const args = getProperty(event, "args");
+-    return { type: "tool.start", toolName: getString(event, "toolName") ?? "", toolCallId: getString(event, "toolCallId") ?? "", summary: summarizeToolArgs(args), args };
++    return { type: "tool.start", toolName: getString(event, "toolName") ?? "", toolCallId: getString(event, "toolCallId") ?? "", summary: summarizeToolArgs(args), args, at: new Date().toISOString() };
+   }
+   if (eventType === "tool_execution_update") {
+     const partialResult = getProperty(event, "partialResult");
+@@ -5048,14 +5118,14 @@ function toClientEvent(event: unknown, thinkingLevel?: string): SessionUiEvent {
+   }
+   if (eventType === "tool_execution_end") {
+     const result = getProperty(event, "result");
+-    return { type: "tool.end", toolName: getString(event, "toolName") ?? "", toolCallId: getString(event, "toolCallId") ?? "", text: stringifyToolResult(result), content: toolResultContent(result), details: toolResultDetails(result), isError: getBoolean(event, "isError") === true };
++    return { type: "tool.end", toolName: getString(event, "toolName") ?? "", toolCallId: getString(event, "toolCallId") ?? "", text: stringifyToolResult(result), content: toolResultContent(result), details: toolResultDetails(result), isError: getBoolean(event, "isError") === true, at: new Date().toISOString() };
+   }
+   if (eventType === "agent_start") return { type: "agent.start" };
+   if (eventType === "agent_end") return { type: "agent.end" };
+   if (eventType === "message_end") {
+     const message = getProperty(event, "message");
+     if (message === undefined) return { type: "message.end" };
+-    return { type: "message.end", message: annotateAssistantThinkingLevel(message, thinkingLevel) };
++    return { type: "message.end", message: withAssistantCompletedAt(annotateAssistantThinkingLevel(message, thinkingLevel), new Date().toISOString()) };
+   }
+   return { type: "pi.event", eventType: eventType ?? "unknown" };
+ }
+@@ -5132,7 +5202,8 @@ function copySnapshotTool(tool: SessionRunningTool): SessionRunningTool {
+     text: tool.text,
+     ...(content === undefined ? {} : { content }),
+     ...(details === undefined ? {} : { details }),
+-    ...(tool.end === undefined ? {} : { end: { isError: tool.end.isError } }),
++    ...(tool.end === undefined ? {} : { end: { isError: tool.end.isError, ...(tool.end.at === undefined ? {} : { at: tool.end.at }) } }),
++    ...(tool.startedAt === undefined ? {} : { startedAt: tool.startedAt }),
+   };
+ }
+ function isRecord(value: unknown): value is Record<string, unknown> {
+diff --git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+index 741f4cf..39adcb8 100644
+--- a/src/shared/apiTypes.ts
++++ b/src/shared/apiTypes.ts
+@@ -1152,7 +1152,8 @@ export interface SessionStatus {
+   pendingMessageCount: number;
+   queuedMessages: QueuedSessionMessage[];
+   messageCount?: number;
+-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
++  /** Session totals over every entry of the session file; `reasoning` is absent when no provider reported a breakdown. */
++  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; reasoning?: number };
+   cost: number;
+   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
+   /**
+@@ -1345,13 +1346,15 @@ export interface SessionStreamSnapshot {
+ }
+ 
+ export interface SessionRunningTool {
+-  /** Final result published but not yet appended as a toolResult. */
+-  end?: { isError: boolean };
++  /** Final result published but not yet appended as a toolResult; `at` is the server time it finished. */
++  end?: { isError: boolean; at?: string };
+   toolCallId: string;
+   toolName: string;
+   text: string;
+   content?: unknown;
+   details?: unknown;
++  /** Server time of `tool.start`. */
++  startedAt?: string;
+ }
+ 
+ export interface SessionRunningShell {
+@@ -1359,6 +1362,8 @@ export interface SessionRunningShell {
+   excludeFromContext: boolean;
+   /** Output streamed so far; only its tail is kept for a very chatty command. */
+   output: string;
++  /** Server time of `shell.start`. */
++  startedAt?: string;
+   /** The `shell.end` payload, minus the output `output` already holds, once finished but not yet in history. */
+   end?: Omit<Extract<SessionUiEvent, { type: "shell.end" }>, "type" | "output">;
+ }
+@@ -1379,14 +1384,14 @@ export type SessionUiEvent = SessionUiEventBody & { seq?: number };
+ 
+ type SessionUiEventBody =
+   | { type: "message.append"; message: unknown }
+-  | { type: "assistant.delta"; text: string }
+-  | { type: "assistant.thinking.delta"; text: string }
+-  | { type: "tool.start"; toolName: string; toolCallId: string; summary: string; args?: unknown }
++  | { type: "assistant.delta"; text: string; timestamp?: string }
++  | { type: "assistant.thinking.delta"; text: string; timestamp?: string }
++  | { type: "tool.start"; toolName: string; toolCallId: string; summary: string; args?: unknown; at?: string }
+   | { type: "tool.update"; toolName: string; toolCallId: string; text: string; content?: unknown; details?: unknown }
+-  | { type: "tool.end"; toolName: string; toolCallId: string; text: string; isError: boolean; content?: unknown; details?: unknown }
+-  | { type: "shell.start"; command: string; excludeFromContext?: boolean }
++  | { type: "tool.end"; toolName: string; toolCallId: string; text: string; isError: boolean; content?: unknown; details?: unknown; at?: string }
++  | { type: "shell.start"; command: string; excludeFromContext?: boolean; at?: string }
+   | { type: "shell.chunk"; chunk: string }
+-  | { type: "shell.end"; output?: string; exitCode?: number | null; cancelled?: boolean; truncated?: boolean; fullOutputPath?: string; isError?: boolean }
++  | { type: "shell.end"; output?: string; exitCode?: number | null; cancelled?: boolean; truncated?: boolean; fullOutputPath?: string; isError?: boolean; at?: string }
+   | { type: "agent.start" }
+   | { type: "agent.end" }
+   | { type: "message.end"; message?: unknown }
+@@ -1398,7 +1403,7 @@ type SessionUiEventBody =
+   | { type: "ask.opened"; ask: PendingAskUser }
+   | { type: "ask.closed"; askId: string; reason: AskUserCloseReason }
+   | { type: "dialog.opened"; dialog: PendingExtensionDialog }
+-  | { type: "dialog.closed"; dialogId: string; reason: ExtensionDialogCloseReason; answer?: ExtensionDialogAnswer }
++  | { type: "dialog.closed"; dialogId: string; reason: ExtensionDialogCloseReason; answer?: ExtensionDialogAnswer; closedAt?: string }
+   | { type: "session.name"; sessionId: string; name?: string }
+   | { type: "session.created"; session: SessionInfo }
+   | { type: "pi.event"; eventType: string };
