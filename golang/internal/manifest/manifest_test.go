@@ -51,6 +51,28 @@ func TestDecode(t *testing.T) {
 			"key_files: ['[bad']",
 			".cache.key_files",
 		},
+		{"short sha", "  ref: v1.2.3", "  ref: abcdef1", "upstream.ref"},
+		{"upper sha", "  ref: v1.2.3", "  ref: " + strings.Repeat("A", 40), "upstream.ref"},
+		{
+			"sha version",
+			"  ref: v1.2.3",
+			"  ref: " + strings.Repeat("a", 40),
+			"upstream.version",
+		},
+		{"version v", "  ref: v1.2.3", "  ref: v1.2.3\n  version: v3.3.0", "upstream.version"},
+		{
+			"version zero",
+			"  ref: v1.2.3",
+			"  ref: v1.2.3\n  version: 3.03.0",
+			"upstream.version",
+		},
+		{"width range", "  patch: 0", "  patch: 0\n  patch_width: 0", "upstream.patch_width"},
+		{
+			"width narrow",
+			"  patch: 0",
+			"  patch: 1000\n  patch_width: 3",
+			"upstream.patch_width",
+		},
 		{"unknown", "  ref: v1.2.3", "  ref: v1.2.3\n  typo: true", "field typo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -80,6 +102,11 @@ func TestDecode(t *testing.T) {
 	if err != nil || m.Release.NotesLimit != 4096 || len(m.Release.Targets) != 1 ||
 		m.Release.Targets[0].Type != "self" {
 		t.Fatalf("%+v %v", m, err)
+	}
+	pinned := strings.Replace(validYAML, "  ref: v1.2.3", "  ref: "+strings.Repeat("a", 40)+
+		"\n  version: 3.3.0\n  patch_width: 3", 1)
+	if _, err := Decode([]byte(pinned), "pinned.yaml"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := m.TargetByName("npm"); err != nil {
 		t.Fatal(err)

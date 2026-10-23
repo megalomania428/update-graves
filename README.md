@@ -1,13 +1,13 @@
 # Update graves
 
-<!-- cspell:ignore LZMA pipefail GOTOOLCHAIN GOPATH -->
+<!-- cspell:ignore LZMA pipefail GOTOOLCHAIN GOPATH unpadded -->
 <!-- markdownlint-disable MD013 -->
 
-A declarative application builder for upstream projects with local patches. Go handles source selection, cloning, patching, build steps, packaging, GitHub Releases and optional Telegram posts. Adding an application requires only a new `sources/<name>/build.yaml`, documentation, patches and scripts; no Go changes are needed.
+A declarative application builder for upstream projects with local patches. Go handles source selection, cloning, patching, build steps, packaging, GitHub Releases and optional Telegram posts. Adding an application usually requires only a new `sources/<name>/build.yaml`, documentation, patches and scripts; Go changes are needed only for new builder features, such as commit SHA pins, explicit release versions and zero-padded patch numbers.
 
 ## Layout
 
-- `sources/<name>/build.yaml` – upstream ref, patch number, build targets and release destinations.
+- `sources/<name>/build.yaml` – upstream ref, optional release version, patch number and its optional width, build targets and release destinations.
 - `sources/<name>/README.md` – application and patch descriptions used for release notes.
 - `sources/<name>/patches/` and `scripts/` – application-specific implementation.
 - `_shared/` – optional shared assets declared by each consuming recipe; `_shared/_all/prepare.sh` installs the packages common to every build.
@@ -18,15 +18,20 @@ The first recipes build opencode CLI and Electron desktop for Linux/Windows x64,
 
 ## Recipe schema
 
-Paths in a target are relative to `sources/<name>`. A ref must be a tag or branch accepted by `git clone --branch`. Unknown YAML fields are errors.
+Paths in a target are relative to `sources/<name>`. A ref must be a tag or branch accepted by `git clone --branch`, or a full lowercase 40-character commit SHA, which also requires `upstream.version`. A ref of 7 to 39 hex characters is rejected as a short SHA and a 40-character hex ref with capitals as a non-lowercase SHA, so tags or branches such as `1234567` cannot be used. Unknown YAML fields are errors.
 
 ```yaml
 ---
 upstream:
   url: https://github.com/owner/repo.git
+  # A tag, a branch or a full 40-character lowercase commit SHA.
   ref: v1.2.3
+  # Optional X.Y.Z release version used instead of the ref; required for a SHA.
+  version: 1.2.3
   # Required local patch number of this recipe.
   patch: 0
+  # Optional zero-padding width of the patch number, from 1 to 9.
+  patch_width: 3
 # Optional paths or globs, only under _shared/ at the repository root.
 shared: [_shared/_all/prepare.sh, _shared/helpers/*.sh]
 release:
@@ -56,7 +61,7 @@ targets:
       - bash scripts/build.sh
 ```
 
-Target names must match `[a-z0-9][a-z0-9_-]*` and be unique. At least one target and step are required, `upstream.patch` is a required non-negative integer, and patch paths cannot escape the source root. Recipes declare no artifacts: every regular file a target leaves in `GRAVES_OUT_DIR` is published as is. An empty output directory and any non-regular entry are errors, while a file name without the version only logs a warning. Steps own all renaming and archiving, so bare Linux binaries use `.txz` with `tar` and `xz -T0 -9e` and Windows binaries use `.7z` with LZMA2 at maximum compression, both carrying the version on the archive and on the entry inside it. No separate SHA256SUMS are generated.
+Target names must match `[a-z0-9][a-z0-9_-]*` and be unique. At least one target and step are required, `upstream.patch` is a required non-negative integer, `upstream.patch_width` is from 1 to 9 and must fit the patch number, `upstream.version` is `X.Y.Z` without `v` and leading zeros, and patch paths cannot escape the source root. Recipes declare no artifacts: every regular file a target leaves in `GRAVES_OUT_DIR` is published as is. An empty output directory and any non-regular entry are errors, while a file name without the version only logs a warning. Steps own all renaming and archiving, so bare Linux binaries use `.txz` with `tar` and `xz -T0 -9e` and Windows binaries use `.7z` with LZMA2 at maximum compression, both carrying the version on the archive and on the entry inside it. No separate SHA256SUMS are generated.
 
 Cache keys include the application, target, upstream ref, the first 16 hex characters of SHA256 over sorted unique paths of `build.yaml` and matching `key_files`, NUL separators and contents, and the upstream commit SHA resolved by fetch, so a moved branch never restores stale sources. `key_files` supports recursive `**`; cache paths are passed as a multiline string to Actions. Fetch happens before restoring the exact cache key.
 
@@ -72,17 +77,17 @@ Each step runs as `bash -euo pipefail -c <command>` from the absolute source dir
 - `GRAVES_UPSTREAM_REF` – the ref from `build.yaml`.
 - `GRAVES_MODE` – `release` or `draft`.
 - `GRAVES_TAG` – release tag, empty in draft builds.
-- `GRAVES_VERSION` – `<upstream ref without v>-p<patch>`, plus `.dev.<run>.<attempt>` in drafts.
+- `GRAVES_VERSION` – `<upstream.version or upstream ref without v>-p<patch zero-padded to patch_width>`, plus `.dev.<run>.<attempt>` in drafts.
 - `GRAVES_FILE_VERSION` – `GRAVES_VERSION` with dots and slashes replaced by underscores, for file names.
 - `GRAVES_RUN` – `<GITHUB_RUN_NUMBER>.<GITHUB_RUN_ATTEMPT>`, locally `0.0`.
 
-Versions come only from the recipe: `upstream.ref` without its leading `v` plus `-p<upstream.patch>`, so `v1.202609.0` with `patch: 1` releases `1.202609.0-p1` and drafts build `1.202609.0-p1.dev.<run>.<attempt>`. The tag is only a label: it does not choose or validate the upstream ref, it does not set the version, and it need not be on master. Steps embed `GRAVES_VERSION` inside the build and `GRAVES_FILE_VERSION` in file names.
+Versions come only from the recipe: `upstream.version`, or else `upstream.ref` without its leading `v`, plus `-p<upstream.patch>` zero-padded to `upstream.patch_width` digits when it is set, so `v1.202609.0` with `patch: 1` releases `1.202609.0-p1`, `version: 3.3.0` with `patch: 1` and `patch_width: 3` releases `3.3.0-p001`, and drafts build `1.202609.0-p1.dev.<run>.<attempt>`. Without `patch_width` the number stays unpadded, so `p7` still sorts after `p6` in recipes released before the field existed. The tag is only a label: it does not choose or validate the upstream ref, it does not set the version, and it need not be on master. Steps embed `GRAVES_VERSION` inside the build and `GRAVES_FILE_VERSION` in file names.
 
 ## Releases and drafts
 
-A pushed `<name>-<label>` tag releases only that application, with one matrix job per target, and the release title is the tag itself. The build workflow reacts to every `*-*` tag, existing source names are matched by the `<name>-` prefix and the longest match wins, so a tag whose prefix matches no recipe fails `prepare` instead of being ignored. Release versions still come from `build.yaml` and never from the tag, so bump `upstream.ref` or `upstream.patch` in the same pull request as the tag.
+A pushed `<name>-<label>` tag releases only that application, with one matrix job per target, and the release title is the tag itself. The build workflow reacts to every `*-*` tag, existing source names are matched by the `<name>-` prefix and the longest match wins, so a tag whose prefix matches no recipe fails `prepare` instead of being ignored. Release versions still come from `build.yaml` and never from the tag, so bump `upstream.ref`, `upstream.version`, `upstream.patch` or `upstream.patch_width` in the same pull request as the tag.
 
-When a pull request changes an application's upstream ref in `build.yaml` or its patches, update that application's `TAG4REL` below in the same pull request.
+When a pull request changes an application's upstream ref, version, patch number or patch width in `build.yaml` or its patches, update that application's `TAG4REL` below in the same pull request.
 
 - `opencode`:
 

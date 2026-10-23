@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -21,11 +22,13 @@ type Manifest struct {
 	Targets  []Target `yaml:"targets"`
 }
 
-// Upstream pins the cloned ref and the local patch number of the recipe.
+// Upstream pins the cloned ref, the release version and the local patch number.
 type Upstream struct {
-	URL   string `yaml:"url"`
-	Ref   string `yaml:"ref"`
-	Patch *int   `yaml:"patch"`
+	URL        string `yaml:"url"`
+	Ref        string `yaml:"ref"`
+	Version    string `yaml:"version"`
+	Patch      *int   `yaml:"patch"`
+	PatchWidth *int   `yaml:"patch_width"`
 }
 
 // Release describes destinations and the Unicode release notes limit.
@@ -57,7 +60,16 @@ type Cache struct {
 	KeyFiles []string `yaml:"key_files"`
 }
 
-var targetName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+var (
+	targetName     = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	commitSHA      = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	hexRef         = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
+	releaseVersion = regexp.MustCompile(
+		`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+)
+
+// IsCommitSHA reports whether ref pins a full lowercase commit SHA.
+func IsCommitSHA(ref string) bool { return commitSHA.MatchString(ref) }
 
 // Load reads and validates one manifest, rejecting unknown YAML fields.
 func Load(file string) (*Manifest, error) {
@@ -95,8 +107,29 @@ func (m *Manifest) validate(file string) error {
 	if strings.TrimSpace(m.Upstream.Ref) == "" {
 		return bad("upstream.ref", "required")
 	}
+	switch ref := m.Upstream.Ref; {
+	case IsCommitSHA(ref):
+		if m.Upstream.Version == "" {
+			return bad("upstream.version", "required when upstream.ref is a commit SHA")
+		}
+	case len(ref) == 40 && hexRef.MatchString(ref):
+		return bad("upstream.ref", "commit SHA must be lowercase")
+	case hexRef.MatchString(ref):
+		return bad("upstream.ref", "short commit SHA, use all 40 hex characters")
+	}
+	if m.Upstream.Version != "" && !releaseVersion.MatchString(m.Upstream.Version) {
+		return bad("upstream.version", "must be X.Y.Z without v and leading zeros")
+	}
 	if m.Upstream.Patch == nil || *m.Upstream.Patch < 0 {
 		return bad("upstream.patch", "required non-negative integer")
+	}
+	if width := m.Upstream.PatchWidth; width != nil {
+		if *width < 1 || *width > 9 {
+			return bad("upstream.patch_width", "must be from 1 to 9")
+		}
+		if len(strconv.Itoa(*m.Upstream.Patch)) > *width {
+			return bad("upstream.patch_width", "too narrow for upstream.patch")
+		}
 	}
 	if m.Release.NotesLimit <= 200 {
 		return bad("release.notes_limit", "must exceed 200")

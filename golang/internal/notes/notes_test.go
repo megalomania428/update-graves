@@ -330,6 +330,22 @@ func TestGenerator_upstreamLog(t *testing.T) {
 		strings.Contains(string(log), "initial upstream") {
 		t.Fatalf("incorrect upstream range: %s %v", log, err)
 	}
+	sha, err := ci.CommandOutput(context.Background(), ci.WithCommand("git", "rev-parse",
+		"v2"), ci.WithCommandDir(upstream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Manifest.Upstream = manifest.Upstream{URL: upstream, Ref: strings.TrimSpace(sha),
+		Version: "2.0.0"}
+	dir = t.TempDir()
+	if err := g.upstreamLog(context.Background(), "app-v1", dir); err != nil {
+		t.Fatal(err)
+	}
+	log, err = os.ReadFile(filepath.Join(dir, "upstream.log"))
+	if err != nil || !strings.Contains(string(log), "upstream change") ||
+		strings.Contains(string(log), "initial upstream") {
+		t.Fatalf("incorrect upstream range for a commit SHA: %s %v", log, err)
+	}
 	if err := g.upstreamLog(context.Background(), "missing", t.TempDir()); err == nil {
 		t.Fatal("missing old manifest")
 	}

@@ -48,6 +48,15 @@ func TestVersion(t *testing.T) {
 	if got := Version("release", &manifest.Manifest{}); got != "-p0" {
 		t.Fatal(got)
 	}
+	width := 3
+	m.Upstream = manifest.Upstream{Ref: strings.Repeat("a", 40), Version: "3.3.0",
+		Patch: &patch, PatchWidth: &width}
+	if got := Version("release", m); got != "3.3.0-p003" {
+		t.Fatal(got)
+	}
+	if got := Version("draft", m); got != "3.3.0-p003.dev.42.1" {
+		t.Fatal(got)
+	}
 }
 func TestFileVersion(t *testing.T) {
 	if got := FileVersion("1.15.13-p0.dev.42.1"); got != "1_15_13-p0_dev_42_1" {
@@ -237,5 +246,29 @@ func TestBuilder_Fetch(t *testing.T) {
 	b.Target.Patches = []string{"missing"}
 	if err := b.Fetch(ctx); err == nil {
 		t.Fatal("missing patches")
+	}
+	sha, err := ci.CommandOutput(ctx, ci.WithCommand("git", "rev-parse", "HEAD"),
+		ci.WithCommandDir(upstream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.Target.Patches = []string{"patches"}
+	b.Manifest.Upstream = manifest.Upstream{URL: upstream, Ref: strings.TrimSpace(sha),
+		Version: "1.2.3"}
+	if err := b.Fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	head, err := ci.CommandOutput(ctx, ci.WithCommand("git", "rev-parse", "HEAD"),
+		ci.WithCommandDir(b.WorkDir("upstream")))
+	if err != nil || head != sha {
+		t.Fatalf("%q %v", head, err)
+	}
+	data, err = os.ReadFile(filepath.Join(b.WorkDir("upstream"), "file"))
+	if err != nil || string(data) != "new\n" {
+		t.Fatalf("%q %v", data, err)
+	}
+	b.Manifest.Upstream.Ref = strings.Repeat("0", 40)
+	if err := b.Fetch(ctx); err == nil {
+		t.Fatal("missing commit")
 	}
 }

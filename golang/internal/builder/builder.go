@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	ci "github.com/megalomania428/go-lib-ci"
@@ -34,11 +33,18 @@ func (b *Builder) WorkDir(name string) string {
 
 // Version builds the recipe version and marks drafts with the builder run.
 func Version(mode string, m *manifest.Manifest) string {
-	patch := 0
+	patch, width := 0, 0
 	if m.Upstream.Patch != nil {
 		patch = *m.Upstream.Patch
 	}
-	version := strings.TrimPrefix(m.Upstream.Ref, "v") + "-p" + strconv.Itoa(patch)
+	if m.Upstream.PatchWidth != nil {
+		width = *m.Upstream.PatchWidth
+	}
+	base := strings.TrimPrefix(m.Upstream.Ref, "v")
+	if m.Upstream.Version != "" {
+		base = m.Upstream.Version
+	}
+	version := base + fmt.Sprintf("-p%0*d", width, patch)
 	if mode != "release" {
 		version += ".dev." + Run()
 	}
@@ -68,8 +74,14 @@ func (b *Builder) Fetch(ctx context.Context) error {
 			}
 		}
 	}
-	if err := ci.GitClone(ctx, ci.WithGitURL(b.Manifest.Upstream.URL),
-		ci.WithGitRef(b.Manifest.Upstream.Ref), ci.WithGitDepth(1),
+	upstream := b.Manifest.Upstream
+	if manifest.IsCommitSHA(upstream.Ref) {
+		err := fetchCommit(ctx, upstream.URL, upstream.Ref, b.WorkDir("upstream"))
+		if err != nil {
+			return err
+		}
+	} else if err := ci.GitClone(ctx, ci.WithGitURL(upstream.URL),
+		ci.WithGitRef(upstream.Ref), ci.WithGitDepth(1),
 		ci.WithGitDir(b.WorkDir("upstream"))); err != nil {
 		return err
 	}
@@ -81,6 +93,46 @@ func (b *Builder) Fetch(ctx context.Context) error {
 		_, err := ci.ApplyPatches(ctx, ci.WithPatchTarget(b.WorkDir("upstream")),
 			ci.WithPatchDirs(dirs...))
 		return err
+	}
+	return nil
+}
+
+// GitInitFetch initializes dir with an origin remote and fetches args from it, because
+// ci.GitClone always runs git clone --branch, which cannot fetch a commit SHA.
+func GitInitFetch(ctx context.Context, url, dir string, bare bool, args ...string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	initArgs := []string{"init", "-q"}
+	if bare {
+		initArgs = append(initArgs, "--bare")
+	}
+	for _, command := range [][]string{initArgs, {"remote", "add", "origin", url},
+		append([]string{"fetch", "-q"}, args...)} {
+		if err := ci.RunCommand(ctx, ci.WithCommand("git", command...),
+			ci.WithCommandDir(dir)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fetchCommit checks out one pinned commit SHA into dir and verifies the result.
+func fetchCommit(ctx context.Context, url, sha, dir string) error {
+	if err := GitInitFetch(ctx, url, dir, false, "--depth", "1", "origin", sha); err != nil {
+		return err
+	}
+	if err := ci.RunCommand(ctx, ci.WithCommand("git", "checkout", "-q", "--detach",
+		"FETCH_HEAD"), ci.WithCommandDir(dir)); err != nil {
+		return err
+	}
+	head, err := ci.CommandOutput(ctx, ci.WithCommand("git", "rev-parse", "HEAD"),
+		ci.WithCommandDir(dir))
+	if err != nil {
+		return err
+	}
+	if head = strings.TrimSpace(head); head != sha {
+		return fmt.Errorf("fetched %s instead of %s", head, sha)
 	}
 	return nil
 }

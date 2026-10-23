@@ -331,13 +331,20 @@ func (g *Generator) upstreamLog(ctx context.Context, previous, dir string) error
 		return err
 	}
 	defer func() { _ = os.RemoveAll(clone) }()
-	err = ci.GitClone(ctx, ci.WithGitURL(m.Upstream.URL), ci.WithGitRef(current.Ref),
-		ci.WithGitDir(clone), ci.WithGitBare(true), ci.WithGitFilter("blob:none"))
+	base, head := m.Upstream.Ref, current.Ref
+	if manifest.IsCommitSHA(base) || manifest.IsCommitSHA(head) {
+		err = builder.GitInitFetch(ctx, m.Upstream.URL, clone, true, "--filter=blob:none",
+			"origin", base+":refs/graves/base", head+":refs/graves/head")
+		base, head = "refs/graves/base", "refs/graves/head"
+	} else {
+		err = ci.GitClone(ctx, ci.WithGitURL(m.Upstream.URL), ci.WithGitRef(current.Ref),
+			ci.WithGitDir(clone), ci.WithGitBare(true), ci.WithGitFilter("blob:none"))
+	}
 	if err != nil {
 		return err
 	}
-	log, err := ci.GitLog(ctx, ci.WithGitDir(clone), ci.WithGitBase(m.Upstream.Ref),
-		ci.WithGitHead(g.Manifest.Upstream.Ref), ci.WithGitMaxCount(300))
+	log, err := ci.GitLog(ctx, ci.WithGitDir(clone), ci.WithGitBase(base),
+		ci.WithGitHead(head), ci.WithGitMaxCount(300))
 	if err != nil {
 		return err
 	}
