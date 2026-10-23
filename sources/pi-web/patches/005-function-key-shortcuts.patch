@@ -1,7 +1,7 @@
 diff -ruN a/docs/config.md b/docs/config.md
---- a/docs/config.md	2026-09-18 12:19:08.298951365 +0000
-+++ b/docs/config.md	2026-09-18 12:19:08.298951365 +0000
-@@ -455,17 +455,20 @@
+--- a/docs/config.md	2026-10-23 19:52:18.543418207 +0000
++++ b/docs/config.md	2026-10-23 19:52:18.743418798 +0000
+@@ -457,17 +457,20 @@
  
  ### Shortcut config
  
@@ -25,8 +25,8 @@ diff -ruN a/docs/config.md b/docs/config.md
  
  ### Chat card disclosure config
 diff -ruN a/src/client/src/components/settings/SettingsShortcutsPanel.ts b/src/client/src/components/settings/SettingsShortcutsPanel.ts
---- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-09-18 12:19:08.290951310 +0000
-+++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-09-18 12:19:08.294951337 +0000
+--- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-23 19:52:18.535418184 +0000
++++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-23 19:52:18.743418798 +0000
 @@ -2,7 +2,7 @@
  import { customElement, property, state } from "lit/decorators.js";
  import type { AppAction } from "../../actions";
@@ -65,9 +65,23 @@ diff -ruN a/src/client/src/components/settings/SettingsShortcutsPanel.ts b/src/c
      return `Recording: ${formatShortcut(recording.tokens.join(" "))}. Press another key to add a sequence, or wait to finish.`;
    }
  
+diff -ruN a/src/client/src/keyboardShortcuts.test.ts b/src/client/src/keyboardShortcuts.test.ts
+--- a/src/client/src/keyboardShortcuts.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/keyboardShortcuts.test.ts	2026-10-23 19:52:18.747418811 +0000
+@@ -197,8 +197,8 @@
+   });
+ 
+   it("rejects shortcuts that would capture normal typing", () => {
+-    expect(parseShortcutInput("r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." });
+-    expect(parseShortcutInput("shift+r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." });
++    expect(parseShortcutInput("r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘, Alt, or a function key (F1-F24) so normal typing is not captured." });
++    expect(parseShortcutInput("shift+r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘, Alt, or a function key (F1-F24) so normal typing is not captured." });
+   });
+ 
+   it("builds canonical tokens from recorded key events", () => {
 diff -ruN a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcuts.ts
---- a/src/client/src/keyboardShortcuts.ts	2026-09-18 12:19:08.286951281 +0000
-+++ b/src/client/src/keyboardShortcuts.ts	2026-09-18 12:19:08.286951281 +0000
+--- a/src/client/src/keyboardShortcuts.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/keyboardShortcuts.ts	2026-10-23 19:52:18.743418798 +0000
 @@ -4,6 +4,7 @@
  
  const modifierOrder = ["mod", "alt", "shift"] as const;
@@ -140,3 +154,33 @@ diff -ruN a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcu
    return part.length === 1 ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
  }
  
+diff -ruN a/src/server/dockerControlAssets.test.ts b/src/server/dockerControlAssets.test.ts
+--- a/src/server/dockerControlAssets.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/dockerControlAssets.test.ts	2026-10-23 19:52:18.751418822 +0000
+@@ -34,6 +34,8 @@
+   // The Docker control shell scripts intentionally support Linux and macOS hosts.
+   // Keep Windows CI on static/syntax coverage instead of executing POSIX host-path and socket flows there.
+   const dockerCommandIt = it.skipIf(process.platform === "win32");
++  // The graves builder runs the suite as root, where the dev-mode scripts refuse to start.
++  const nonRootDockerCommandIt = it.skipIf(process.platform === "win32" || process.getuid?.() === 0);
+ 
+   it("keeps shell entrypoints syntactically valid", async () => {
+     await Promise.all([
+@@ -202,7 +204,7 @@
+     expect(log).toContain("compose --project-name pi-web-test --env-file .env -f compose.yml -f compose.override.yml up -d");
+   });
+ 
+-  dockerCommandIt("reports the container environment file in doctor output for both modes", async () => {
++  nonRootDockerCommandIt("reports the container environment file in doctor output for both modes", async () => {
+     const installDir = await createRuntimeInstall();
+     const devRoot = await createDevGeneratedEnv({ uid: 1234, gid: 2345, dockerGid: 3456 });
+     const fakeDocker = await installFakeDocker();
+@@ -631,7 +633,7 @@
+     expect(await readFile(join(installDir, "compose.yml"), "utf8")).toContain("container.env");
+   });
+ 
+-  dockerCommandIt("reuses the recorded Docker host setup for dev Compose inside a container", async () => {
++  nonRootDockerCommandIt("reuses the recorded Docker host setup for dev Compose inside a container", async () => {
+     const devRoot = await createDevRepoFixture();
+     const fakeDocker = await installFakeDocker();
+     await mkdir(join(devRoot, ".pi-web"), { recursive: true });

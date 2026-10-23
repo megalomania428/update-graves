@@ -1,141 +1,190 @@
---- a/src/server/sessions/spawnSubsessionTool.ts
-+++ b/src/server/sessions/spawnSubsessionTool.ts
-@@ -1,5 +1,7 @@
- import { Type } from "typebox";
-+import { StringEnum } from "@earendil-works/pi-ai";
- import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-+import { KNOWN_THINKING_LEVELS, type ThinkingLevel } from "../../shared/thinkingLevels.js";
- import type { TranscriptContentKind, TranscriptEntry, TranscriptRole, TranscriptView } from "./subsessionTranscript.js";
+diff -ruN a/src/client/src/components/settings/SettingsSessiondPanel.ts b/src/client/src/components/settings/SettingsSessiondPanel.ts
+--- a/src/client/src/components/settings/SettingsSessiondPanel.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/components/settings/SettingsSessiondPanel.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -23,8 +23,8 @@
+     // state, so an unset config file still shows the feature as enabled.
+     const effectiveSpawn = config?.effectiveConfig.spawnSessions !== false;
+     const subsessionsOverridden = config?.envOverrides.subsessions === true;
+-    // On by default; also requires spawn to be enabled.
+-    const effectiveSubsessions = config?.effectiveConfig.subsessions === true && effectiveSpawn;
++    // On by default; independent of the spawn_session toggle.
++    const effectiveSubsessions = config?.effectiveConfig.subsessions === true;
+     const askUserOverridden = config?.envOverrides.askUser === true;
+     const effectiveAskUser = config?.effectiveConfig.askUser === true;
+     return html`
+@@ -66,12 +66,12 @@
+               <input
+                 type="checkbox"
+                 .checked=${effectiveSubsessions}
+-                ?disabled=${this.loading || this.saving || subsessionsOverridden || !effectiveSpawn}
++                ?disabled=${this.loading || this.saving || subsessionsOverridden}
+                 @change=${(event: Event) => { void this.toggleSubsessions(event); }}
+               >
+               <span>Enable the <code>spawn_subsession</code> tools</span>
+             </label>
+-            <small>Agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires "Allow agents to start sessions". On by default.</small>
++            <small>Agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. On by default.</small>
+           </div>
+           <div class="field">
+             <span class="field-heading">
+diff -ruN a/src/config.ts b/src/config.ts
+--- a/src/config.ts	2026-10-23 19:52:18.543418207 +0000
++++ b/src/config.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -321,8 +321,8 @@
+  * Whether LLMs may start tracked child sessions via the spawn_subsession
+  * family of tools. On by default; set the env var `PI_WEB_SUBSESSIONS` or the
+  * `subsessions` config key to `false` to disable. The env var takes precedence
+- * over the config file. Subsessions also require spawnSessions to be enabled
+- * (they share the same project-scope resolver).
++ * over the config file. Independent of spawnSessions: disabling spawn_session
++ * keeps these tools available.
+  */
+ export function subsessionsEnabled(env: NodeJS.ProcessEnv = process.env, config: PiWebConfig = {}): boolean {
+   const fromEnv = env["PI_WEB_SUBSESSIONS"];
+diff -ruN a/src/server/sessiond/sessionServiceDependencies.test.ts b/src/server/sessiond/sessionServiceDependencies.test.ts
+--- a/src/server/sessiond/sessionServiceDependencies.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessiond/sessionServiceDependencies.test.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -26,6 +26,7 @@
+     onUnreadChanged: () => { /* no-op */ },
+     catalogRefreshStatus: { isRefreshInFlight: () => false },
+     config: { read: () => Promise.reject(new Error("config read not expected in this test")) },
++    spawnSessionsEnabled: false,
+     subsessionsEnabled: false,
+     askUserEnabled: true,
+     appendSystemPromptSections: [],
+diff -ruN a/src/server/sessiond/sessionServiceDependencies.ts b/src/server/sessiond/sessionServiceDependencies.ts
+--- a/src/server/sessiond/sessionServiceDependencies.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessiond/sessionServiceDependencies.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -23,9 +23,11 @@
+   catalogRefreshStatus: NonNullable<PiSessionServiceDependencies["catalogRefreshStatus"]>;
+   /** Live global config reader for request-time workspace-effective defaults (e.g. the attachments save folder). */
+   config: NonNullable<PiSessionServiceDependencies["config"]>;
+-  /** Omitted when the operator has not enabled session spawning. */
++  /** Omitted when the operator has enabled neither session spawning nor subsessions. */
+   spawnTargets?: NonNullable<PiSessionServiceDependencies["spawnTargets"]>;
+-  /** The operator's subsessions preference, which also requires spawning. */
++  /** The operator's spawn_session preference, independent of subsessions. */
++  spawnSessionsEnabled: boolean;
++  /** The operator's subsessions preference, independent of spawn_session. */
+   subsessionsEnabled: boolean;
+   /** Whether agents may post structured question sets to the browser. */
+   askUserEnabled: boolean;
+@@ -53,8 +55,9 @@
+     workspaceActivity: input.workspaceActivity,
+     logger: input.logger,
+     ...(input.spawnTargets === undefined ? {} : { spawnTargets: input.spawnTargets }),
+-    // Tracked subsessions share the spawn capability's project-scope resolver,
+-    // so they stay off unless spawning is configured too.
++    // spawn_session and tracked subsessions share the project-scope resolver but
++    // are switched independently, so each stays off without the resolver.
++    spawnSessionsEnabled: input.spawnTargets !== undefined && input.spawnSessionsEnabled,
+     subsessionsEnabled: input.spawnTargets !== undefined && input.subsessionsEnabled,
+     askUserEnabled: input.askUserEnabled,
+     appendSystemPromptSections: input.appendSystemPromptSections,
+diff -ruN a/src/server/sessiond.ts b/src/server/sessiond.ts
+--- a/src/server/sessiond.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessiond.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -251,7 +251,7 @@
+     // daemon startup must not depend on how long that takes.
+     machineStatus.notifyChanged();
+     const projectWorkspaceDeps = { projects, workspaces: workspaceProviders };
+-    const spawnTargets = config.spawnSessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
++    const spawnTargets = config.spawnSessions || config.subsessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
+     const sessions = new PiSessionService(eventHub, sessionServiceDependencies({
+       modelRuntime: auth.runtime,
+       agentDir: activeAgentProfile.dir,
+@@ -259,6 +259,7 @@
+       workspaceActivity,
+       logger: app.log,
+       ...(spawnTargets === undefined ? {} : { spawnTargets }),
++      spawnSessionsEnabled: config.spawnSessions,
+       subsessionsEnabled: config.subsessions,
+       askUserEnabled: config.askUser,
+       config: configService,
+diff -ruN a/src/server/sessions/piSessionService.spawnSession.test.ts b/src/server/sessions/piSessionService.spawnSession.test.ts
+--- a/src/server/sessions/piSessionService.spawnSession.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessions/piSessionService.spawnSession.test.ts	2026-10-23 19:52:21.931428206 +0000
+@@ -28,9 +28,9 @@
  
- /** Lifecycle phase of a tracked subsession as seen by its parent. */
-@@ -10,6 +12,14 @@
-   cwd: string;
-   /** Model the child session runs with, as `provider/id`; absent when unknown. */
-   model?: string;
-+  /** Thinking level the child session actually runs with; absent when unknown. */
-+  thinkingLevel?: ThinkingLevel;
-+  /**
-+   * Explicitly requested thinking level (via the `model` suffix or the
-+   * `thinkingLevel` parameter), present only when pi clamped it to a
-+   * different level the child model actually supports.
-+   */
-+  requestedThinkingLevel?: ThinkingLevel;
- }
+       const result = await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "spawner-1", prompt: "continue the plan", cwd: "/workspace-feature" });
  
- export type SpawnSubsessionModel = NonNullable<ExtensionContext["model"]>;
-@@ -35,8 +45,14 @@
-   model?: SpawnSubsessionModel;
-   /** Strict `provider/model-id` requested by the parent; overrides {@link model} when set. */
-   modelSpec?: string;
--  /** Parent's current thinking level, inherited by the child session (pi clamps it to the child model's capabilities). */
-+  /**
-+   * Parent's current thinking level. Used as the child's default only when
-+   * neither a model nor an explicit {@link requestedThinkingLevel} is
-+   * requested; otherwise pi's own default for the resolved model applies.
-+   */
-   thinkingLevel?: SpawnSubsessionThinkingLevel;
-+  /** Thinking level explicitly requested via the `thinkingLevel` tool parameter; overridden by a `model` suffix when both are set. */
-+  requestedThinkingLevel?: ThinkingLevel;
- }
+-      expect(result).toEqual({ sessionId: "spawned-1", cwd: "/workspace-feature" });
++      expect(result).toEqual({ sessionId: "spawned-1", cwd: "/workspace-feature", thinkingLevel: "off" });
+       expect(fake.calls.prompt).toEqual([{ text: "continue the plan", options: undefined }]);
+-      expect(log).toEqual([{ details: { spawningCwd: "/workspace", sessionId: "spawned-1", cwd: "/workspace-feature", promptLength: 17 }, message: "spawn_session started a new session" }]);
++      expect(log).toEqual([{ details: { spawningCwd: "/workspace", sessionId: "spawned-1", cwd: "/workspace-feature", promptLength: 17, thinkingLevel: "off" }, message: "spawn_session started a new session" }]);
+       await service.dispose();
+     });
  
- export interface SubsessionSummary {
-@@ -84,7 +100,10 @@
-     description: "Initial instruction for the tracked child.",
-   }),
-   model: Type.Optional(Type.String({
--    description: 'Model for the child session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5". When the user references a model as #provider/model-id in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
-+    description: 'Model for the child session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5", optionally suffixed with ":<thinking level>" (e.g. "anthropic/claude-sonnet-4-5:high"); the suffix overrides thinkingLevel. When the user references a model as #provider/model-id[:level] in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
-+  })),
-+  thinkingLevel: Type.Optional(StringEnum(KNOWN_THINKING_LEVELS, {
-+    description: "Thinking level for the child session. Pick it to match the subtask's difficulty, but if the user named a specific level (in words, or via a #provider/model-id:level reference), use exactly that one. Omit to inherit this session's thinking level, or, when model is set, to use pi's default for that model. An unsupported level is clamped to the nearest one the child model supports; the actual level is reported in the result.",
-   })),
- });
+@@ -120,7 +120,7 @@
  
-@@ -212,10 +231,13 @@
-         ...(ctx.model === undefined ? {} : { model: ctx.model }),
-         ...(params.model === undefined ? {} : { modelSpec: params.model }),
-         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
-+        ...(params.thinkingLevel === undefined ? {} : { requestedThinkingLevel: params.thinkingLevel }),
+       const result = await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "spawner-1", prompt: "continue", cwd: "/workspace-feature" });
+ 
+-      expect(result).toEqual({ sessionId: "spawned-1", cwd: "/workspace-feature", model: TEST_MODEL_SPEC });
++      expect(result).toEqual({ sessionId: "spawned-1", cwd: "/workspace-feature", model: TEST_MODEL_SPEC, thinkingLevel: "off" });
+       await service.dispose();
+     });
+ 
+@@ -198,7 +198,7 @@
+         expect(initialModels).toHaveLength(2);
+         expect(initialModels[0]).toBeUndefined();
+         expect(initialModels[1]).toBe(scoped);
+-        expect(result).toEqual({ sessionId: "spawned-2", cwd: "/workspace-feature", model: TEST_MODEL_SPEC });
++        expect(result).toEqual({ sessionId: "spawned-2", cwd: "/workspace-feature", model: TEST_MODEL_SPEC, thinkingLevel: "off" });
+         await service.dispose();
        });
-       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
-+      const thinkingNote = result.thinkingLevel === undefined ? "" : ` with thinking level ${result.thinkingLevel}`;
-+      const clampNote = result.requestedThinkingLevel === undefined ? "" : ` Requested thinking level ${result.requestedThinkingLevel} is not supported by ${result.model ?? "the model"}; using ${result.thinkingLevel ?? "a different level"}.`;
-       return {
--        content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}${modelNote}. Continue other work, then join with yield_to_subsessions; do not poll.` }],
-+        content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}${modelNote}${thinkingNote}.${clampNote} Continue other work, then join with yield_to_subsessions; do not poll.` }],
-         details: result,
-       };
-     },
---- a/src/server/sessions/spawnSessionTool.ts
-+++ b/src/server/sessions/spawnSessionTool.ts
-@@ -1,11 +1,21 @@
- import { Type } from "typebox";
-+import { StringEnum } from "@earendil-works/pi-ai";
- import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-+import { KNOWN_THINKING_LEVELS, type ThinkingLevel } from "../../shared/thinkingLevels.js";
  
- export interface SpawnSessionResult {
-   sessionId: string;
-   cwd: string;
-   /** Model the spawned session runs with, as `provider/id`; absent when unknown. */
-   model?: string;
-+  /** Thinking level the spawned session actually runs with; absent when unknown. */
-+  thinkingLevel?: ThinkingLevel;
-+  /**
-+   * Explicitly requested thinking level (via the `model` suffix or the
-+   * `thinkingLevel` parameter), present only when pi clamped it to a
-+   * different level the spawned model actually supports.
-+   */
-+  requestedThinkingLevel?: ThinkingLevel;
- }
+@@ -211,7 +211,7 @@
+         const result = await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "spawner-1", prompt: "go", cwd: "/workspace-feature", modelSpec: TEST_MODEL_SPEC });
  
- export type SpawnSessionModel = NonNullable<ExtensionContext["model"]>;
-@@ -21,8 +31,15 @@
-   model?: SpawnSessionModel;
-   /** Strict `provider/model-id` requested by the dispatcher; overrides {@link model} when set. */
-   modelSpec?: string;
--  /** Dispatching session's current thinking level, inherited by the spawned session (pi clamps it to the spawned model's capabilities). */
-+  /**
-+   * Dispatching session's current thinking level. Used as the spawned
-+   * session's default only when neither a model nor an explicit
-+   * {@link requestedThinkingLevel} is requested; otherwise pi's own default
-+   * for the resolved model applies.
-+   */
-   thinkingLevel?: SpawnSessionThinkingLevel;
-+  /** Thinking level explicitly requested via the `thinkingLevel` tool parameter; overridden by a `model` suffix when both are set. */
-+  requestedThinkingLevel?: ThinkingLevel;
- }
- 
- export interface SpawnSessionToolDeps {
-@@ -39,7 +56,10 @@
-     description: "Working directory for the new session. Must be a workspace (worktree, or root) of the same project as this session. Defaults to this session's working directory.",
-   })),
-   model: Type.Optional(Type.String({
--    description: 'Model for the new session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5". When the user references a model as #provider/model-id in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
-+    description: 'Model for the new session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5", optionally suffixed with ":<thinking level>" (e.g. "anthropic/claude-sonnet-4-5:high"); the suffix overrides thinkingLevel. When the user references a model as #provider/model-id[:level] in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
-+  })),
-+  thinkingLevel: Type.Optional(StringEnum(KNOWN_THINKING_LEVELS, {
-+    description: "Thinking level for the new session. Pick it to match the task's difficulty, but if the user named a specific level (in words, or via a #provider/model-id:level reference), use exactly that one. Omit to inherit this session's thinking level, or, when model is set, to use pi's default for that model. An unsupported level is clamped to the nearest one the new model supports; the actual level is reported in the result.",
-   })),
- });
- 
-@@ -68,10 +88,13 @@
-         ...(ctx.model === undefined ? {} : { model: ctx.model }),
-         ...(params.model === undefined ? {} : { modelSpec: params.model }),
-         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
-+        ...(params.thinkingLevel === undefined ? {} : { requestedThinkingLevel: params.thinkingLevel }),
+         expect(initialModels[1]).toMatchObject({ provider: "anthropic", id: "claude-sonnet-4-5-20250929" });
+-        expect(result).toEqual({ sessionId: "spawned-2", cwd: "/workspace-feature", model: TEST_MODEL_SPEC });
++        expect(result).toEqual({ sessionId: "spawned-2", cwd: "/workspace-feature", model: TEST_MODEL_SPEC, thinkingLevel: "off" });
+         await service.dispose();
        });
-       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
-+      const thinkingNote = result.thinkingLevel === undefined ? "" : ` with thinking level ${result.thinkingLevel}`;
-+      const clampNote = result.requestedThinkingLevel === undefined ? "" : ` Requested thinking level ${result.requestedThinkingLevel} is not supported by ${result.model ?? "the model"}; using ${result.thinkingLevel ?? "a different level"}.`;
-       return {
--        content: [{ type: "text", text: `Started independent session ${result.sessionId} in ${result.cwd}${modelNote}.` }],
-+        content: [{ type: "text", text: `Started independent session ${result.sessionId} in ${result.cwd}${modelNote}${thinkingNote}.${clampNote}` }],
-         details: result,
-       };
-     },
---- a/src/server/sessions/piSessionService.ts
-+++ b/src/server/sessions/piSessionService.ts
+ 
+@@ -262,7 +262,7 @@
+         // "ghost" is not a resolvable session, and the default path must not care.
+         const result = await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "ghost", prompt: "go", cwd: "/workspace-feature" });
+ 
+-        expect(result).toEqual({ sessionId: "spawned-2", cwd: "/workspace-feature", model: TEST_MODEL_SPEC });
++        expect(result).toEqual({ sessionId: "spawned-2", cwd: "/workspace-feature", model: TEST_MODEL_SPEC, thinkingLevel: "off" });
+         expect(spawned.calls.prompt).toEqual([{ text: "go", options: undefined }]);
+         await service.dispose();
+       });
+diff -ruN a/src/server/sessions/piSessionService.spawnSubsession.test.ts b/src/server/sessions/piSessionService.spawnSubsession.test.ts
+--- a/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-10-23 19:52:21.931428206 +0000
+@@ -56,7 +56,7 @@
+ 
+       const result = await service.spawnSubsession({ spawningCwd: "/workspace", parentSessionId: "parent-1", parentSessionFile: "/tmp/parent-1.jsonl", prompt: "do the slice" });
+ 
+-      expect(result).toEqual({ sessionId: "child-1", cwd: "/workspace" });
++      expect(result).toEqual({ sessionId: "child-1", cwd: "/workspace", thinkingLevel: "off" });
+       expect(child.calls.prompt).toEqual([{ text: "do the slice", options: undefined }]);
+       await expect(service.listSubsessions("parent-1")).resolves.toEqual([
+         { sessionId: "child-1", cwd: "/workspace", status: "idle" },
+@@ -113,7 +113,7 @@
+ 
+       const result = await service.spawnSubsession({ spawningCwd: "/workspace", parentSessionId: "parent-1", parentSessionFile: "/tmp/parent-1.jsonl", prompt: "do the slice", cwd: "/workspace/" });
+ 
+-      expect(result).toEqual({ sessionId: "child-1", cwd: "/workspace" });
++      expect(result).toEqual({ sessionId: "child-1", cwd: "/workspace", thinkingLevel: "off" });
+       await service.dispose();
+     });
+ 
+@@ -191,7 +191,7 @@
+       const result = await service.spawnSubsession({ spawningCwd: "/workspace", parentSessionId: "parent-1", parentSessionFile: "/tmp/parent-1.jsonl", prompt: "do the slice", modelSpec: "anthropic/claude-sonnet-4-5-20250929" });
+ 
+       expect(initialModels[1]).toBe(scoped);
+-      expect(result).toEqual({ sessionId: "child-1", cwd: "/workspace", model: "anthropic/claude-sonnet-4-5-20250929" });
++      expect(result).toEqual({ sessionId: "child-1", cwd: "/workspace", model: "anthropic/claude-sonnet-4-5-20250929", thinkingLevel: "off" });
+       await service.dispose();
+     });
+ 
+diff -ruN a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-10-23 19:52:18.547418219 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-10-23 19:52:21.927428195 +0000
 @@ -43,6 +43,7 @@
  import type { PiWebConfigService } from "../configRoutes.js";
  import { parsePromptAttachments } from "../../shared/promptAttachments.js";
@@ -194,13 +243,13 @@
 +   * registered project. Omit to keep both capabilities disabled.
     */
    spawnTargets?: SpawnTargetResolver;
-+  /**
+   /**
 +   * When true or omitted (and `spawnTargets` is provided), `spawn_session` is
 +   * available to sessions whose creation provenance permits delegation. False
 +   * keeps it off without affecting the tracked-subsession tools.
 +   */
 +  spawnSessionsEnabled?: boolean;
-   /**
++  /**
     * When true (and `spawnTargets` is provided), the tracked-subsession
     * tools are available to sessions whose creation provenance permits
 -   * delegation. On by default; the operator opts out via config or environment.
@@ -324,11 +373,10 @@
      };
    }
  
-@@ -1699,6 +1718,55 @@
-     return model;
+@@ -1700,6 +1719,55 @@
    }
  
-+  /**
+   /**
 +   * Resolve both the model and initial thinking level shared by
 +   * {@link spawnSession} and {@link spawnSubsession}. A `model` suffix
 +   * (`provider/model-id:level`) takes priority over the tool's own
@@ -377,81 +425,151 @@
 +    };
 +  }
 +
-   /**
++  /**
     * Register the question set an agent wants the user to answer as the session's
     * open ask. Deliberately does not wait for the user: `ask_user` terminates the
---- a/src/server/sessiond.ts
-+++ b/src/server/sessiond.ts
-@@ -251,7 +251,7 @@
-     // daemon startup must not depend on how long that takes.
-     machineStatus.notifyChanged();
-     const projectWorkspaceDeps = { projects, workspaces: workspaceProviders };
--    const spawnTargets = config.spawnSessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
-+    const spawnTargets = config.spawnSessions || config.subsessions ? new ProjectScopedSpawnTargetResolver(projectWorkspaceDeps) : undefined;
-     const sessions = new PiSessionService(eventHub, sessionServiceDependencies({
-       modelRuntime: auth.runtime,
-       agentDir: activeAgentProfile.dir,
-@@ -259,6 +259,7 @@
-       workspaceActivity,
-       logger: app.log,
-       ...(spawnTargets === undefined ? {} : { spawnTargets }),
-+      spawnSessionsEnabled: config.spawnSessions,
-       subsessionsEnabled: config.subsessions,
-       askUserEnabled: config.askUser,
-       config: configService,
---- a/src/server/sessiond/sessionServiceDependencies.ts
-+++ b/src/server/sessiond/sessionServiceDependencies.ts
-@@ -23,9 +23,11 @@
-   catalogRefreshStatus: NonNullable<PiSessionServiceDependencies["catalogRefreshStatus"]>;
-   /** Live global config reader for request-time workspace-effective defaults (e.g. the attachments save folder). */
-   config: NonNullable<PiSessionServiceDependencies["config"]>;
--  /** Omitted when the operator has not enabled session spawning. */
-+  /** Omitted when the operator has enabled neither session spawning nor subsessions. */
-   spawnTargets?: NonNullable<PiSessionServiceDependencies["spawnTargets"]>;
--  /** The operator's subsessions preference, which also requires spawning. */
-+  /** The operator's spawn_session preference, independent of subsessions. */
-+  spawnSessionsEnabled: boolean;
-+  /** The operator's subsessions preference, independent of spawn_session. */
-   subsessionsEnabled: boolean;
-   /** Whether agents may post structured question sets to the browser. */
-   askUserEnabled: boolean;
-@@ -53,8 +55,9 @@
-     workspaceActivity: input.workspaceActivity,
-     logger: input.logger,
-     ...(input.spawnTargets === undefined ? {} : { spawnTargets: input.spawnTargets }),
--    // Tracked subsessions share the spawn capability's project-scope resolver,
--    // so they stay off unless spawning is configured too.
-+    // spawn_session and tracked subsessions share the project-scope resolver but
-+    // are switched independently, so each stays off without the resolver.
-+    spawnSessionsEnabled: input.spawnTargets !== undefined && input.spawnSessionsEnabled,
-     subsessionsEnabled: input.spawnTargets !== undefined && input.subsessionsEnabled,
-     askUserEnabled: input.askUserEnabled,
-     appendSystemPromptSections: input.appendSystemPromptSections,
---- a/src/server/sessiond/sessionServiceDependencies.test.ts
-+++ b/src/server/sessiond/sessionServiceDependencies.test.ts
-@@ -26,6 +26,7 @@
-     onUnreadChanged: () => { /* no-op */ },
-     catalogRefreshStatus: { isRefreshInFlight: () => false },
-     config: { read: () => Promise.reject(new Error("config read not expected in this test")) },
-+    spawnSessionsEnabled: false,
-     subsessionsEnabled: false,
-     askUserEnabled: true,
-     appendSystemPromptSections: [],
---- a/src/config.ts
-+++ b/src/config.ts
-@@ -321,8 +321,8 @@
-  * Whether LLMs may start tracked child sessions via the spawn_subsession
-  * family of tools. On by default; set the env var `PI_WEB_SUBSESSIONS` or the
-  * `subsessions` config key to `false` to disable. The env var takes precedence
-- * over the config file. Subsessions also require spawnSessions to be enabled
-- * (they share the same project-scope resolver).
-+ * over the config file. Independent of spawnSessions: disabling spawn_session
-+ * keeps these tools available.
-  */
- export function subsessionsEnabled(env: NodeJS.ProcessEnv = process.env, config: PiWebConfig = {}): boolean {
-   const fromEnv = env["PI_WEB_SUBSESSIONS"];
---- a/src/shared/apiTypes.ts
-+++ b/src/shared/apiTypes.ts
+    * run and the submitted answers come back later as a follow-up message.
+diff -ruN a/src/server/sessions/spawnSessionTool.ts b/src/server/sessions/spawnSessionTool.ts
+--- a/src/server/sessions/spawnSessionTool.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessions/spawnSessionTool.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -1,11 +1,21 @@
+ import { Type } from "typebox";
++import { StringEnum } from "@earendil-works/pi-ai";
+ import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { KNOWN_THINKING_LEVELS, type ThinkingLevel } from "../../shared/thinkingLevels.js";
+ 
+ export interface SpawnSessionResult {
+   sessionId: string;
+   cwd: string;
+   /** Model the spawned session runs with, as `provider/id`; absent when unknown. */
+   model?: string;
++  /** Thinking level the spawned session actually runs with; absent when unknown. */
++  thinkingLevel?: ThinkingLevel;
++  /**
++   * Explicitly requested thinking level (via the `model` suffix or the
++   * `thinkingLevel` parameter), present only when pi clamped it to a
++   * different level the spawned model actually supports.
++   */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export type SpawnSessionModel = NonNullable<ExtensionContext["model"]>;
+@@ -21,8 +31,15 @@
+   model?: SpawnSessionModel;
+   /** Strict `provider/model-id` requested by the dispatcher; overrides {@link model} when set. */
+   modelSpec?: string;
+-  /** Dispatching session's current thinking level, inherited by the spawned session (pi clamps it to the spawned model's capabilities). */
++  /**
++   * Dispatching session's current thinking level. Used as the spawned
++   * session's default only when neither a model nor an explicit
++   * {@link requestedThinkingLevel} is requested; otherwise pi's own default
++   * for the resolved model applies.
++   */
+   thinkingLevel?: SpawnSessionThinkingLevel;
++  /** Thinking level explicitly requested via the `thinkingLevel` tool parameter; overridden by a `model` suffix when both are set. */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export interface SpawnSessionToolDeps {
+@@ -39,7 +56,10 @@
+     description: "Working directory for the new session. Must be a workspace (worktree, or root) of the same project as this session. Defaults to this session's working directory.",
+   })),
+   model: Type.Optional(Type.String({
+-    description: 'Model for the new session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5". When the user references a model as #provider/model-id in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++    description: 'Model for the new session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5", optionally suffixed with ":<thinking level>" (e.g. "anthropic/claude-sonnet-4-5:high"); the suffix overrides thinkingLevel. When the user references a model as #provider/model-id[:level] in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++  })),
++  thinkingLevel: Type.Optional(StringEnum(KNOWN_THINKING_LEVELS, {
++    description: "Thinking level for the new session. Pick it to match the task's difficulty, but if the user named a specific level (in words, or via a #provider/model-id:level reference), use exactly that one. Omit to inherit this session's thinking level, or, when model is set, to use pi's default for that model. An unsupported level is clamped to the nearest one the new model supports; the actual level is reported in the result.",
+   })),
+ });
+ 
+@@ -68,10 +88,13 @@
+         ...(ctx.model === undefined ? {} : { model: ctx.model }),
+         ...(params.model === undefined ? {} : { modelSpec: params.model }),
+         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
++        ...(params.thinkingLevel === undefined ? {} : { requestedThinkingLevel: params.thinkingLevel }),
+       });
+       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
++      const thinkingNote = result.thinkingLevel === undefined ? "" : ` with thinking level ${result.thinkingLevel}`;
++      const clampNote = result.requestedThinkingLevel === undefined ? "" : ` Requested thinking level ${result.requestedThinkingLevel} is not supported by ${result.model ?? "the model"}; using ${result.thinkingLevel ?? "a different level"}.`;
+       return {
+-        content: [{ type: "text", text: `Started independent session ${result.sessionId} in ${result.cwd}${modelNote}.` }],
++        content: [{ type: "text", text: `Started independent session ${result.sessionId} in ${result.cwd}${modelNote}${thinkingNote}.${clampNote}` }],
+         details: result,
+       };
+     },
+diff -ruN a/src/server/sessions/spawnSubsessionTool.ts b/src/server/sessions/spawnSubsessionTool.ts
+--- a/src/server/sessions/spawnSubsessionTool.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessions/spawnSubsessionTool.ts	2026-10-23 19:52:21.927428195 +0000
+@@ -1,5 +1,7 @@
+ import { Type } from "typebox";
++import { StringEnum } from "@earendil-works/pi-ai";
+ import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { KNOWN_THINKING_LEVELS, type ThinkingLevel } from "../../shared/thinkingLevels.js";
+ import type { TranscriptContentKind, TranscriptEntry, TranscriptRole, TranscriptView } from "./subsessionTranscript.js";
+ 
+ /** Lifecycle phase of a tracked subsession as seen by its parent. */
+@@ -10,6 +12,14 @@
+   cwd: string;
+   /** Model the child session runs with, as `provider/id`; absent when unknown. */
+   model?: string;
++  /** Thinking level the child session actually runs with; absent when unknown. */
++  thinkingLevel?: ThinkingLevel;
++  /**
++   * Explicitly requested thinking level (via the `model` suffix or the
++   * `thinkingLevel` parameter), present only when pi clamped it to a
++   * different level the child model actually supports.
++   */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export type SpawnSubsessionModel = NonNullable<ExtensionContext["model"]>;
+@@ -35,8 +45,14 @@
+   model?: SpawnSubsessionModel;
+   /** Strict `provider/model-id` requested by the parent; overrides {@link model} when set. */
+   modelSpec?: string;
+-  /** Parent's current thinking level, inherited by the child session (pi clamps it to the child model's capabilities). */
++  /**
++   * Parent's current thinking level. Used as the child's default only when
++   * neither a model nor an explicit {@link requestedThinkingLevel} is
++   * requested; otherwise pi's own default for the resolved model applies.
++   */
+   thinkingLevel?: SpawnSubsessionThinkingLevel;
++  /** Thinking level explicitly requested via the `thinkingLevel` tool parameter; overridden by a `model` suffix when both are set. */
++  requestedThinkingLevel?: ThinkingLevel;
+ }
+ 
+ export interface SubsessionSummary {
+@@ -84,7 +100,10 @@
+     description: "Initial instruction for the tracked child.",
+   }),
+   model: Type.Optional(Type.String({
+-    description: 'Model for the child session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5". When the user references a model as #provider/model-id in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++    description: 'Model for the child session, as an exact "provider/model-id" such as "anthropic/claude-sonnet-4-5", optionally suffixed with ":<thinking level>" (e.g. "anthropic/claude-sonnet-4-5:high"); the suffix overrides thinkingLevel. When the user references a model as #provider/model-id[:level] in their request, forward it here. An unknown value is rejected. Omit to inherit this session\'s model.',
++  })),
++  thinkingLevel: Type.Optional(StringEnum(KNOWN_THINKING_LEVELS, {
++    description: "Thinking level for the child session. Pick it to match the subtask's difficulty, but if the user named a specific level (in words, or via a #provider/model-id:level reference), use exactly that one. Omit to inherit this session's thinking level, or, when model is set, to use pi's default for that model. An unsupported level is clamped to the nearest one the child model supports; the actual level is reported in the result.",
+   })),
+ });
+ 
+@@ -212,10 +231,13 @@
+         ...(ctx.model === undefined ? {} : { model: ctx.model }),
+         ...(params.model === undefined ? {} : { modelSpec: params.model }),
+         ...(ctx.thinkingLevel === undefined ? {} : { thinkingLevel: ctx.thinkingLevel }),
++        ...(params.thinkingLevel === undefined ? {} : { requestedThinkingLevel: params.thinkingLevel }),
+       });
+       const modelNote = result.model === undefined ? "" : ` using model ${result.model}`;
++      const thinkingNote = result.thinkingLevel === undefined ? "" : ` with thinking level ${result.thinkingLevel}`;
++      const clampNote = result.requestedThinkingLevel === undefined ? "" : ` Requested thinking level ${result.requestedThinkingLevel} is not supported by ${result.model ?? "the model"}; using ${result.thinkingLevel ?? "a different level"}.`;
+       return {
+-        content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}${modelNote}. Continue other work, then join with yield_to_subsessions; do not poll.` }],
++        content: [{ type: "text", text: `Started tracked subsession ${result.sessionId} in ${result.cwd}${modelNote}${thinkingNote}.${clampNote} Continue other work, then join with yield_to_subsessions; do not poll.` }],
+         details: result,
+       };
+     },
+diff -ruN a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-23 19:52:18.543418207 +0000
++++ b/src/shared/apiTypes.ts	2026-10-23 19:52:21.927428195 +0000
 @@ -203,8 +203,8 @@
    /**
     * When true, LLMs can start tracked child sessions via the
@@ -463,31 +581,3 @@
     */
    subsessions?: boolean;
    /**
---- a/src/client/src/components/settings/SettingsSessiondPanel.ts
-+++ b/src/client/src/components/settings/SettingsSessiondPanel.ts
-@@ -23,8 +23,8 @@
-     // state, so an unset config file still shows the feature as enabled.
-     const effectiveSpawn = config?.effectiveConfig.spawnSessions !== false;
-     const subsessionsOverridden = config?.envOverrides.subsessions === true;
--    // On by default; also requires spawn to be enabled.
--    const effectiveSubsessions = config?.effectiveConfig.subsessions === true && effectiveSpawn;
-+    // On by default; independent of the spawn_session toggle.
-+    const effectiveSubsessions = config?.effectiveConfig.subsessions === true;
-     const askUserOverridden = config?.envOverrides.askUser === true;
-     const effectiveAskUser = config?.effectiveConfig.askUser === true;
-     return html`
-@@ -66,12 +66,12 @@
-               <input
-                 type="checkbox"
-                 .checked=${effectiveSubsessions}
--                ?disabled=${this.loading || this.saving || subsessionsOverridden || !effectiveSpawn}
-+                ?disabled=${this.loading || this.saving || subsessionsOverridden}
-                 @change=${(event: Event) => { void this.toggleSubsessions(event); }}
-               >
-               <span>Enable the <code>spawn_subsession</code> tools</span>
-             </label>
--            <small>Agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. Requires "Allow agents to start sessions". On by default.</small>
-+            <small>Agents can start child sessions they stay attached to (<code>spawn_subsession</code>, <code>list_subsessions</code>, <code>check_subsession</code>, <code>read_subsession</code>) and are notified when a child finishes. On by default.</small>
-           </div>
-           <div class="field">
-             <span class="field-heading">

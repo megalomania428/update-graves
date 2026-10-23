@@ -1,15 +1,7 @@
---- a/src/client/src/api.ts
-+++ b/src/client/src/api.ts
-@@ -5,5 +5,5 @@ export { DEFAULT_WORKSPACE_UPLOADS_FOLDER, effectiveWorkspaceUploadFolder, uploa
- export { DEFAULT_WORKSPACE_ATTACHMENTS_FOLDER, effectiveWorkspaceAttachmentsFolder, workspaceEffectiveAttachmentsFolder } from "./api/workspaceAttachments";
- export type { WorkspaceAttachmentsFolderConfig } from "./api/workspaceAttachments";
- export type { UploadWorkspaceFileOptions, UploadWorkspaceFilesOptions, WorkspaceFileUploadProgress, WorkspaceUploadBatchFileProgress, WorkspaceUploadBatchProgress, WorkspaceUploadFileFailure, WorkspaceUploadFileInput, WorkspaceUploadFolderConfig, WorkspaceUploadTask, WorkspaceUploadXhr, WorkspaceUploadXhrFactory } from "./api/workspaceUploads";
--export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
-+export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionRunningShell, SessionRunningTool, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
- 
---- a/src/client/src/api/parsers.test.ts
-+++ b/src/client/src/api/parsers.test.ts
-@@ -349,6 +349,21 @@ describe("API parsers", () => {
+diff -ruN a/src/client/src/api/parsers.test.ts b/src/client/src/api/parsers.test.ts
+--- a/src/client/src/api/parsers.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/api/parsers.test.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -349,6 +349,21 @@
      expect(parseSessionStreamSnapshot({ seq: 3 })).toEqual({ seq: 3, partial: null });
    });
  
@@ -31,7 +23,7 @@
    it("rejects a session stream snapshot without a numeric seq", () => {
      expect(() => parseSessionStreamSnapshot({ partial: null })).toThrow("Expected number field: seq");
    });
-@@ -1312,3 +1327,20 @@ function notificationInboxWire() {
+@@ -1312,3 +1327,20 @@
      dismissThrough: { order: 1, overflowWatermark: 0 },
    };
  }
@@ -52,15 +44,16 @@
 +    { toolCallId: "A", toolName: "read", text: "done", end: { isError: "false" } },
 +  ] })).toThrow();
 +});
---- a/src/client/src/api/parsers.ts
-+++ b/src/client/src/api/parsers.ts
+diff -ruN a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-10-23 19:52:26.207440832 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-23 19:52:26.319441162 +0000
 @@ -1,4 +1,4 @@
 -import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
 +import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionRunningShell, type SessionRunningTool, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
  import { parseMachineStatusSnapshot, type MachineStatusSnapshot, type MachineStatusUiEvent } from "../../../shared/machineStatus";
  import type { JsonValue, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageMutationAction, PiPackageMutationResponse, PiPackageScope, PiPackagesResponse, SessionActivity, SessionStartupProgressEvent, SessionTreeForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier } from "../../../shared/apiTypes";
  
-@@ -571,6 +571,45 @@ export function parseSessionStreamSnapshot(value: unknown): SessionStreamSnapsho
+@@ -571,6 +571,45 @@
    return {
      seq: requireNumber(record, "seq"),
      partial: record["partial"] ?? null,
@@ -106,14 +99,25 @@
    };
  }
  
---- a/src/client/src/chatTranscript.ts
-+++ b/src/client/src/chatTranscript.ts
+diff -ruN a/src/client/src/api.ts b/src/client/src/api.ts
+--- a/src/client/src/api.ts	2026-10-23 19:52:18.543418207 +0000
++++ b/src/client/src/api.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -5,5 +5,5 @@
+ export { DEFAULT_WORKSPACE_ATTACHMENTS_FOLDER, effectiveWorkspaceAttachmentsFolder, workspaceEffectiveAttachmentsFolder } from "./api/workspaceAttachments";
+ export type { WorkspaceAttachmentsFolderConfig } from "./api/workspaceAttachments";
+ export type { UploadWorkspaceFileOptions, UploadWorkspaceFilesOptions, WorkspaceFileUploadProgress, WorkspaceUploadBatchFileProgress, WorkspaceUploadBatchProgress, WorkspaceUploadFileFailure, WorkspaceUploadFileInput, WorkspaceUploadFolderConfig, WorkspaceUploadTask, WorkspaceUploadXhr, WorkspaceUploadXhrFactory } from "./api/workspaceUploads";
+-export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
++export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionRunningShell, SessionRunningTool, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
+ 
+diff -ruN a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
+--- a/src/client/src/chatTranscript.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/chatTranscript.ts	2026-10-23 19:52:26.319441162 +0000
 @@ -1,3 +1,4 @@
 +import type { SessionStreamSnapshot } from "./api";
  import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
  import type { ChatLine, ToolExecutionPart } from "./components/shared";
  import { appendShellChunk, finalizeShellMessage, shellStartMessage } from "./shellMessages";
-@@ -40,6 +41,28 @@ export function seedStreamingPartial(messages: ChatLine[], partial: unknown): Ch
+@@ -40,6 +41,28 @@
    return lines.length === 0 ? messages : [...messages, ...lines];
  }
  
@@ -142,8 +146,9 @@
  export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
    if (event.type === "message.append") return appendNewMessage(messages, event.message);
    if (event.type === "assistant.delta") return appendText(messages, "assistant", event.text);
---- a/src/client/src/chatTranscriptStore.ts
-+++ b/src/client/src/chatTranscriptStore.ts
+diff -ruN a/src/client/src/chatTranscriptStore.ts b/src/client/src/chatTranscriptStore.ts
+--- a/src/client/src/chatTranscriptStore.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/chatTranscriptStore.ts	2026-10-23 19:52:26.319441162 +0000
 @@ -1,5 +1,6 @@
  import { normalizeMessages } from "./chatMessages";
 -import { applyTranscriptEvent, seedStreamingPartial } from "./chatTranscript";
@@ -152,7 +157,7 @@
  import { mergeChatHistory, readChatHistoryCache, removeChatHistoryCache, writeChatHistoryCache, type RawMessagePage } from "./chatHistoryCache";
  import type { ChatLine } from "./components/shared";
  import type { SessionUiEvent } from "./sessionSocket";
-@@ -54,6 +55,11 @@ export class ChatTranscriptStore {
+@@ -54,6 +55,11 @@
      return seedStreamingPartial(messages, partial);
    }
  
@@ -164,9 +169,35 @@
    discard(sessionId: string): void {
      this.rawHistoryPages.delete(sessionId);
      this.cache.remove?.(sessionId);
---- a/src/client/src/controllers/sessionController.refresh.test.ts
-+++ b/src/client/src/controllers/sessionController.refresh.test.ts
-@@ -50,6 +50,7 @@ describe("SessionController selected-session refresh", () => {
+diff -ruN a/src/client/src/controllers/sessionController.cachedNew.test.ts b/src/client/src/controllers/sessionController.cachedNew.test.ts
+--- a/src/client/src/controllers/sessionController.cachedNew.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/controllers/sessionController.cachedNew.test.ts	2026-10-23 19:52:26.323441174 +0000
+@@ -96,6 +96,10 @@
+         if (sessionLookupId(session) === oldSession.id) return Promise.reject(new Error("Session not found"));
+         return Promise.resolve(emptyPage);
+       },
++      streamSnapshot: (session) => {
++        if (sessionLookupId(session) === oldSession.id) return Promise.reject(new Error("Session not found"));
++        return Promise.resolve({ seq: 0, partial: null });
++      },
+       status: (session) => Promise.resolve(status(sessionLookupId(session))),
+     };
+     const controller = new SessionController(
+diff -ruN a/src/client/src/controllers/sessionController.pendingStarts.test.ts b/src/client/src/controllers/sessionController.pendingStarts.test.ts
+--- a/src/client/src/controllers/sessionController.pendingStarts.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/controllers/sessionController.pendingStarts.test.ts	2026-10-23 19:52:26.327441186 +0000
+@@ -19,6 +19,7 @@
+       startSession: () => startRequest.promise,
+       messages: (session) => { messageCalls.push(sessionLookupId(session)); return Promise.resolve(emptyPage); },
+       status: (session) => { statusCalls.push(sessionLookupId(session)); return Promise.resolve(status(sessionLookupId(session))); },
++      streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
+     };
+     const controller = new SessionController(
+       () => state,
+diff -ruN a/src/client/src/controllers/sessionController.refresh.test.ts b/src/client/src/controllers/sessionController.refresh.test.ts
+--- a/src/client/src/controllers/sessionController.refresh.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/controllers/sessionController.refresh.test.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -50,6 +50,7 @@
      const firstStatus = deferred<SessionStatus>();
      const trailingPage = deferred<MessagePage>();
      const trailingStatus = deferred<SessionStatus>();
@@ -174,7 +205,7 @@
      const trailingStarted = deferred<undefined>();
      let messageCalls = 0;
      let statusCalls = 0;
-@@ -58,6 +59,7 @@ describe("SessionController selected-session refresh", () => {
+@@ -58,6 +59,7 @@
        ...defaultApi,
        messages: () => {
          messageCalls += 1;
@@ -182,7 +213,7 @@
          if (messageCalls === 2) trailingStarted.resolve(undefined);
          return messageCalls === 1 ? firstPage.promise : trailingPage.promise;
        },
-@@ -77,7 +79,8 @@ describe("SessionController selected-session refresh", () => {
+@@ -77,7 +79,8 @@
  
      const first = controller.refreshSelectedSession();
      const duplicate = controller.refreshSelectedSession();
@@ -192,7 +223,7 @@
  
      expect(messageCalls).toBe(1);
      expect(statusCalls).toBe(1);
-@@ -85,14 +88,13 @@ describe("SessionController selected-session refresh", () => {
+@@ -85,14 +88,13 @@
      const later = controller.refreshSelectedSession();
      const laterDuplicate = controller.refreshSelectedSession();
      firstPage.resolve(page("stale", 1));
@@ -208,7 +239,7 @@
      await Promise.all([first, duplicate, later, laterDuplicate]);
  
      expect(messageCalls).toBe(2);
-@@ -214,10 +216,14 @@ describe("SessionController selected-session refresh errors", () => {
+@@ -214,10 +216,14 @@
  describe("SessionController scoped refresh errors", () => {
    it("retains a late failure under its originating session instead of the newer selection", async () => {
      const messages = deferred<MessagePage>();
@@ -224,7 +255,7 @@
        status: () => Promise.resolve(status(oldSession.id)),
        streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
      };
-@@ -230,7 +236,7 @@ describe("SessionController scoped refresh errors", () => {
+@@ -230,7 +236,7 @@
      );
  
      const refresh = controller.refreshSelectedSession(oldSession.id);
@@ -233,7 +264,7 @@
      state = { ...state, selectedSession: replacementSession };
      messages.reject(new Error("old transcript unavailable"));
      await refresh;
-@@ -259,6 +265,7 @@ describe("SessionController scoped refresh errors", () => {
+@@ -259,6 +265,7 @@
      const projectA: NonNullable<AppState["selectedProject"]> = { id: workspaceA.projectId, name: "Project A", path: workspaceA.path, createdAt: "now" };
      const projectB: NonNullable<AppState["selectedProject"]> = { id: workspaceB.projectId, name: "Project B", path: workspaceB.path, createdAt: "now" };
      const messages = deferred<MessagePage>();
@@ -241,7 +272,7 @@
      let state: AppState = {
        ...initialAppState(),
        selectedMachine: machineA,
-@@ -269,7 +276,10 @@ describe("SessionController scoped refresh errors", () => {
+@@ -269,7 +276,10 @@
      };
      const api: typeof defaultApi = {
        ...defaultApi,
@@ -253,7 +284,7 @@
        status: () => Promise.resolve(status(oldSession.id)),
        streamSnapshot: () => Promise.resolve({ seq: 0, partial: null }),
      };
-@@ -282,7 +292,7 @@ describe("SessionController scoped refresh errors", () => {
+@@ -282,7 +292,7 @@
      );
  
      const refresh = controller.refreshSelectedSession(oldSession.id);
@@ -262,7 +293,7 @@
      state = {
        ...state,
        selectedMachine: machineB,
-@@ -326,27 +336,24 @@ describe("SessionController unchanged selected-session refresh", () => {
+@@ -326,27 +336,24 @@
      return { page: page("idle", 1), sessionStatus: { ...status(oldSession.id), messageCount: 1 }, snapshot: { seq: 4, partial: null } };
    }
  
@@ -299,9 +330,10 @@
        thinkingLevels: () => Promise.resolve({ levels: [] }),
      };
      const controller = new SessionController(
---- a/src/client/src/controllers/sessionController.streamSeed.test.ts
-+++ b/src/client/src/controllers/sessionController.streamSeed.test.ts
-@@ -120,8 +120,9 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+diff -ruN a/src/client/src/controllers/sessionController.streamSeed.test.ts b/src/client/src/controllers/sessionController.streamSeed.test.ts
+--- a/src/client/src/controllers/sessionController.streamSeed.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/controllers/sessionController.streamSeed.test.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -120,8 +120,9 @@
        }),
        status: () => Promise.resolve({ ...status(oldSession.id), isStreaming: true, isBashRunning: true }),
        // Mid tool execution the assistant-message stream has ended, so the
@@ -313,7 +345,7 @@
      };
      const controller = new SessionController(
        () => state,
-@@ -134,7 +135,7 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+@@ -134,7 +135,7 @@
      await controller.selectSession(oldSession, { updateUrl: false });
  
      const toolLine = state.messages.find((line) => line.parts.some((part) => part.type === "toolExecution"));
@@ -322,7 +354,7 @@
  
      // Reflected in the snapshot watermark (seq <= 7): dropped.
      socket.emit({ type: "tool.update", toolName: "bash", toolCallId: "tool-1", text: "stale", content: undefined, details: undefined, seq: 7 });
-@@ -146,6 +147,54 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+@@ -146,6 +147,54 @@
      expect(updatedToolLine?.parts[0]).toMatchObject({ resultText: "fresh output" });
    });
  
@@ -377,7 +409,7 @@
    it("fails the join refresh honestly when the snapshot fetch fails", async () => {
      // A session id unique to this test, so no transcript cache from earlier
      // tests can mask whether the failed join applied history.
-@@ -217,3 +266,255 @@ describe("SessionController stream seed + watermark reconciliation", () => {
+@@ -217,3 +266,255 @@
      ]);
    });
  });
@@ -633,9 +665,23 @@
 +    }
 +  });
 +});
---- a/src/client/src/controllers/sessionController.ts
-+++ b/src/client/src/controllers/sessionController.ts
-@@ -123,6 +123,10 @@ export class SessionController {
+diff -ruN a/src/client/src/controllers/sessionController.tree.test.ts b/src/client/src/controllers/sessionController.tree.test.ts
+--- a/src/client/src/controllers/sessionController.tree.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/controllers/sessionController.tree.test.ts	2026-10-23 19:52:26.327441186 +0000
+@@ -123,7 +123,8 @@
+     socket.emit({ type: "message.append", message: { role: "assistant", content: "stale live event" }, seq: 1 });
+ 
+     const oldRefresh = controller.refreshSelectedSession();
+-    await Promise.resolve();
++    staleStatus.resolve({ ...status(oldSession.id), messageCount: 1 });
++    await vi.waitFor(() => { expect(messageCalls).toBe(2); });
+     expect(messageCalls).toBe(2);
+ 
+     const navigation = controller.navigateTree("root", { mode: "custom", instructions: "focus on the prompt" });
+diff -ruN a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
+--- a/src/client/src/controllers/sessionController.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/client/src/controllers/sessionController.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -123,6 +123,10 @@
    // in the committed history + seeded partial and must be dropped, so every event
    // applies exactly once. Reset whenever the selection changes.
    private streamWatermark: { sessionId: string; seq: number } | undefined;
@@ -646,7 +692,7 @@
    // Fingerprint of the last applied selected-session refresh, bound to that
    // selection: a poll whose page, status, and partial all match what is already
    // held skips the redundant merge, sessionStorage rewrite, and render. The
-@@ -169,6 +173,7 @@ export class SessionController {
+@@ -169,6 +173,7 @@
    dispose() {
      this.disposed = true;
      this.selectionSeq += 1;
@@ -654,7 +700,7 @@
      this.socket.close();
      this.clearPendingUpdates();
    }
-@@ -178,6 +183,7 @@ export class SessionController {
+@@ -178,6 +183,7 @@
      this.socket.close();
      this.notifications?.clearSelectedSession();
      this.streamWatermark = undefined;
@@ -662,7 +708,7 @@
      this.clearPendingUpdates();
      // Note: sendingPrompts is intentionally NOT cleared here. Deselecting a
      // session must not cancel the in-flight upload indicator of the session
-@@ -231,6 +237,7 @@ export class SessionController {
+@@ -231,6 +237,7 @@
      const seq = ++this.selectionSeq;
      this.socket.close();
      this.streamWatermark = undefined;
@@ -670,7 +716,7 @@
      this.clearPendingUpdates();
      this.notifications?.prepareSelectedSession(session, machineId);
      const transcriptKey = this.sessionCacheKey(session.id);
-@@ -1155,31 +1162,48 @@ export class SessionController {
+@@ -1155,31 +1162,48 @@
      return this.selectedSessionRefreshes.request(key, async () => {
        if (!this.isCurrentRefreshTarget(target)) return;
        this.flushPendingUpdates();
@@ -744,7 +790,7 @@
      });
    }
  
-@@ -1321,6 +1345,7 @@ export class SessionController {
+@@ -1321,6 +1345,7 @@
      this.socket.close();
      this.notifications?.clearSelectedSession();
      this.streamWatermark = undefined;
@@ -752,7 +798,7 @@
      this.clearPendingUpdates();
      const state = this.getState();
      const pendingStart = this.pendingSessionStarts.get(session.id);
-@@ -1638,6 +1663,11 @@ export class SessionController {
+@@ -1638,6 +1663,11 @@
        this.notifications?.applyInboxEvent(selectedMachineId(this.getState()), event);
        return;
      }
@@ -764,7 +810,7 @@
      // Drop events already reflected in the seeded join snapshot (committed
      // history + partial). Everything past the watermark applies exactly once,
      // so live content streams directly on top of the seeded partial.
-@@ -1876,7 +1906,7 @@ export class SessionController {
+@@ -1876,7 +1906,7 @@
  }
  
  function selectedRefreshPartialJson(snapshot: SessionStreamSnapshot): string {
@@ -773,9 +819,10 @@
  }
  
  function omitSessionActivity(activities: Record<string, SessionActivity>, sessionId: string): Record<string, SessionActivity> {
---- a/src/server/sessions/piSessionService.lifecycle.test.ts
-+++ b/src/server/sessions/piSessionService.lifecycle.test.ts
-@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
+diff -ruN a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -2,6 +2,7 @@
  import { tmpdir } from "node:os";
  import { join, resolve, sep } from "node:path";
  import { describe, expect, it, vi } from "vitest";
@@ -783,7 +830,7 @@
  import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
  import { PiSessionService, type PiAgentSession, type PiSessionRuntime, type ResolvedSessionFile } from "./piSessionService.js";
  import { SessionNotificationStore } from "./sessionNotificationStore.js";
-@@ -1481,7 +1482,7 @@ describe("PiSessionService.streamSnapshot", () => {
+@@ -1481,7 +1482,7 @@
  
        const snapshot = await service.streamSnapshot(sessionRef("snap-idle"));
  
@@ -792,7 +839,7 @@
      } finally {
        await service.dispose();
      }
-@@ -1527,4 +1528,487 @@ describe("PiSessionService.streamSnapshot", () => {
+@@ -1527,4 +1528,487 @@
        await service.dispose();
      }
    });
@@ -1280,9 +1327,10 @@
 +    }
 +  });
  });
---- a/src/server/sessions/piSessionService.testSupport.ts
-+++ b/src/server/sessions/piSessionService.testSupport.ts
-@@ -153,6 +153,7 @@ export function fakeRuntime(sessionId = "session-1", patch: Partial<TestSession>
+diff -ruN a/src/server/sessions/piSessionService.testSupport.ts b/src/server/sessions/piSessionService.testSupport.ts
+--- a/src/server/sessions/piSessionService.testSupport.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/sessions/piSessionService.testSupport.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -153,6 +153,7 @@
      isStreaming: false,
      isCompacting: false,
      isBashRunning: false,
@@ -1290,9 +1338,10 @@
      pendingMessageCount: 0,
      sessionManager: fakeSessionManager(),
      settingsManager: { getWarnings: () => ({}), setWarnings: () => undefined, getEnabledModels: () => undefined, getProjectSettings: () => ({}), setEnabledModels: () => undefined },
---- a/src/server/sessions/piSessionService.ts
-+++ b/src/server/sessions/piSessionService.ts
-@@ -27,8 +27,8 @@ import {
+diff -ruN a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-10-23 19:52:21.927428195 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -27,8 +27,8 @@
    type ProjectTrustEventResult,
    type ResourceDiagnostic,
  } from "@earendil-works/pi-coding-agent";
@@ -1303,7 +1352,7 @@
  import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
  import type { SessionEventHub } from "../realtime/sessionEventHub.js";
  import { BUILTIN_COMMANDS } from "./builtinCommands.js";
-@@ -129,6 +129,8 @@ const MAX_PENDING_UNREAD_MUTATIONS = SESSION_UNREAD_LIMIT + 1;
+@@ -129,6 +129,8 @@
   * persists, `getSessionFile()` answers and this throttle is bypassed.
   */
  const IDLE_SESSION_FILE_RESOLUTION_THROTTLE_MS = 30_000;
@@ -1312,7 +1361,7 @@
  
  function noop(): void {
    // Intentionally empty default unsubscribe callback.
-@@ -481,6 +483,8 @@ export interface PiAgentSession {
+@@ -483,6 +485,8 @@
    isStreaming: boolean;
    isCompacting: boolean;
    isBashRunning: boolean;
@@ -1321,7 +1370,7 @@
    pendingMessageCount: number;
    extensionRunner: {
      getRegisteredCommands(): readonly { invocationName: string; description?: string }[];
-@@ -1206,6 +1210,15 @@ export class PiSessionService implements SessionRouteService {
+@@ -1216,6 +1220,15 @@
    private readonly notificationGenerationBySession = new WeakMap<PiAgentSession, SessionNotificationGeneration>();
    /** Last idle-poll transcript file resolution per runtime, throttled; entries die with their runtime. */
    private readonly idleSessionFileResolutions = new WeakMap<PiAgentSession, { at: number; path: string | undefined }>();
@@ -1337,7 +1386,7 @@
    private readonly unreadStore: SessionUnreadStore;
    private readonly pendingAskStore: PendingAskStore;
    private readonly pendingExtensionDialogStore: PendingExtensionDialogStore;
-@@ -2347,15 +2360,70 @@ export class PiSessionService implements SessionRouteService {
+@@ -2358,15 +2371,70 @@
     * signatures; it is `null` when no assistant message is mid-stream.
     */
    async streamSnapshot(ref: PiSessionRef): Promise<SessionStreamSnapshot> {
@@ -1417,7 +1466,7 @@
    }
  
    async availableModels(ref: PiSessionRef): Promise<ClientSessionModel[]> {
-@@ -2588,31 +2656,63 @@ export class PiSessionService implements SessionRouteService {
+@@ -2599,31 +2667,63 @@
      const isExcluded = text.startsWith("!!");
      const command = (isExcluded ? text.slice(2) : text.slice(1)).trim();
      if (!command) throw new Error("Usage: !<shell command>");
@@ -1491,7 +1540,7 @@
      });
    }
  
-@@ -2641,6 +2741,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -2652,6 +2752,7 @@
  
      // Acquire synchronously after the active-work check. No leaf-producing work
      // may enter this runtime until Pi's potentially asynchronous summary settles.
@@ -1499,7 +1548,7 @@
      this.treeNavigations.add(session);
      try {
        const oldLeafId = session.sessionManager.getLeafId();
-@@ -2706,6 +2807,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -2717,6 +2818,7 @@
        }
        throw error;
      } finally {
@@ -1507,7 +1556,7 @@
        this.treeNavigations.delete(session);
        if (this.isCurrentActiveSession(session)) {
          this.flushDeferredTreeNavigationWork(session);
-@@ -3327,7 +3429,9 @@ export class PiSessionService implements SessionRouteService {
+@@ -3338,7 +3440,9 @@
     * read-only snapshot rather than serving that cached branch forever. Active
     * runtimes remain authoritative and are never replaced, reloaded, or aborted.
     */
@@ -1518,7 +1567,7 @@
      if (this.hasActiveWork(session) || this.sessionManager.readBranch === undefined) return session.sessionManager.getBranch();
      const sessionFile = session.sessionFile ?? session.sessionManager.getSessionFile();
      const resolvedPath = sessionFile === undefined ? await this.idleSessionFilePath(ref, session) : undefined;
-@@ -3335,6 +3439,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -3346,6 +3450,7 @@
      const path = sessionFile ?? resolvedPath;
      if (path === undefined) return session.sessionManager.getBranch();
      const snapshot = await this.sessionManager.readBranch(path);
@@ -1526,7 +1575,7 @@
      // No snapshot exists when the transcript file is absent (a session known
      // by path but never persisted, or externally removed): the runtime branch
      // is the only readable branch then.
-@@ -3842,6 +3947,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -3853,6 +3958,7 @@
    }
  
    private bindRuntime(active: ActiveSession<PiSessionRuntime>, session: PiAgentSession = active.runtime.session): void {
@@ -1534,7 +1583,7 @@
      active.unsubscribe();
      for (const [sessionId, candidate] of this.active.entries()) {
        if (candidate === active) {
-@@ -3850,13 +3956,24 @@ export class PiSessionService implements SessionRouteService {
+@@ -3861,13 +3967,24 @@
        }
      }
      active.unsubscribe = session.subscribe((event) => {
@@ -1560,7 +1609,7 @@
        if (eventType === "agent_end") this.abortRunScopedExtensionDialogs(session.sessionId);
        if (eventType === "compaction_end") this.scheduleCompactionQueueDrain(session.sessionId);
        if (eventType === "agent_start" || eventType === "agent_end") this.scheduleCompactionQueueDrain(session.sessionId);
-@@ -3866,6 +3983,70 @@ export class PiSessionService implements SessionRouteService {
+@@ -3877,6 +3994,70 @@
      this.active.set(session.sessionId, active);
    }
  
@@ -1631,7 +1680,7 @@
    private scheduleCompactionQueueDrain(sessionId: string, delayMs = 0): void {
      if (!this.compactionPromptQueues.has(sessionId) || this.compactionDrainTimers.has(sessionId)) return;
      const timer = setTimeout(() => {
-@@ -4040,7 +4221,10 @@ export class PiSessionService implements SessionRouteService {
+@@ -4051,7 +4232,10 @@
      for (const runtime of runtimes) {
        this.treeExclusiveRuntimeOperationCounts.set(runtime, (this.treeExclusiveRuntimeOperationCounts.get(runtime) ?? 0) + 1);
      }
@@ -1643,7 +1692,7 @@
  
      try {
        return await operation();
-@@ -4048,6 +4232,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -4059,6 +4243,7 @@
        for (const runtime of runtimes) decrementWeakCount(this.treeExclusiveRuntimeOperationCounts, runtime);
        for (const sessionId of sessionIds) decrementMapCount(this.treeExclusiveSessionOperationCounts, sessionId);
        for (const session of sessions) {
@@ -1651,7 +1700,7 @@
          if (this.isCurrentActiveSession(session)) this.observeUnreadActivityState(session);
        }
      }
-@@ -4085,11 +4270,13 @@ export class PiSessionService implements SessionRouteService {
+@@ -4096,11 +4281,13 @@
  
    private beginSessionEntryMutation(session: PiAgentSession, action: string): void {
      this.assertTreeNavigationInactive(session, action);
@@ -1665,7 +1714,7 @@
      const remaining = (this.sessionEntryMutationCounts.get(session) ?? 1) - 1;
      if (remaining <= 0) this.sessionEntryMutationCounts.delete(session);
      else this.sessionEntryMutationCounts.set(session, remaining);
-@@ -4912,6 +5099,31 @@ function stringifyToolResult(result: unknown): string {
+@@ -4923,6 +5110,31 @@
    return stringifyPrimitive(result);
  }
  
@@ -1697,9 +1746,10 @@
  function isRecord(value: unknown): value is Record<string, unknown> {
    return typeof value === "object" && value !== null;
  }
---- a/src/server/types.ts
-+++ b/src/server/types.ts
-@@ -13,6 +13,8 @@ export type {
+diff -ruN a/src/server/types.ts b/src/server/types.ts
+--- a/src/server/types.ts	2026-09-05 21:34:30.000000000 +0000
++++ b/src/server/types.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -13,6 +13,8 @@
    SessionCleanupExecuteResponse as ClientSessionCleanupExecuteResponse,
    MessagePage as ClientMessagePage,
    SessionStreamSnapshot,
@@ -1708,9 +1758,10 @@
    SessionStatus as ClientSessionStatus,
    SessionModel as ClientSessionModel,
    SessionModelCatalogEntry as ClientSessionModelCatalogEntry,
---- a/src/shared/apiTypes.ts
-+++ b/src/shared/apiTypes.ts
-@@ -1330,6 +1330,37 @@ export interface SessionStreamSnapshot {
+diff -ruN a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-23 19:52:26.211440844 +0000
++++ b/src/shared/apiTypes.ts	2026-10-23 19:52:26.319441162 +0000
+@@ -1330,6 +1330,37 @@
    seq: number;
    /** Browser-projected in-flight `AssistantMessage`, or `null` when idle. */
    partial: unknown;
