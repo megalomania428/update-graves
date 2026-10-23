@@ -133,9 +133,18 @@ index 6b0bebe..fd13226 100755
  
  . ./test_functions.sh
 diff --git a/src/duplicacy_entry_test.go b/src/duplicacy_entry_test.go
-index 670a16b..ce47669 100644
+index 670a16b..6c7eae1 100644
 --- a/src/duplicacy_entry_test.go
 +++ b/src/duplicacy_entry_test.go
+@@ -16,7 +16,7 @@ import (
+ 	"bytes"
+ 	"encoding/json"
+ 
+-	"github.com/gilbertchen/xattr"
++	"github.com/pkg/xattr"
+     "github.com/vmihailenco/msgpack"
+ )
+ 
 @@ -273,7 +273,13 @@ func TestEntryExcludeByAttribute(t *testing.T) {
  	for _, file := range DATA {
  		fullPath := filepath.Join(testDir, file)
@@ -143,9 +152,9 @@ index 670a16b..ce47669 100644
 -			xattr.Setxattr(fullPath, "com.apple.metadata:com_apple_backup_excludeItem", []byte("com.apple.backupd"))
 +			name := "com.apple.metadata:com_apple_backup_excludeItem"
 +			if runtime.GOOS == "linux" {
-+				name = "duplicacy_exclude"
++				name = "user.duplicacy_exclude"
 +			}
-+			if err := xattr.Setxattr(fullPath, name, []byte("com.apple.backupd")); err != nil {
++			if err := xattr.Set(fullPath, name, []byte("com.apple.backupd")); err != nil {
 +				t.Fatalf("Failed to set the exclude attribute on %s: %v", fullPath, err)
 +			}
  		}
