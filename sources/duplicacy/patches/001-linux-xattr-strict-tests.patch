@@ -1,0 +1,165 @@
+diff --git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
+index 8a6e1fe..f142281 100644
+--- a/duplicacy/duplicacy_main.go
++++ b/duplicacy/duplicacy_main.go
+@@ -204,7 +204,7 @@ func runScript(context *cli.Context, storageName string, phase string) bool {
+ 	for _, line := range strings.Split(string(output), "\n") {
+ 		line := strings.TrimSpace(line)
+ 		if line != "" {
+-			duplicacy.LOG_INFO("SCRIPT_OUTPUT", line)
++			duplicacy.LOG_INFO("SCRIPT_OUTPUT", "%s", line)
+ 		}
+ 	}
+ 
+diff --git a/integration_tests/copy_test.sh b/integration_tests/copy_test.sh
+index d260494..e962915 100755
+--- a/integration_tests/copy_test.sh
++++ b/integration_tests/copy_test.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ 
+ . ./test_functions.sh
+diff --git a/integration_tests/fixed_test.sh b/integration_tests/fixed_test.sh
+index 6fb4823..b83da3a 100755
+--- a/integration_tests/fixed_test.sh
++++ b/integration_tests/fixed_test.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ # Sanity test for the fixed-size chunking algorithm
+ 
+diff --git a/integration_tests/resume_test.sh b/integration_tests/resume_test.sh
+index 5507bfc..6e63b7a 100755
+--- a/integration_tests/resume_test.sh
++++ b/integration_tests/resume_test.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ 
+ . ./test_functions.sh
+@@ -9,28 +10,28 @@ pushd ${TEST_REPO}
+ ${DUPLICACY} init integration-tests $TEST_STORAGE -c  4 
+ 
+ # Create 10 small files
+-add_file file1 20
+-add_file file2 20
+-rm file3; touch file3
+-add_file file4 20
++add_file file1 200
++add_file file2 200
++rm -f file3; touch file3
++add_file file4 200
+ chmod u-r file4
+-add_file file5 20
+-add_file file6 20
+-add_file file7 20
+-add_file file8 20
+-add_file file9 20
+-add_file file10 20
++add_file file5 200
++add_file file6 200
++add_file file7 200
++add_file file8 200
++add_file file9 200
++add_file file10 200
+ 
+ # Fail at the 10th chunk
+-env DUPLICACY_FAIL_CHUNK=10 ${DUPLICACY} backup
++if env DUPLICACY_FAIL_CHUNK=10 "${DUPLICACY}" backup; then echo 'expected failure' >&2; exit 1; fi
+ 
+ # Try it again to test the multiple-resume case
+-env DUPLICACY_FAIL_CHUNK=5 ${DUPLICACY} backup
++if env DUPLICACY_FAIL_CHUNK=5 "${DUPLICACY}" backup; then echo 'expected failure' >&2; exit 1; fi
+ add_file file1 20
+ add_file file2 20
+ 
+ # Fail the backup before uploading the snapshot
+-env DUPLICACY_FAIL_SNAPSHOT=true ${DUPLICACY} backup
++if env DUPLICACY_FAIL_SNAPSHOT=true "${DUPLICACY}" backup; then echo 'expected failure' >&2; exit 1; fi
+ 
+ # Now complete the backup
+ ${DUPLICACY} backup
+diff --git a/integration_tests/sparse_test.sh b/integration_tests/sparse_test.sh
+index fd3a333..53581d7 100755
+--- a/integration_tests/sparse_test.sh
++++ b/integration_tests/sparse_test.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ # Testing backup and restore of sparse files
+ 
+diff --git a/integration_tests/test.sh b/integration_tests/test.sh
+index 404c932..f277fab 100755
+--- a/integration_tests/test.sh
++++ b/integration_tests/test.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ 
+ . ./test_functions.sh
+diff --git a/integration_tests/test_functions.sh b/integration_tests/test_functions.sh
+index 239688f..c9cbc0d 100644
+--- a/integration_tests/test_functions.sh
++++ b/integration_tests/test_functions.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ get_abs_filename() {
+   # $1 : relative filename
+@@ -19,7 +20,7 @@ popd () {
+ DUPLICACY=$(get_abs_filename ../duplicacy_main)
+ 
+ # Base directory where test repositories will be created
+-TEST_ZONE=$HOME/DUPLICACY_TEST_ZONE
++TEST_ZONE="${TEST_ZONE:-$HOME/DUPLICACY_TEST_ZONE}"
+ # Test Repository
+ TEST_REPO=$TEST_ZONE/TEST_REPO
+ 
+diff --git a/integration_tests/threaded_test.sh b/integration_tests/threaded_test.sh
+index 6b0bebe..fd13226 100755
+--- a/integration_tests/threaded_test.sh
++++ b/integration_tests/threaded_test.sh
+@@ -1,4 +1,5 @@
+ #!/bin/bash
++set -euo pipefail
+ 
+ 
+ . ./test_functions.sh
+diff --git a/src/duplicacy_entry_test.go b/src/duplicacy_entry_test.go
+index 670a16b..ce47669 100644
+--- a/src/duplicacy_entry_test.go
++++ b/src/duplicacy_entry_test.go
+@@ -273,7 +273,13 @@ func TestEntryExcludeByAttribute(t *testing.T) {
+ 	for _, file := range DATA {
+ 		fullPath := filepath.Join(testDir, file)
+ 		if strings.Contains(file, "exclude") {
+-			xattr.Setxattr(fullPath, "com.apple.metadata:com_apple_backup_excludeItem", []byte("com.apple.backupd"))
++			name := "com.apple.metadata:com_apple_backup_excludeItem"
++			if runtime.GOOS == "linux" {
++				name = "duplicacy_exclude"
++			}
++			if err := xattr.Setxattr(fullPath, name, []byte("com.apple.backupd")); err != nil {
++				t.Fatalf("Failed to set the exclude attribute on %s: %v", fullPath, err)
++			}
+ 		}
+ 	}
+ 
+diff --git a/src/duplicacy_utils_linux.go b/src/duplicacy_utils_linux.go
+index 223f32c..9047070 100644
+--- a/src/duplicacy_utils_linux.go
++++ b/src/duplicacy_utils_linux.go
+@@ -8,6 +8,6 @@ import (
+ )
+ 
+ func excludedByAttribute(attirbutes map[string][]byte) bool {
+-	_, ok := attirbutes["duplicacy_exclude"]
++	_, ok := attirbutes["user.duplicacy_exclude"]
+ 	return ok
+ }

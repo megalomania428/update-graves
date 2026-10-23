@@ -1,6 +1,6 @@
 # Update graves
 
-<!-- cspell:ignore LZMA pipefail GOTOOLCHAIN GOPATH unpadded -->
+<!-- cspell:ignore LZMA pipefail GOTOOLCHAIN GOPATH GOPROXY duplicacy unpadded -->
 <!-- markdownlint-disable MD013 -->
 
 A declarative application builder for upstream projects with local patches. Go handles source selection, cloning, patching, build steps, packaging, GitHub Releases and optional Telegram posts. Adding an application usually requires only a new `sources/<name>/build.yaml`, documentation, patches and scripts; Go changes are needed only for new builder features, such as commit SHA pins, explicit release versions and zero-padded patch numbers.
@@ -14,7 +14,7 @@ A declarative application builder for upstream projects with local patches. Go h
 - `golang/cmd/graves/` – the `prepare`, `fetch`, `build`, `upload` and `telegram` commands.
 - `.graves/` – ignored upstream clone, published assets and release notes.
 
-The first recipes build opencode CLI and Electron desktop for Linux/Windows x64, and the patched `@raven428/pi-web` npm tarball. Heavy application builds run only in the build workflow.
+The first recipes build opencode CLI and Electron desktop for Linux/Windows x64, the patched `@raven428/pi-web` npm tarball, and `duplicacy` CLI binaries with a file-based GOPROXY of its Go module. Heavy application builds run only in the build workflow.
 
 ## Recipe schema
 
@@ -88,6 +88,13 @@ Versions come only from the recipe: `upstream.version`, or else `upstream.ref` w
 A pushed `<name>-<label>` tag releases only that application, with one matrix job per target, and the release title is the tag itself. The build workflow reacts to every `*-*` tag, existing source names are matched by the `<name>-` prefix and the longest match wins, so a tag whose prefix matches no recipe fails `prepare` instead of being ignored. Release versions still come from `build.yaml` and never from the tag, so bump `upstream.ref`, `upstream.version`, `upstream.patch` or `upstream.patch_width` in the same pull request as the tag.
 
 When a pull request changes an application's upstream ref, version, patch number or patch width in `build.yaml` or its patches, update that application's `TAG4REL` below in the same pull request.
+
+- `duplicacy`:
+
+  ```bash
+  git checkout master && git pull; TAG4REL='duplicacy-v3.3.0p001'
+  git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
+  ```
 
 - `opencode`:
 
