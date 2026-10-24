@@ -1,0 +1,3 @@
+# go.sum hash of google.golang.org/api in the duplicacy patch
+fef030b55df53213b417693154f36a2a105e8cef:sources/duplicacy/patches/001-linux-xattr-strict-tests.patch:generic-api-key:230
+sources/duplicacy/patches/001-linux-xattr-strict-tests.patch:generic-api-key:230
