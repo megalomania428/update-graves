@@ -1,0 +1,1205 @@
+diff -ruN -x .git a/docs/config.html b/docs/config.html
+--- a/docs/config.html	2026-10-24 12:53:31.714699924 +0000
++++ b/docs/config.html	2026-10-24 12:53:39.739156592 +0000
+@@ -1101,6 +1101,39 @@
+               </div>
+             </section>
+ 
++            <section id="shortcut-config">
++              <h2>Shortcut config</h2>
++              <p>
++                Shortcut values are keyed by action id. Use strings such as <code>mod+k</code>, <code>g p</code>, or <code>shift+enter</code>;
++                <code>null</code> disables that action's shortcut. See the <a href="#global-config">global example</a>.
++                Prefer <strong>Settings → Keyboard</strong> for editing, recording, disabling, or resetting shortcuts.
++                <code>mod</code> accepts Ctrl or ⌘; browsers and operating systems may reserve some combinations.
++              </p>
++              <p>
++                App shortcuts support single keys and sequences. Unmodified and Shift-only shortcuts do not start in
++                inputs, textareas, selects, or contenteditable editors. Sequences expire after 1.2 seconds; Escape or a
++                focus change cancels them. Custom bindings win over defaults, ties resolve by action id, and shorter
++                bindings shadow longer sequences with the same prefix.
++              </p>
++              <p>
++                Under <strong>Chat composer</strong>, configure <code>composer.send.desktop</code> and
++                <code>composer.send.mobile</code> independently with one key combination each, not sequences.
++                <strong>Send message — desktop</strong> defaults to Enter; <strong>Send message — touch or narrow screen</strong>
++                defaults to Shift+Enter. The latter applies when the browser reports a coarse primary pointer (typically
++                touch) or a viewport at most 760px wide; otherwise, desktop applies. Its config key remains
++                <code>composer.send.mobile</code>. For example, set the desktop binding to <code>mod+enter</code>
++                and the touch or narrow screen binding to <code>shift+enter</code>.
++                Unassigned Enter and Shift+Enter insert newlines. Send bindings take priority over app shortcuts only in
++                the message editor, even when sending is unavailable. Plain Enter accepts a selected completion first.
++                <code>null</code> disables keyboard submission; the send button remains available.
++              </p>
++              <p>
++                Existing browser-local Enter preferences remain the fallback until a composer binding is configured.
++                Reset removes the override and restores that fallback. New bindings are saved in the gateway config;
++                old preferences are not copied there. Automatic touch-keyboard capitalization is ignored for Shift+Enter.
++              </p>
++            </section>
++
+             <section id="prompt-completions">
+               <h2>Prompt completions</h2>
+               <p>The chat composer opens completion menus on three trigger characters:</p>
+diff -ruN -x .git a/docs/config.md b/docs/config.md
+--- a/docs/config.md	2026-10-24 12:53:31.714699924 +0000
++++ b/docs/config.md	2026-10-24 12:53:39.739156592 +0000
+@@ -46,7 +46,13 @@
+ - `plugins`: browser-only changes apply after a browser-tab reload. Any enablement, settings, package-source, or package-revision change affecting a `serverModule` requires a manual session-daemon restart, then a browser reload for its paired UI.
+ - `serverPlugins.safeStart`: persistent offline recovery state applied before server-plugin discovery/import on the next sessiond start; use the `pi-web plugins safe-start ...` CLI rather than hand-editing it.
+ - Pi package install/remove/update: not a PI WEB config key; after a mutation, type `/reload` in each idle PI WEB session on the target machine to refresh ordinary Pi resources such as extensions, skills, prompt templates, themes, and context/system prompt files. For a PI WEB package with `serverModule`, manually restart `pi-web-sessiond.service`, then reload the browser. If a global Pi extension adds or removes a model provider, or changes a provider's connection settings, the same manual sessiond restart is required; `/reload` cannot change either startup snapshot. A known Pi model provider refreshing only its own model list is applied without a restart. See [Pi extension provider baseline](#pi-extension-provider-baseline).
+-- `shortcuts`: saved settings apply in the browser after config refresh/save.
++- `shortcuts` / `defaultStreamingBehavior`: saved settings apply in the browser after config refresh/save; no service restart.
++
++### Streaming send default
++
++In **Settings → Keyboard shortcuts → Send while agent is running**, choose **Steer** or **Follow-up** for the keyboard send shortcut. The chat buttons keep their fixed order and actions: Send/Follow-up, Steer, then Stop.
++
++`defaultStreamingBehavior` chooses the keyboard send action while the agent is streaming: `followUp` queues the message until the current response finishes; `steer` delivers it before the next model call. Omitting the setting defaults to `steer`. During compaction, messages remain queued as follow-ups. Only these two exact string values are accepted. This browser-facing preference lives in the global gateway config, including when a remote machine is selected; it is not a project-local setting.
+ 
+ ## Global config example
+ 
+@@ -54,6 +60,7 @@
+ {
+   "host": "127.0.0.1",
+   "port": 8504,
++  "defaultStreamingBehavior": "steer",
+   "pathAccess": {
+     "allowedPaths": ["~/SDKs", "/opt/reference"]
+   },
+@@ -169,6 +176,7 @@
+ | Session environment facts | `environmentFacts` | `PI_WEB_ENVIRONMENT_FACTS` | Global/session daemon | Not supported locally | Restart session daemon on that machine |
+ | PI WEB plugin desired enablement/settings | `plugins.<id>.enabled`, `plugins.<id>.settings` | — | Global + sessiond startup snapshot for server entries | Not core local config; plugins may read their own project files | Browser-only: reload tab. Server-backed: manually restart sessiond, then reload tab |
+ | Server-plugin safe start | `serverPlugins.safeStart` | — | Global/offline recovery | Not supported locally; manage with `pi-web plugins safe-start ...` | Applied before discovery/import on next sessiond start |
++| Streaming send default | `defaultStreamingBehavior` | — | Global gateway | Not supported locally | Applies after settings save/config refresh; defaults to `steer` |
+ | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
+ | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
+ | **Runtime-only environment variables** |  |  |  |  |  |
+@@ -444,18 +452,27 @@
+ 
+ ### Shortcut config
+ 
+-Shortcut values are keyed by action id. Values are shortcut strings such as `mod+k` or `mod+g p`; `null` disables that action's shortcut.
++Shortcut values are keyed by action id. Values are shortcut strings such as `mod+k`, `g p`, or `shift+enter`; `null` disables that action's shortcut.
+ 
+ ```json
+ {
+   "shortcuts": {
+     "core:view.chat": "mod+1",
+-    "core:session.stop": null
++    "core:session.stop": null,
++    "app.navigation.focus-projects": "g p",
++    "composer.send.desktop": "mod+enter",
++    "composer.send.mobile": "shift+enter"
+   }
+ }
+ ```
+ 
+-Prefer Settings → Keyboard for editing shortcuts interactively.
++Prefer Settings → Keyboard for editing, recording, disabling, or resetting shortcuts. `mod` accepts Ctrl or ⌘. Browsers and operating systems may reserve some combinations.
++
++App shortcuts can be single keys or sequences. Unmodified and Shift-only shortcuts do not start inside inputs, textareas, selects, or contenteditable editors. Sequences expire after 1.2 seconds; Escape or a focus change cancels them. Custom bindings win over defaults; ties resolve by action id. A shorter binding shadows sequences with that prefix (for example, `g` shadows `g p`).
++
++The two **Chat composer** send bindings accept one key combination each, not sequences. **Send message — desktop** defaults to Enter; **Send message — touch or narrow screen** defaults to Shift+Enter. The latter applies when the browser reports a coarse primary pointer (typically touch) or a viewport at most 760px wide; otherwise, desktop applies. Its config key remains `composer.send.mobile`. Enter and Shift+Enter insert newlines when not assigned to send. Composer send bindings take priority over app shortcuts only inside the message editor, even when the draft is empty or sending is unavailable. Plain Enter accepts a selected completion first. `null` disables keyboard submission for that context; the send button remains available.
++
++Existing browser-local Enter preferences remain the fallback until the corresponding composer binding is configured. Reset removes the override and returns to that fallback. New bindings are saved in the gateway config, like other shortcuts; the old preference is not copied into shared configuration. Automatic touch-keyboard capitalization is ignored when interpreting Shift+Enter.
+ 
+ ## Prompt completions
+ 
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-10-24 12:53:31.734689580 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-24 12:53:39.739156592 +0000
+@@ -5,6 +5,7 @@
+ import { parseKnownPiWebCapabilities } from "../../../shared/capabilities";
+ import { parseDeprecatedAgentInputs } from "../../../shared/piWebStatusParsing";
+ import { PI_WEB_PLUGIN_RECOVERY_COMMANDS, pluginDisableRecoveryCommand } from "../../../shared/pluginRecoveryCommands";
++import { requireDefaultStreamingBehavior } from "../../../shared/streamingBehavior";
+ 
+ function isRecord(value: unknown): value is Record<string, unknown> {
+   return typeof value === "object" && value !== null;
+@@ -1500,6 +1501,7 @@
+     ...optionalField("port", optionalNumber(record, "port")),
+     ...optionalField("allowedHosts", optionalAllowedHosts(record["allowedHosts"])),
+     ...optionalField("shortcuts", optionalShortcuts(record["shortcuts"])),
++    ...optionalField("defaultStreamingBehavior", record["defaultStreamingBehavior"] === undefined ? undefined : requireDefaultStreamingBehavior(record["defaultStreamingBehavior"], "response")),
+     ...optionalField("plugins", optionalPlugins(record["plugins"])),
+     ...optionalField("pathAccess", optionalPathAccess(record["pathAccess"])),
+     ...optionalField("uploads", optionalUploads(record["uploads"])),
+diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
+--- a/src/client/src/components/PiWebApp.ts	2026-10-24 12:53:31.742685443 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-10-24 12:53:39.739156592 +0000
+@@ -255,6 +255,7 @@
+   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
+   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
+   @state() private shortcutConfig: PiWebShortcutConfig = {};
++  @state() private defaultStreamingBehavior: "steer" | "followUp" = "steer";
+   @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
+   @state() private workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(undefined);
+   private sessionWarningVisibility = initialSessionWarningVisibilityState();
+@@ -274,8 +275,17 @@
+     return this.routeRestoreDepth > 0;
+   }
+ 
++  private readonly resetKeyboardSequence = () => { this.keyboard.reset(); };
++
+   private readonly onKeyDown = (event: KeyboardEvent) => {
+-    if (this.isRenderedModalOpen()) return;
++    if (this.isRenderedModalOpen()) {
++      this.keyboard.reset();
++      return;
++    }
++    if (this.promptEditor?.ownsKeyboardEvent(event) === true) {
++      this.keyboard.reset();
++      return;
++    }
+     if (this.keyboard.handle(event, this.getDefaultActions(), { shortcuts: this.shortcutConfig })) {
+       event.preventDefault();
+       event.stopPropagation();
+@@ -357,6 +367,8 @@
+     window.addEventListener("pageshow", this.onPageShow);
+     this.browserResume.connect();
+     window.addEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
++    window.addEventListener("focusin", this.resetKeyboardSequence);
++    window.addEventListener("blur", this.resetKeyboardSequence);
+     this.systemLightThemeMedia?.addEventListener("change", this.onSystemLightThemeChange);
+     this.applyPreferredTheme(false);
+     this.connectRealtime();
+@@ -377,6 +389,8 @@
+     window.removeEventListener("pageshow", this.onPageShow);
+     this.browserResume.disconnect();
+     window.removeEventListener("keydown", this.onKeyDown, GLOBAL_SHORTCUT_LISTENER_OPTIONS);
++    window.removeEventListener("focusin", this.resetKeyboardSequence);
++    window.removeEventListener("blur", this.resetKeyboardSequence);
+     this.systemLightThemeMedia?.removeEventListener("change", this.onSystemLightThemeChange);
+     this.keyboard.reset();
+     this.auth.dispose();
+@@ -514,6 +528,7 @@
+ 
+   private applyClientConfig(config: PiWebConfigValues): void {
+     this.shortcutConfig = config.shortcuts ?? {};
++    this.defaultStreamingBehavior = config.defaultStreamingBehavior ?? "steer";
+     this.workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(config);
+     this.workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(config);
+   }
+@@ -2341,7 +2356,7 @@
+           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
+           ${state.selectedSession ? html`
+             ${this.renderChatView(state, state.selectedSession)}
+-            <prompt-editor .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking}></prompt-editor>
++            <prompt-editor .shortcuts=${this.shortcutConfig} .defaultStreamingBehavior=${this.defaultStreamingBehavior} .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking}></prompt-editor>
+             ${this.renderStatusBar(state)}
+             ${state.commandDialog !== undefined ? html`<command-picker .title=${state.commandDialog.title} .options=${state.commandDialog.options} .onPick=${(value: string) => this.sessions.respondToCommand(state.commandDialog?.requestId ?? "", value)} .onCancel=${() => { this.sessions.cancelCommand(); }}></command-picker>` : null}
+             ${state.modelDialog !== undefined ? html`<model-picker title=${state.modelDialog.title} .options=${state.modelDialog.options} .catalog=${state.modelDialog.catalog} .selectedValue=${state.modelDialog.selectedValue} .onPick=${(value: string) => { void this.pickModel(value); }} .onToggleEnabled=${this.handleToggleModelEnabled} .onSetScope=${this.handleSetModelScope} .onCancel=${() => { this.setState({ modelDialog: undefined }); }}></model-picker>` : null}
+diff -ruN -x .git a/src/client/src/components/PromptEditor.ts b/src/client/src/components/PromptEditor.ts
+--- a/src/client/src/components/PromptEditor.ts	2026-10-24 12:53:31.742685443 +0000
++++ b/src/client/src/components/PromptEditor.ts	2026-10-24 12:53:39.739156592 +0000
+@@ -14,7 +14,9 @@
+ import { clearDraft, loadDraft, saveDraft } from "../promptDraftStorage";
+ import { clearStagedAttachments, loadStagedAttachments, saveStagedAttachments, type PendingAttachment } from "../promptAttachmentStaging";
+ import { loadAttachmentDelivery, saveAttachmentDelivery } from "../attachmentPreferences";
+-import { createMobilePromptEnterMedia, readPromptEnterPreference, shouldSendPromptOnEnterShortcut, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
++import { createMobilePromptEnterMedia, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
++import { composerSendShortcut, matchesComposerSend } from "../composerShortcuts";
++import type { ShortcutPreferenceConfig } from "../keyboardShortcuts";
+ import { promptEditorStyles, type CompletionItem } from "./shared";
+ import { renderAttachIcon, renderSendIcon, renderQueueIcon, renderSteerIcon, renderStopIcon, renderThinkingGauge } from "./promptEditorIcons";
+ import { thinkingGauge, thinkingLevelLabel } from "../../../shared/thinkingLevels";
+@@ -23,6 +25,8 @@
+ @customElement("prompt-editor")
+ export class PromptEditor extends LitElement {
+   @property({ type: Boolean }) disabled = false;
++  @property({ attribute: false }) shortcuts: ShortcutPreferenceConfig = {};
++  @property() defaultStreamingBehavior: "steer" | "followUp" = "steer";
+   @property() sessionId?: string;
+   @property() cwd?: string;
+   @property() machineId = "local";
+@@ -410,20 +414,45 @@
+     return true;
+   }
+ 
++  /** The capture-phase app dispatcher must leave composer-owned keys to CodeMirror. */
++  ownsKeyboardEvent(event: KeyboardEvent): boolean {
++    if (this.editor === undefined || !event.composedPath().includes(this.editor.contentDOM)) return false;
++    // Keep Enter/newline handling and IME composition inside the editor, too.
++    return event.isComposing || this.editor.composing
++      || (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey)
++      || this.matchesSendShortcut(event);
++  }
++
++  private matchesSendShortcut(event: KeyboardEvent): boolean {
++    const shiftKey = event.key === "Enter"
++      ? shouldUsePromptEnterShiftShortcut(event.shiftKey, this.explicitShiftKeyActive, this.mobilePromptEnterMedia)
++      : event.shiftKey;
++    return matchesComposerSend({ key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey, isComposing: event.isComposing, target: event.target }, composerSendShortcut(this.shortcuts, this.mobilePromptEnterMedia));
++  }
++
+   private handleEditorKeyDown(event: KeyboardEvent, view: EditorView): boolean {
+     if (event.key === "Shift") {
+       this.explicitShiftKeyActive = true;
+       return false;
+     }
+-    if (event.key !== "Enter") {
+-      this.explicitShiftKeyActive = false;
+-      return false;
+-    }
+     if (event.defaultPrevented || event.isComposing || view.composing) return false;
+-
+-    const shiftKey = shouldUsePromptEnterShiftShortcut(event.shiftKey, this.explicitShiftKeyActive, this.mobilePromptEnterMedia);
++    const send = this.matchesSendShortcut(event);
++    const plainEnter = event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey
++      && !shouldUsePromptEnterShiftShortcut(event.shiftKey, this.explicitShiftKeyActive, this.mobilePromptEnterMedia);
+     this.explicitShiftKeyActive = false;
+-    return this.handleEditorEnter(view, shiftKey);
++    if (plainEnter && this.completions.length) {
++      const completion = this.completions[this.selectedIndex];
++      if (completion !== undefined) this.pick(completion);
++      return true;
++    }
++    if (send) {
++      this.send(this.defaultSendBehavior());
++      return true;
++    }
++    if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
++      return insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
++    }
++    return false;
+   }
+ 
+   private handleEditorKeyUp(event: KeyboardEvent): boolean {
+@@ -436,19 +465,6 @@
+     return false;
+   }
+ 
+-  private handleEditorEnter(view: EditorView, shiftKey: boolean): boolean {
+-    if (!shiftKey && this.completions.length) {
+-      const completion = this.completions[this.selectedIndex];
+-      if (completion !== undefined) this.pick(completion);
+-      return true;
+-    }
+-    if (!shouldSendPromptOnEnterShortcut(shiftKey, this.mobilePromptEnterMedia, readPromptEnterPreference())) {
+-      return insertNewlineContinueMarkup(view) || insertNewlineAndIndent(view);
+-    }
+-    this.send(this.canSteer || this.isCompacting ? "followUp" : undefined);
+-    return true;
+-  }
+-
+   private handleEditorTab(view: EditorView): boolean {
+     if (this.completions.length) {
+       const completion = this.completions[this.selectedIndex];
+@@ -477,6 +493,11 @@
+     this.completions = [];
+   }
+ 
++  private defaultSendBehavior(): "steer" | "followUp" | undefined {
++    if (this.isCompacting) return "followUp";
++    return this.canSteer ? this.defaultStreamingBehavior : undefined;
++  }
++
+   private send(streamingBehavior?: "steer" | "followUp") {
+     if (this.disabled || this.sending) return;
+     const text = this.draft.trim();
+diff -ruN -x .git a/src/client/src/components/settings/SettingsShortcutsPanel.test.ts b/src/client/src/components/settings/SettingsShortcutsPanel.test.ts
+--- a/src/client/src/components/settings/SettingsShortcutsPanel.test.ts	2026-10-24 12:53:31.750681305 +0000
++++ b/src/client/src/components/settings/SettingsShortcutsPanel.test.ts	2026-10-24 12:53:52.281084585 +0000
+@@ -1,203 +1,163 @@
++// @vitest-environment happy-dom
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import type { TemplateResult } from "lit";
+ import type { AppAction } from "../../actions";
+ import type { PiWebConfigResponse, PiWebConfigValues } from "../../api";
++import { COMPOSER_SEND_DESKTOP, COMPOSER_SEND_MOBILE } from "../../composerShortcuts";
+ import { SettingsShortcutsPanel } from "./SettingsShortcutsPanel";
+-import type { SettingsNotice } from "./SettingsPanelFrame";
+ 
+ afterEach(() => {
++  document.body.replaceChildren();
++  localStorage.clear();
++  vi.useRealTimers();
+   vi.unstubAllGlobals();
+ });
+ 
+ describe("settings-shortcuts-panel layout", () => {
+-  it("renders header, ordered notices, and shortcut settings through the shared frame", () => {
++  it("renders the shared frame, ordered notices, and composer actions without registered app actions", async () => {
+     const panel = new SettingsShortcutsPanel();
+     panel.configResponse = configResponse({ shortcuts: {} });
+     panel.error = "Failed to load shortcut settings.";
+     panel.savedMessage = "Shortcut settings saved.";
++    panel.onReload = vi.fn();
++    await mount(panel);
+ 
+-    const template = panel.render();
+-    const rendered = flattenTemplateContent(template);
+-
+-    expect(rendered).toContain("<settings-panel-frame");
+-    expect(frameNotices(template).map((notice) => notice.type)).toEqual(["error", "success"]);
+-    expectTextOrder(rendered, [
+-      "Keyboard shortcuts",
+-      "Edit app shortcuts by action.",
+-      "<code>mod+k</code>",
+-      "Reload",
+-      "Failed to load shortcut settings.",
+-      "Shortcut settings saved.",
+-      "Chat composer",
+-      "Config file",
+-      "No actions registered.",
++    const frame = frameRoot(panel);
++    expect(frame.querySelector("h2")?.textContent).toBe("Keyboard shortcuts");
++    expect(frame.querySelector(".description")?.textContent).toContain("Edit app shortcuts by action.");
++    expect(frame.querySelector("code")?.textContent).toBe("mod+k");
++    expect([...frame.querySelectorAll(".notice")].map((notice) => ({
++      role: notice.getAttribute("role"),
++      text: notice.textContent.trim(),
++    }))).toEqual([
++      { role: "alert", text: "Failed to load shortcut settings." },
++      { role: "status", text: "Shortcut settings saved." },
+     ]);
++    button(frame, "Reload").click();
++    expect(panel.onReload).toHaveBeenCalledOnce();
++    expect(panel.renderRoot.querySelector(".config-path-card")?.textContent).toContain("/tmp/pi-web/config.json");
++    expect([...panel.renderRoot.querySelectorAll("h3")].map((heading) => heading.textContent)).toContain("Chat composer");
++    expect(row(panel, COMPOSER_SEND_DESKTOP).textContent).toContain("Send message — desktop");
++    expect(row(panel, COMPOSER_SEND_MOBILE).textContent).toContain("Send message — touch or narrow screen");
++    expect(panel.renderRoot.querySelectorAll("article")).toHaveLength(2);
++    expect(panel.renderRoot.querySelector('input[type="radio"]')).toBeNull();
++    expect(panel.renderRoot.textContent).not.toContain("No actions registered.");
+   });
+ 
+-  it("keeps the prompt-enter card before the loading shortcuts state", () => {
++  it("renders the loading state without the old prompt-enter card", async () => {
+     const panel = new SettingsShortcutsPanel();
+     panel.loading = true;
++    await mount(panel);
+ 
+-    const rendered = flattenTemplateContent(panel.render());
+-
+-    expectTextOrder(rendered, ["Keyboard shortcuts", "Chat composer", "Loading shortcuts…"]);
+-    expect(rendered).not.toContain("Config file");
++    expect(frameRoot(panel).querySelector("h2")?.textContent).toBe("Keyboard shortcuts");
++    expect(button(frameRoot(panel), "Reload").disabled).toBe(true);
++    expect(panel.renderRoot.querySelector(".loading-card")?.textContent).toBe("Loading shortcuts…");
++    expect(panel.renderRoot.querySelector(".config-path-card")).toBeNull();
++    expect(panel.renderRoot.querySelector(".prompt-enter-card")).toBeNull();
+   });
+ });
+ 
+ describe("settings-shortcuts-panel shortcut row actions", () => {
+-  it("saves edited shortcuts, disables them with None, and resets overrides", () => {
+-    vi.stubGlobal("HTMLInputElement", FakeHTMLInputElement);
++  it("saves edited shortcuts, disables them with None, and resets overrides", async () => {
+     const onSave = vi.fn<SaveHandler>();
+-    const savePanel = panelWithShortcuts({ shortcuts: { "core:other": "mod+o" } }, onSave);
+-
+-    findTemplateEventHandler<Event>(savePanel.render(), "@input=")(
+-      new EventWithTarget("input", new FakeHTMLInputElement(" control + shift + p ")),
+-    );
+-
+-    expectTextOrder(flattenTemplateContent(savePanel.render()), ["Open palette", "Ctrl+Shift+P", "Custom · Unsaved"]);
++    const panel = await panelWithShortcuts({ shortcuts: { "core:other": "mod+o" } }, onSave);
++    await editShortcut(panel, "core:open-palette", " control + shift + p ");
+ 
+-    findTemplateEventHandler<Event>(savePanel.render(), ">Save</button>")(new Event("click"));
+-
+-    const nonePanel = panelWithShortcuts({ shortcuts: { "core:open-palette": "mod+shift+p", "core:other": "mod+o" } }, onSave);
+-    findTemplateEventHandler<Event>(nonePanel.render(), ">None</button>")(new Event("click"));
+-
+-    const resetPanel = panelWithShortcuts({ shortcuts: { "core:open-palette": null, "core:other": "mod+o" } }, onSave);
+-    findTemplateEventHandler<Event>(resetPanel.render(), ">Reset</button>")(new Event("click"));
+-
+-    expect(onSave.mock.calls).toEqual([
+-      [{ shortcuts: { "core:other": "mod+o", "core:open-palette": "mod+shift+p" } }],
+-      [{ shortcuts: { "core:open-palette": null, "core:other": "mod+o" } }],
+-      [{ shortcuts: { "core:other": "mod+o" } }],
+-    ]);
++    expect(row(panel, "core:open-palette").querySelector(".shortcut-status")?.textContent).toContain("Ctrl+Shift+P");
++    expect(row(panel, "core:open-palette").textContent).toContain("Custom · Unsaved");
++    await clickRow(panel, "core:open-palette", "Save");
++    expect(onSave).toHaveBeenLastCalledWith({ shortcuts: { "core:other": "mod+o", "core:open-palette": "mod+shift+p" } });
++
++    panel.configResponse = configResponse({ shortcuts: { "core:open-palette": "mod+shift+p", "core:other": "mod+o" } });
++    await settle(panel);
++    await clickRow(panel, "core:open-palette", "None");
++    expect(onSave).toHaveBeenLastCalledWith({ shortcuts: { "core:open-palette": null, "core:other": "mod+o" } });
++
++    panel.configResponse = configResponse({ shortcuts: { "core:open-palette": null, "core:other": "mod+o" } });
++    await settle(panel);
++    expect(row(panel, "core:open-palette").textContent).toContain("Disabled");
++    await clickRow(panel, "core:open-palette", "Reset");
++    expect(onSave).toHaveBeenLastCalledWith({ shortcuts: { "core:other": "mod+o" } });
++    expect(onSave).toHaveBeenCalledTimes(3);
+   });
+ 
+-  it("shows and rewrites shortcut preferences migrated from a former action id", () => {
++  it.each(["Save", "None", "Reset"] as const)("migrates former action ids when using %s", async (operation) => {
+     const onSave = vi.fn<SaveHandler>();
+-    const migratedAction = shortcutAction({ id: "git:view.git", shortcutAliases: ["core:view.git"], shortcut: "mod+3" });
+-    const config = { shortcuts: { "core:view.git": "mod+8", "core:other": "mod+o" } };
+-    const nonePanel = panelWithShortcuts(config, onSave, migratedAction);
+-
+-    expectTextOrder(flattenTemplateContent(nonePanel.render()), ["Open palette", "Ctrl+8", "Custom"]);
+-    findTemplateEventHandler<Event>(nonePanel.render(), ">None</button>")(new Event("click"));
+-
+-    const resetPanel = panelWithShortcuts(config, onSave, migratedAction);
+-    findTemplateEventHandler<Event>(resetPanel.render(), ">Reset</button>")(new Event("click"));
+-
+-    expect(onSave.mock.calls).toEqual([
+-      [{ shortcuts: { "core:other": "mod+o", "git:view.git": null } }],
+-      [{ shortcuts: { "core:other": "mod+o" } }],
+-    ]);
++    const action = shortcutAction({ id: "git:view.git", shortcutAliases: ["core:view.git"], shortcut: "mod+3" });
++    const panel = await panelWithShortcuts({ shortcuts: { "core:view.git": "mod+8", "core:other": "mod+o" } }, onSave, action);
++
++    expect(input(panel, action.id).value).toBe("mod+8");
++    expect(row(panel, action.id).querySelector(".shortcut-status")?.textContent).toContain("Ctrl+8");
++    expect(row(panel, action.id).textContent).toContain("Custom");
++    if (operation === "Save") await editShortcut(panel, action.id, "mod+9");
++    await clickRow(panel, action.id, operation);
++
++    expect(onSave).toHaveBeenCalledExactlyOnceWith({
++      shortcuts: {
++        "core:other": "mod+o",
++        ...(operation === "Reset" ? {} : { "git:view.git": operation === "None" ? null : "mod+9" }),
++      },
++    });
+   });
+ });
+ 
+-function frameNotices(template: TemplateResult): readonly SettingsNotice[] {
+-  const notices = collectTemplateValues(template).find(isSettingsNoticeArray);
+-  if (notices === undefined) throw new Error("Expected settings-panel-frame notices to be rendered");
+-  return notices;
+-}
+-
+-function flattenTemplateContent(template: TemplateResult): string {
+-  const chunks: string[] = [];
+-  visitTemplate(template);
+-  return chunks.join("");
+-
+-  function visitTemplate(current: TemplateResult): void {
+-    const strings = templateStrings(current);
+-    const values = templateValues(current);
+-    for (let index = 0; index < values.length; index += 1) {
+-      const staticChunk = strings[index];
+-      if (staticChunk !== undefined) chunks.push(staticChunk);
+-      visitValue(values[index]);
+-    }
+-    const finalChunk = strings[values.length];
+-    if (finalChunk !== undefined) chunks.push(finalChunk);
+-  }
+-
+-  function visitValue(value: unknown): void {
+-    if (Array.isArray(value)) {
+-      for (const item of value) visitValue(item);
+-      return;
+-    }
+-    if (isSettingsNotice(value)) {
+-      visitValue(value.title);
+-      visitValue(value.content);
+-      return;
+-    }
+-    if (isTemplateResult(value)) {
+-      visitTemplate(value);
+-      return;
+-    }
+-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+-      chunks.push(String(value));
+-    }
+-  }
+-}
++type SaveHandler = (config: PiWebConfigValues) => void | Promise<void>;
+ 
+-function collectTemplateValues(template: TemplateResult): unknown[] {
+-  const values: unknown[] = [];
+-  visit(template);
+-  return values;
+-
+-  function visit(current: unknown): void {
+-    if (Array.isArray(current)) {
+-      for (const item of current) visit(item);
+-      return;
+-    }
+-    if (!isTemplateResult(current)) return;
+-    for (const value of templateValues(current)) {
+-      values.push(value);
+-      visit(value);
+-    }
+-  }
++async function settle(panel: SettingsShortcutsPanel): Promise<void> {
++  await panel.updateComplete;
++  const frame = panel.renderRoot.querySelector("settings-panel-frame");
++  if (frame === null) throw new Error("Expected settings panel frame");
++  await frame.updateComplete;
+ }
+ 
+-function expectTextOrder(content: string, labels: readonly string[]): void {
+-  let previousIndex = -1;
+-  for (const label of labels) {
+-    const currentIndex = content.indexOf(label, previousIndex + 1);
+-    if (currentIndex === -1) throw new Error(`Expected rendered content to include ${label}`);
+-    expect(currentIndex).toBeGreaterThan(previousIndex);
+-    previousIndex = currentIndex;
+-  }
++async function mount(panel: SettingsShortcutsPanel): Promise<void> {
++  document.body.append(panel);
++  await settle(panel);
+ }
+ 
+-function templateStrings(template: TemplateResult): readonly string[] {
+-  const strings = Reflect.get(template, "strings");
+-  if (!isStringArray(strings)) throw new Error("TemplateResult strings were unavailable");
+-  return strings;
++function frameRoot(panel: SettingsShortcutsPanel): ShadowRoot {
++  const root = panel.renderRoot.querySelector("settings-panel-frame")?.shadowRoot;
++  if (root == null) throw new Error("Expected settings panel frame shadow root");
++  return root;
+ }
+ 
+-function templateValues(template: TemplateResult): readonly unknown[] {
+-  const values = Reflect.get(template, "values");
+-  if (!Array.isArray(values)) throw new Error("TemplateResult values were unavailable");
+-  return values.map((value: unknown) => value);
++function input(panel: SettingsShortcutsPanel, actionId: string): HTMLInputElement {
++  const result = [...panel.renderRoot.querySelectorAll("input")].find((element) => element.dataset["actionId"] === actionId);
++  if (result === undefined) throw new Error(`Expected shortcut input for ${actionId}`);
++  return result;
+ }
+ 
+-function isTemplateResult(value: unknown): value is TemplateResult {
+-  return typeof value === "object" && value !== null && isStringArray(Reflect.get(value, "strings")) && Array.isArray(Reflect.get(value, "values"));
++function row(panel: SettingsShortcutsPanel, actionId: string): HTMLElement {
++  const result = input(panel, actionId).closest("article");
++  if (result === null) throw new Error(`Expected shortcut row for ${actionId}`);
++  return result;
+ }
+ 
+-function isSettingsNotice(value: unknown): value is SettingsNotice {
+-  return typeof value === "object" && value !== null && typeof Reflect.get(value, "type") === "string" && Reflect.has(value, "content");
++function button(root: ParentNode, label: string): HTMLButtonElement {
++  const result = [...root.querySelectorAll("button")].find((element) => element.textContent.trim() === label);
++  if (result === undefined) throw new Error(`Expected button: ${label}`);
++  return result;
+ }
+ 
+-function isSettingsNoticeArray(value: unknown): value is readonly SettingsNotice[] {
+-  return Array.isArray(value) && value.every(isSettingsNotice);
++async function clickRow(panel: SettingsShortcutsPanel, actionId: string, label: string): Promise<void> {
++  const control = button(row(panel, actionId), label);
++  expect(control.disabled).toBe(false);
++  control.click();
++  await settle(panel);
+ }
+ 
+-function isStringArray(value: unknown): value is string[] {
+-  return Array.isArray(value) && value.every((item: unknown) => typeof item === "string");
++async function editShortcut(panel: SettingsShortcutsPanel, actionId: string, value: string): Promise<void> {
++  const control = input(panel, actionId);
++  control.value = value;
++  control.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
++  await settle(panel);
+ }
+ 
+-type SaveHandler = (config: PiWebConfigValues) => void | Promise<void>;
+-type TemplateEventHandler<E extends Event> = (event: E) => void;
+-
+-function panelWithShortcuts(config: PiWebConfigValues, onSave: SaveHandler, action = shortcutAction()): SettingsShortcutsPanel {
++async function panelWithShortcuts(config: PiWebConfigValues, onSave: SaveHandler, action = shortcutAction()): Promise<SettingsShortcutsPanel> {
+   const panel = new SettingsShortcutsPanel();
+   panel.actions = [action];
+   panel.configResponse = configResponse(config);
+   panel.onSave = onSave;
++  await mount(panel);
+   return panel;
+ }
+ 
+@@ -213,64 +173,6 @@
+   };
+ }
+ 
+-function findTemplateEventHandler<E extends Event>(template: TemplateResult, marker: string): TemplateEventHandler<E> {
+-  const handler = findOptionalTemplateEventHandler<E>(template, marker);
+-  if (handler === undefined) throw new Error(`Expected template event handler near ${marker}`);
+-  return handler;
+-}
+-
+-function findOptionalTemplateEventHandler<E extends Event>(template: TemplateResult, marker: string): TemplateEventHandler<E> | undefined {
+-  return findInTemplate(template);
+-
+-  function findInTemplate(current: TemplateResult): TemplateEventHandler<E> | undefined {
+-    const strings = templateStrings(current);
+-    const values = templateValues(current);
+-    for (let index = 0; index < values.length; index += 1) {
+-      const value = values[index];
+-      if (isTemplateEventHandler<E>(value) && templateEventHandlerMatches(strings, index, marker)) return value;
+-      const nestedHandler = findInValue(value);
+-      if (nestedHandler !== undefined) return nestedHandler;
+-    }
+-    return undefined;
+-  }
+-
+-  function findInValue(value: unknown): TemplateEventHandler<E> | undefined {
+-    if (Array.isArray(value)) {
+-      for (const item of value) {
+-        const nestedHandler = findInValue(item);
+-        if (nestedHandler !== undefined) return nestedHandler;
+-      }
+-      return undefined;
+-    }
+-    if (isTemplateResult(value)) return findInTemplate(value);
+-    return undefined;
+-  }
+-}
+-
+-function templateEventHandlerMatches(strings: readonly string[], valueIndex: number, marker: string): boolean {
+-  return (strings[valueIndex] ?? "").includes(marker) || (strings[valueIndex + 1] ?? "").includes(marker);
+-}
+-
+-function isTemplateEventHandler<E extends Event>(value: unknown): value is TemplateEventHandler<E> {
+-  return typeof value === "function";
+-}
+-
+-class FakeHTMLInputElement extends EventTarget {
+-  constructor(readonly value: string) {
+-    super();
+-  }
+-}
+-
+-class EventWithTarget extends Event {
+-  constructor(type: string, private readonly eventTarget: EventTarget) {
+-    super(type);
+-  }
+-
+-  override get target(): EventTarget {
+-    return this.eventTarget;
+-  }
+-}
+-
+ function configResponse(config: PiWebConfigValues): PiWebConfigResponse {
+   return {
+     path: "/tmp/pi-web/config.json",
+diff -ruN -x .git a/src/client/src/components/settings/SettingsShortcutsPanel.ts b/src/client/src/components/settings/SettingsShortcutsPanel.ts
+--- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-24 12:53:31.750681305 +0000
++++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -2,33 +2,15 @@
+ import { customElement, property, state } from "lit/decorators.js";
+ import type { AppAction } from "../../actions";
+ import type { PiWebConfigResponse, PiWebConfigValues, PiWebShortcutConfig } from "../../api";
+-import { formatShortcut, isShortcutSequenceStarter, parseShortcutInput, resolveShortcutBindings, shortcutPreferenceForAction, shortcutSequenceTimeoutMs, shortcutTokenFromEvent, type ShortcutBindingResolution } from "../../keyboardShortcuts";
+-import { readPromptEnterPreference, writePromptEnterPreference, type PromptEnterPreference } from "../../promptEnterBehavior";
++import { formatShortcut, parseShortcutInput, resolveShortcutBindings, shortcutPreferenceForAction, shortcutSequenceTimeoutMs, shortcutTokenFromEvent, type ShortcutBindingResolution } from "../../keyboardShortcuts";
++import { composerShortcutActions, isComposerShortcut } from "../../composerShortcuts";
+ import "./SettingsPanelFrame";
+ import type { SettingsNotice } from "./SettingsPanelFrame";
+ 
+ const RECORD_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
+ 
+-const PROMPT_ENTER_OPTIONS: readonly { value: PromptEnterPreference; label: string; description: string }[] = [
+-  {
+-    value: "auto",
+-    label: "Auto/default",
+-    description: "Desktop-like Enter sends; mobile, coarse pointer, or narrow screens insert a new line.",
+-  },
+-  {
+-    value: "send",
+-    label: "Enter sends message",
+-    description: "Enter sends the chat message; Shift+Enter adds a new line when supported.",
+-  },
+-  {
+-    value: "newline",
+-    label: "Enter inserts new line",
+-    description: "Enter adds a line break; Shift+Enter sends the chat message when supported.",
+-  },
+-];
+-
+ function renderShortcutsDescription(): TemplateResult {
+-  return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code> or <code>mod+g p</code>, record one from the keyboard, disable it with None, or reset it to the default. When shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
++  return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code> or <code>g p</code>, record one from the keyboard, disable it with None, or reset it to the default. Unmodified app shortcuts work outside editable fields. Composer send bindings accept one key combination and take priority inside the editor; unassigned Enter and Shift+Enter insert newlines. Touch or narrow screen applies when the browser reports a coarse primary pointer (typically touch) or a viewport at most 760px wide; otherwise, desktop applies. When app shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
+ }
+ 
+ @customElement("settings-shortcuts-panel")
+@@ -43,7 +25,6 @@
+   @property({ attribute: false }) onSave?: (config: PiWebConfigValues) => void | Promise<void>;
+   @state() private drafts: Record<string, string> = {};
+   @state() private localError = "";
+-  @state() private promptEnterPreference: PromptEnterPreference = readPromptEnterPreference();
+   @state() private recording: RecordingState | undefined;
+   private recordingTimer: number | undefined;
+   private recordingListenerActive = false;
+@@ -64,16 +45,12 @@
+       this.localError = "Press a letter, number, punctuation, function, or navigation key. Press Esc to cancel recording.";
+       return;
+     }
+-    if (recording.tokens.length === 0 && !isShortcutSequenceStarter(token)) {
+-      this.localError = "Start shortcuts with Ctrl/⌘ or Alt so normal typing is not captured.";
+-      return;
+-    }
+-
+     const tokens = [...recording.tokens, token];
+     this.localError = "";
+     this.drafts = { [recording.actionId]: tokens.join(" ") };
+     this.recording = { actionId: recording.actionId, tokens };
+-    this.armRecordingTimer();
++    if (isComposerShortcut(recording.actionId)) this.stopRecording();
++    else this.armRecordingTimer();
+   };
+ 
+   protected override willUpdate(changed: PropertyValues<this>): void {
+@@ -90,7 +67,7 @@
+   }
+ 
+   override render(): TemplateResult {
+-    const groups = shortcutGroups(this.actions);
++    const groups = shortcutGroups([...composerShortcutActions(), ...this.actions]);
+     const shortcutResolutions = this.shortcutResolutions();
+     return html`
+       <settings-panel-frame
+@@ -101,13 +78,23 @@
+         .notices=${this.panelNotices()}
+         .onAction=${this.onReload}
+       >
+-        ${this.renderPromptEnterPreferenceCard()}
+         ${this.configResponse === undefined && this.loading ? html`<div class="loading-card">Loading shortcuts…</div>` : html`
+           <div class="config-path-card">
+             <span>Config file</span>
+             <code>${this.configResponse?.path ?? "Unknown"}</code>
+             <small>Shortcut overrides are saved under <code>shortcuts</code>. A value of <code>null</code> disables the action shortcut.</small>
+           </div>
++          <section class="shortcut-group">
++            <h3>Send behavior</h3>
++            <label class="shortcut-input-label">
++              <span>Send while agent is running</span>
++              <select aria-label="Send while agent is running" .value=${this.configResponse?.config.defaultStreamingBehavior ?? "steer"} ?disabled=${this.loading || this.saving || this.configResponse === undefined} @change=${(event: Event) => { void this.saveSendBehavior(event); }}>
++                <option value="steer">Steer (default)</option>
++                <option value="followUp">Follow-up</option>
++              </select>
++            </label>
++            <p>Applies only to the keyboard send shortcut. The chat buttons keep their fixed Send/Follow-up and Steer actions. Steer delivers before the next model call; follow-up waits until the response finishes. During compaction, messages always queue as follow-ups.</p>
++          </section>
+           ${groups.length === 0 ? html`<div class="loading-card">No actions registered.</div>` : groups.map((group) => html`
+             <section class="shortcut-group">
+               <h3>${group.name}</h3>
+@@ -121,6 +108,12 @@
+     `;
+   }
+ 
++  private async saveSendBehavior(event: Event): Promise<void> {
++    const value = event.target instanceof HTMLSelectElement ? event.target.value : undefined;
++    if (value !== "steer" && value !== "followUp") return;
++    await this.onSave?.({ ...(this.configResponse?.config ?? {}), defaultStreamingBehavior: value });
++  }
++
+   private panelNotices(): readonly SettingsNotice[] {
+     const notices: SettingsNotice[] = [];
+     const error = this.localError || this.error;
+@@ -129,40 +122,6 @@
+     return notices;
+   }
+ 
+-  private renderPromptEnterPreferenceCard(): TemplateResult {
+-    return html`
+-      <section class="prompt-enter-card" aria-labelledby="prompt-enter-preference-title">
+-        <div class="prompt-enter-copy">
+-          <span class="card-eyebrow">Chat composer</span>
+-          <h3 id="prompt-enter-preference-title">Enter key behavior</h3>
+-          <p>Choose what Enter does in this browser. Shift+Enter does the opposite when supported; automatic touch-keyboard capitalization is ignored to avoid accidental sends.</p>
+-        </div>
+-        <div class="prompt-enter-options" role="radiogroup" aria-label="Enter and Shift Enter behavior in the chat composer">
+-          ${PROMPT_ENTER_OPTIONS.map((option) => html`
+-            <label class="prompt-enter-option">
+-              <input
+-                type="radio"
+-                name="prompt-enter-preference"
+-                .value=${option.value}
+-                .checked=${this.promptEnterPreference === option.value}
+-                @change=${() => { this.updatePromptEnterPreference(option.value); }}
+-              >
+-              <span>
+-                <strong>${option.label}</strong>
+-                <small>${option.description}</small>
+-              </span>
+-            </label>
+-          `)}
+-        </div>
+-      </section>
+-    `;
+-  }
+-
+-  private updatePromptEnterPreference(preference: PromptEnterPreference): void {
+-    this.promptEnterPreference = preference;
+-    writePromptEnterPreference(preference);
+-  }
+-
+   private renderShortcutRow(action: AppAction, resolution: ShortcutBindingResolution | undefined): TemplateResult {
+     const shortcuts = this.configResponse?.config.shortcuts;
+     const configured = shortcutPreferenceForAction(action, shortcuts);
+@@ -243,6 +202,10 @@
+       this.localError = parsed.message;
+       return;
+     }
++    if (isComposerShortcut(action.id) && parsed.tokens.length !== 1) {
++      this.localError = "Composer send shortcuts must be a single key combination, not a sequence.";
++      return;
++    }
+     this.localError = "";
+     await this.saveShortcutPreference(action, parsed.shortcut);
+   }
+@@ -273,7 +236,13 @@
+   }
+ 
+   private shortcutResolutions(): Map<string, ShortcutBindingResolution> {
+-    return new Map(resolveShortcutBindings(this.actions, this.previewShortcutConfig(), { enabledOnly: true }).map((resolution) => [resolution.action.id, resolution]));
++    const shortcuts = this.previewShortcutConfig();
++    // Desktop/mobile composer bindings are mutually exclusive and do not disable app bindings.
++    const resolutions = [
++      ...resolveShortcutBindings(this.actions, shortcuts, { enabledOnly: true }),
++      ...composerShortcutActions().flatMap((action) => resolveShortcutBindings([action], shortcuts)),
++    ];
++    return new Map(resolutions.map((resolution) => [resolution.action.id, resolution]));
+   }
+ 
+   private previewShortcutConfig(): PiWebShortcutConfig | undefined {
+@@ -347,23 +316,16 @@
+     h3, p { margin: 0; }
+     h3 { font-size: 13px; line-height: 1.3; }
+     p { color: var(--pi-muted); line-height: 1.45; }
+-    button, input { font: inherit; }
++    button, input, select { font: inherit; }
++    select { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-bg); color: var(--pi-text); padding: 8px 9px; }
++    select:disabled { opacity: .55; cursor: not-allowed; }
+     button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
+     button:disabled, input:disabled { opacity: .55; cursor: not-allowed; }
+     .primary { border-color: var(--pi-accent); background: var(--pi-selection-bg); color: var(--pi-text-bright); }
+-    .loading-card, .config-path-card, .prompt-enter-card { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
++    .loading-card, .config-path-card { border: 1px solid var(--pi-border); border-radius: 10px; background: var(--pi-surface); padding: 12px; }
+     .loading-card, .config-path-card { color: var(--pi-muted); }
+     .config-path-card { display: grid; gap: 5px; }
+-    .config-path-card span, .card-eyebrow { color: var(--pi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+-    .prompt-enter-card { display: grid; grid-template-columns: minmax(0, .85fr) minmax(260px, 1fr); gap: 12px; align-items: start; }
+-    .prompt-enter-copy { display: grid; gap: 5px; min-width: 0; }
+-    .prompt-enter-copy p, .prompt-enter-option small { font-size: 12px; }
+-    .prompt-enter-options { display: grid; gap: 7px; }
+-    .prompt-enter-option { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; align-items: start; color: var(--pi-text); }
+-    .prompt-enter-option input { box-sizing: border-box; width: 14px; min-width: 14px; height: 14px; margin: 3px 0 0; padding: 0; border: 0; background: transparent; accent-color: var(--pi-accent); font-family: inherit; }
+-    .prompt-enter-option input:focus { border-color: transparent; box-shadow: none; outline: 2px solid var(--pi-accent-border); outline-offset: 2px; }
+-    .prompt-enter-option span { display: grid; gap: 2px; }
+-    .prompt-enter-option small { color: var(--pi-muted); line-height: 1.35; }
++    .config-path-card span { color: var(--pi-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+     code { border: 1px solid var(--pi-border-muted); border-radius: 5px; background: var(--pi-bg); padding: 1px 4px; color: var(--pi-text); font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+     .shortcut-group { margin: 0; }
+     .shortcut-group h3 { margin: 0 0 8px; color: var(--pi-muted); font-size: 12px; text-transform: uppercase; }
+@@ -394,7 +356,6 @@
+     .recording-hint { color: var(--pi-accent); font-size: 12px; }
+ 
+     @media (max-width: 760px) {
+-      .prompt-enter-card { grid-template-columns: minmax(0, 1fr); }
+       .shortcut-row { grid-template-columns: minmax(0, 1fr); align-items: start; }
+       .shortcut-status, .shortcut-actions { justify-content: flex-start; }
+     }
+diff -ruN -x .git a/src/client/src/components/settings/settingsConfigDraft.ts b/src/client/src/components/settings/settingsConfigDraft.ts
+--- a/src/client/src/components/settings/settingsConfigDraft.ts	2026-10-24 12:53:31.750681305 +0000
++++ b/src/client/src/components/settings/settingsConfigDraft.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -66,6 +66,7 @@
+ function preservedGatewayConfigRemainder(baseConfig: PiWebConfigValues): PiWebConfigValues {
+   return {
+     ...(baseConfig.shortcuts === undefined ? {} : { shortcuts: baseConfig.shortcuts }),
++    ...(baseConfig.defaultStreamingBehavior === undefined ? {} : { defaultStreamingBehavior: baseConfig.defaultStreamingBehavior }),
+     ...(baseConfig.plugins === undefined ? {} : { plugins: baseConfig.plugins }),
+     ...(baseConfig.pathAccess === undefined ? {} : { pathAccess: baseConfig.pathAccess }),
+     ...(baseConfig.uploads === undefined ? {} : { uploads: baseConfig.uploads }),
+diff -ruN -x .git a/src/client/src/composerShortcuts.ts b/src/client/src/composerShortcuts.ts
+--- a/src/client/src/composerShortcuts.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/composerShortcuts.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -0,0 +1,37 @@
++import type { AppAction } from "./actions";
++import { normalizeShortcut, shortcutTokenFromEvent, type ShortcutKeyEvent, type ShortcutPreferenceConfig } from "./keyboardShortcuts";
++import { readPromptEnterPreference, shouldSendPromptOnEnter, type PromptEnterMedia, type PromptEnterPreference } from "./promptEnterBehavior";
++
++export const COMPOSER_SEND_DESKTOP = "composer.send.desktop";
++export const COMPOSER_SEND_MOBILE = "composer.send.mobile";
++
++export function isComposerShortcut(actionId: string): boolean {
++  return actionId === COMPOSER_SEND_DESKTOP || actionId === COMPOSER_SEND_MOBILE;
++}
++
++export function composerShortcutActions(preference = readPromptEnterPreference()): AppAction[] {
++  return [false, true].map((mobile) => ({
++    id: mobile ? COMPOSER_SEND_MOBILE : COMPOSER_SEND_DESKTOP,
++    title: `Send message — ${mobile ? "touch or narrow screen" : "desktop"}`,
++    description: "One key combination, active only in the message editor. Overrides global shortcuts there.",
++    group: "Chat composer",
++    shortcut: defaultSendShortcut({ matches: mobile }, preference),
++    // Settings-only descriptors; submission stays owned by the focused editor.
++    run: () => { /* Not registered with the app dispatcher or action palette. */ },
++  }));
++}
++
++export function composerSendShortcut(shortcuts: ShortcutPreferenceConfig, media?: PromptEnterMedia, preference = readPromptEnterPreference()): string | null {
++  const id = media?.matches === true ? COMPOSER_SEND_MOBILE : COMPOSER_SEND_DESKTOP;
++  return shortcuts[id] === undefined ? defaultSendShortcut(media, preference) : shortcuts[id];
++}
++
++export function matchesComposerSend(event: ShortcutKeyEvent, shortcut: string | null): boolean {
++  if (shortcut === null) return false;
++  const tokens = normalizeShortcut(shortcut);
++  return tokens.length === 1 && tokens[0] === shortcutTokenFromEvent(event);
++}
++
++function defaultSendShortcut(media: PromptEnterMedia | undefined, preference: PromptEnterPreference): string {
++  return shouldSendPromptOnEnter(media, preference) ? "enter" : "shift+enter";
++}
+diff -ruN -x .git a/src/client/src/keyboardShortcuts.test.ts b/src/client/src/keyboardShortcuts.test.ts
+--- a/src/client/src/keyboardShortcuts.test.ts	2026-10-24 12:53:31.762675099 +0000
++++ b/src/client/src/keyboardShortcuts.test.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -1,7 +1,13 @@
+-import { describe, expect, it, vi } from "vitest";
++// @vitest-environment happy-dom
++import { afterEach, describe, expect, it, vi } from "vitest";
+ import type { AppAction } from "./actions";
+ import { KeyboardShortcutDispatcher, parseShortcutInput, resolveShortcutBindings, shortcutTokenFromEvent, type ShortcutKeyEvent } from "./keyboardShortcuts";
+ 
++afterEach(() => {
++  document.body.replaceChildren();
++  vi.useRealTimers();
++});
++
+ function keyEvent(key: string, modifiers: Partial<ShortcutKeyEvent> = {}): ShortcutKeyEvent {
+   return {
+     key,
+@@ -42,14 +48,14 @@
+     expect(run).toHaveBeenCalledTimes(1);
+   });
+ 
+-  it("ignores plain letters so normal typing is never captured", () => {
++  it("runs plain letters outside editable fields", () => {
+     const dispatcher = new KeyboardShortcutDispatcher();
+     const { value, run } = action("r");
+ 
+     const handled = dispatcher.handle(keyEvent("r"), [value]);
+ 
+-    expect(handled).toBe(false);
+-    expect(run).not.toHaveBeenCalled();
++    expect(handled).toBe(true);
++    expect(run).toHaveBeenCalledOnce();
+   });
+ 
+   it("matches manually typed Ctrl shortcuts as the cross-platform Mod modifier", () => {
+@@ -62,14 +68,14 @@
+     expect(run).toHaveBeenCalledTimes(1);
+   });
+ 
+-  it("ignores shift-only shortcuts so capitalized typing is never captured", () => {
++  it("runs shift-only shortcuts outside editable fields", () => {
+     const dispatcher = new KeyboardShortcutDispatcher();
+     const { value, run } = action("shift+r");
+ 
+     const handled = dispatcher.handle(keyEvent("r", { shiftKey: true }), [value]);
+ 
+-    expect(handled).toBe(false);
+-    expect(run).not.toHaveBeenCalled();
++    expect(handled).toBe(true);
++    expect(run).toHaveBeenCalledOnce();
+   });
+ 
+   it("ignores disabled matching shortcuts", () => {
+@@ -196,9 +202,8 @@
+     expect(parseShortcutInput("cmd+g p")).toEqual({ ok: true, shortcut: "mod+g p", tokens: ["mod+g", "p"] });
+   });
+ 
+-  it("rejects shortcuts that would capture normal typing", () => {
+-    expect(parseShortcutInput("r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." });
+-    expect(parseShortcutInput("shift+r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." });
++  it.each(["r", "shift+r", "g p"])("accepts %s", (shortcut) => {
++    expect(parseShortcutInput(shortcut)).toEqual({ ok: true, shortcut, tokens: shortcut.split(" ") });
+   });
+ 
+   it("builds canonical tokens from recorded key events", () => {
+diff -ruN -x .git a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcuts.ts
+--- a/src/client/src/keyboardShortcuts.ts	2026-10-24 12:53:31.762675099 +0000
++++ b/src/client/src/keyboardShortcuts.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -16,6 +16,7 @@
+   shiftKey: boolean;
+   isComposing: boolean;
+   target: EventTarget | null;
++  composedPath?(): EventTarget[];
+ }
+ 
+ export type ShortcutParseResult =
+@@ -45,28 +46,39 @@
+ 
+ export class KeyboardShortcutDispatcher {
+   private pendingTokens: string[] = [];
++  private lastTarget: EventTarget | null = null;
+   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
+ 
+   handle(event: ShortcutKeyEvent, actions: AppAction[], options: { shortcuts?: ShortcutPreferenceConfig } = {}): boolean {
++    const target = event.composedPath?.()[0] ?? event.target;
++    if (target !== this.lastTarget) this.clearPending();
++    this.lastTarget = target;
++
+     const token = shortcutTokenFromEvent(event);
+     if (token === undefined) return false;
++    if (token === "escape" && this.pendingTokens.length > 0) {
++      this.clearPending();
++      return true;
++    }
+ 
++    const editable = isEditableShortcutEvent(event);
++    // Filter by the first chord so modified sequences can still finish with plain keys.
+     const shortcuts = resolveShortcutBindings(actions, options.shortcuts, { enabledOnly: true })
+-      .filter((binding) => binding.active)
++      .filter((binding) => binding.active && (!editable || isShortcutSequenceStarter(binding.tokens[0] ?? "")))
+       .map((binding) => ({ action: binding.action, tokens: binding.tokens }));
+ 
+     if (this.pendingTokens.length > 0) {
+       const handledPending = this.handleSequence([...this.pendingTokens, token], shortcuts);
+       if (handledPending) return true;
+       this.clearPending();
+-      if (!isShortcutSequenceStarter(token)) return false;
+-    } else if (!isShortcutSequenceStarter(token)) return false;
++    }
+ 
+     return this.handleSequence([token], shortcuts);
+   }
+ 
+   reset(): void {
+     this.clearPending();
++    this.lastTarget = null;
+   }
+ 
+   private handleSequence(sequence: string[], shortcuts: { action: AppAction; tokens: string[] }[]): boolean {
+@@ -147,11 +159,11 @@
+ }
+ 
+ export function parseShortcutInput(shortcut: string): ShortcutParseResult {
+-  return parseShortcut(shortcut, { requireFirstChordActivator: true });
++  return parseShortcut(shortcut);
+ }
+ 
+ export function normalizeShortcut(shortcut: string): string[] {
+-  const parsed = parseShortcut(shortcut, { requireFirstChordActivator: false });
++  const parsed = parseShortcut(shortcut);
+   return parsed.ok ? parsed.tokens : [];
+ }
+ 
+@@ -176,6 +188,13 @@
+   return modifiers.join("+");
+ }
+ 
++export function isEditableShortcutEvent(event: ShortcutKeyEvent): boolean {
++  return (event.composedPath?.() ?? [event.target]).some((target) => {
++    if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false;
++    return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
++  });
++}
++
+ export function isShortcutSequenceStarter(token: string): boolean {
+   return token.split("+").includes("mod") || token.split("+").includes("alt");
+ }
+@@ -186,8 +205,7 @@
+   const shortcut = configured ?? action.shortcut;
+   if (shortcut === undefined || shortcut === "") return undefined;
+   const tokens = normalizeShortcut(shortcut);
+-  const firstToken = tokens[0];
+-  if (firstToken === undefined || !isShortcutSequenceStarter(firstToken)) return undefined;
++  if (tokens.length === 0) return undefined;
+   return {
+     action,
+     shortcut: tokens.join(" "),
+@@ -242,18 +260,15 @@
+   return 0;
+ }
+ 
+-function parseShortcut(shortcut: string, options: { requireFirstChordActivator: boolean }): ShortcutParseResult {
++function parseShortcut(shortcut: string): ShortcutParseResult {
+   const cleaned = shortcut.trim().toLowerCase().replace(/\s*\+\s*/gu, "+");
+   if (cleaned === "") return { ok: false, message: "Enter a shortcut, choose None, or reset to the default." };
+ 
+   const tokens: string[] = [];
+   const chordInputs = cleaned.split(/\s+/u).filter((token) => token !== "");
+-  for (const [index, chordInput] of chordInputs.entries()) {
++  for (const chordInput of chordInputs) {
+     const parsed = parseShortcutChord(chordInput);
+     if (!parsed.ok) return parsed;
+-    if (index === 0 && options.requireFirstChordActivator && !isShortcutSequenceStarter(parsed.token)) {
+-      return { ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." };
+-    }
+     tokens.push(parsed.token);
+   }
+ 
+diff -ruN -x .git a/src/config.ts b/src/config.ts
+--- a/src/config.ts	2026-10-24 12:53:31.766673029 +0000
++++ b/src/config.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -3,6 +3,7 @@
+ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
+ import type { PiWebConfigValues, PiWebDeprecatedAgentInput } from "./shared/apiTypes.js";
+ import { isPiWebPluginId, piWebPluginIdPattern } from "./shared/pluginIds.js";
++import { requireDefaultStreamingBehavior } from "./shared/streamingBehavior.js";
+ 
+ export type PiWebConfig = PiWebConfigValues;
+ 
+@@ -223,6 +224,7 @@
+   delete existing["port"];
+   delete existing["allowedHosts"];
+   delete existing["shortcuts"];
++  delete existing["defaultStreamingBehavior"];
+   delete existing["plugins"];
+   delete existing["pathAccess"];
+   delete existing["uploads"];
+@@ -253,6 +255,7 @@
+     ...(config.port !== undefined ? { port: config.port } : {}),
+     ...(config.allowedHosts !== undefined ? { allowedHosts: config.allowedHosts } : {}),
+     ...(config.shortcuts !== undefined ? { shortcuts: config.shortcuts } : {}),
++    ...(config.defaultStreamingBehavior !== undefined ? { defaultStreamingBehavior: config.defaultStreamingBehavior } : {}),
+     ...(config.plugins !== undefined ? { plugins: config.plugins } : {}),
+     ...(config.pathAccess !== undefined ? { pathAccess: config.pathAccess } : {}),
+     ...(config.uploads !== undefined ? { uploads: config.uploads } : {}),
+@@ -272,6 +275,7 @@
+     ...(value["port"] !== undefined ? { port: parsePort(value["port"], "port", path) } : {}),
+     ...(value["allowedHosts"] !== undefined ? { allowedHosts: parseAllowedHosts(value["allowedHosts"], path) } : {}),
+     ...(value["shortcuts"] !== undefined ? { shortcuts: parseShortcuts(value["shortcuts"], path) } : {}),
++    ...(value["defaultStreamingBehavior"] !== undefined ? { defaultStreamingBehavior: requireDefaultStreamingBehavior(value["defaultStreamingBehavior"], path) } : {}),
+     ...(value["plugins"] !== undefined ? { plugins: parsePlugins(value["plugins"], path) } : {}),
+     ...(value["pathAccess"] !== undefined ? { pathAccess: parsePathAccessConfig(value["pathAccess"], path) } : {}),
+     ...(value["uploads"] !== undefined ? { uploads: parseUploadsConfig(value["uploads"], path) } : {}),
+diff -ruN -x .git a/src/server/configRoutes.ts b/src/server/configRoutes.ts
+--- a/src/server/configRoutes.ts	2026-10-24 12:53:31.774668892 +0000
++++ b/src/server/configRoutes.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -1,6 +1,7 @@
+ import type { FastifyInstance } from "fastify";
+ import { loadPiWebConfig, parseAgentConfig, parseAttachmentsConfig, parseUploadsConfig, resolveEffectivePiWebConfig, savePiWebConfig, type AgentPathHost, type LoadOptions, type PiWebConfig } from "../config.js";
+ import type { PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues } from "../shared/apiTypes.js";
++import { requireDefaultStreamingBehavior } from "../shared/streamingBehavior.js";
+ import { isPiWebPluginId } from "../shared/pluginIds.js";
+ 
+ export interface PiWebConfigService {
+@@ -146,6 +147,7 @@
+   }
+   if (allowedHosts !== undefined) config.allowedHosts = parseAllowedHostsRequest(allowedHosts);
+   if (shortcuts !== undefined) config.shortcuts = parseShortcutsRequest(shortcuts);
++  if (value["defaultStreamingBehavior"] !== undefined) config.defaultStreamingBehavior = requireDefaultStreamingBehavior(value["defaultStreamingBehavior"], "request");
+   if (plugins !== undefined) config.plugins = parsePluginsRequest(plugins);
+   if (pathAccess !== undefined) config.pathAccess = parsePathAccessRequest(pathAccess);
+   if (uploads !== undefined) config.uploads = parseUploadsConfig(uploads, "request");
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-24 12:53:31.798656479 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -165,6 +165,8 @@
+ }
+ 
+ export interface PiWebConfigValues {
++  /** Gateway-wide send behavior while streaming; defaults to steer. */
++  defaultStreamingBehavior?: "steer" | "followUp";
+   host?: string;
+   port?: number;
+   allowedHosts?: string[] | true;
+diff -ruN -x .git a/src/shared/streamingBehavior.ts b/src/shared/streamingBehavior.ts
+--- a/src/shared/streamingBehavior.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/shared/streamingBehavior.ts	2026-10-24 12:53:39.743154759 +0000
+@@ -0,0 +1,8 @@
++import type { PiWebConfigValues } from "./apiTypes.js";
++
++export function requireDefaultStreamingBehavior(value: unknown, source: string): NonNullable<PiWebConfigValues["defaultStreamingBehavior"]> {
++  if (value !== "steer" && value !== "followUp") {
++    throw new Error(`PI WEB config defaultStreamingBehavior must be steer or followUp: ${source}`);
++  }
++  return value;
++}

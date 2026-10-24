@@ -1,14 +1,15 @@
---- a/docs/config.md
-+++ b/docs/config.md
+diff -ruN -x .git a/docs/config.md b/docs/config.md
+--- a/docs/config.md	2026-10-24 12:19:46.299891986 +0000
++++ b/docs/config.md	2026-10-24 12:21:16.942236719 +0000
 @@ -47,6 +47,7 @@
  - `serverPlugins.safeStart`: persistent offline recovery state applied before server-plugin discovery/import on the next sessiond start; use the `pi-web plugins safe-start ...` CLI rather than hand-editing it.
  - Pi package install/remove/update: not a PI WEB config key; after a mutation, type `/reload` in each idle PI WEB session on the target machine to refresh ordinary Pi resources such as extensions, skills, prompt templates, themes, and context/system prompt files. For a PI WEB package with `serverModule`, manually restart `pi-web-sessiond.service`, then reload the browser. If a global Pi extension adds or removes a model provider, or changes a provider's connection settings, the same manual sessiond restart is required; `/reload` cannot change either startup snapshot. A known Pi model provider refreshing only its own model list is applied without a restart. See [Pi extension provider baseline](#pi-extension-provider-baseline).
- - `shortcuts`: saved settings apply in the browser after config refresh/save.
+ - `shortcuts` / `defaultStreamingBehavior`: saved settings apply in the browser after config refresh/save; no service restart.
 +- `ui.disclosure`: applies in the browser after settings save/config refresh; no service restart required.
  
- ## Global config example
+ ### Streaming send default
  
-@@ -76,6 +77,17 @@
+@@ -83,6 +84,17 @@
    "shortcuts": {
      "core:view.chat": "mod+1",
      "core:session.stop": null
@@ -26,17 +27,17 @@
    }
  }
  ```
-@@ -170,6 +182,7 @@
- | PI WEB plugin desired enablement/settings | `plugins.<id>.enabled`, `plugins.<id>.settings` | — | Global + sessiond startup snapshot for server entries | Not core local config; plugins may read their own project files | Browser-only: reload tab. Server-backed: manually restart sessiond, then reload tab |
+@@ -178,6 +190,7 @@
  | Server-plugin safe start | `serverPlugins.safeStart` | — | Global/offline recovery | Not supported locally; manage with `pi-web plugins safe-start ...` | Applied before discovery/import on next sessiond start |
+ | Streaming send default | `defaultStreamingBehavior` | — | Global gateway | Not supported locally | Applies after settings save/config refresh; defaults to `steer` |
  | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
 +| Chat card disclosure | `ui.disclosure.<part>` | — | Global | Not supported locally | Applies after settings save/config refresh |
  | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
  | **Runtime-only environment variables** |  |  |  |  |  |
  | Global config file path | — | `PI_WEB_CONFIG` (`XDG_CONFIG_HOME` affects the default path) | Process/env | Selects the global config file; not a project config | Restart services/processes after changing env |
-@@ -457,6 +470,41 @@
+@@ -474,6 +487,41 @@
  
- Prefer Settings → Keyboard for editing shortcuts interactively.
+ Existing browser-local Enter preferences remain the fallback until the corresponding composer binding is configured. Reset removes the override and returns to that fallback. New bindings are saved in the gateway config, like other shortcuts; the old preference is not copied into shared configuration. Automatic touch-keyboard capitalization is ignored when interpreting Shift+Enter.
  
 +### Chat card disclosure config
 +
@@ -76,23 +77,24 @@
  ## Prompt completions
  
  The chat composer opens completion menus on three trigger characters:
---- a/src/client/src/api/parsers.ts
-+++ b/src/client/src/api/parsers.ts
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-10-24 12:19:46.299891986 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-24 12:21:16.946236084 +0000
 @@ -1,4 +1,4 @@
 -import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
 +import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
  import { parseMachineStatusSnapshot, type MachineStatusSnapshot, type MachineStatusUiEvent } from "../../../shared/machineStatus";
  import type { JsonValue, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageMutationAction, PiPackageMutationResponse, PiPackageScope, PiPackagesResponse, SessionActivity, SessionStartupProgressEvent, SessionTreeForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier } from "../../../shared/apiTypes";
  
-@@ -1500,6 +1500,7 @@
-     ...optionalField("port", optionalNumber(record, "port")),
+@@ -1502,6 +1502,7 @@
      ...optionalField("allowedHosts", optionalAllowedHosts(record["allowedHosts"])),
      ...optionalField("shortcuts", optionalShortcuts(record["shortcuts"])),
+     ...optionalField("defaultStreamingBehavior", record["defaultStreamingBehavior"] === undefined ? undefined : requireDefaultStreamingBehavior(record["defaultStreamingBehavior"], "response")),
 +    ...optionalField("ui", optionalUi(record["ui"])),
      ...optionalField("plugins", optionalPlugins(record["plugins"])),
      ...optionalField("pathAccess", optionalPathAccess(record["pathAccess"])),
      ...optionalField("uploads", optionalUploads(record["uploads"])),
-@@ -1576,6 +1577,54 @@
+@@ -1578,6 +1579,54 @@
    }));
  }
  
@@ -147,8 +149,9 @@
  function optionalPlugins(value: unknown): PiWebPluginConfigMap | undefined {
    if (value === undefined) return undefined;
    if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEB plugins field");
---- a/src/client/src/api.ts
-+++ b/src/client/src/api.ts
+diff -ruN -x .git a/src/client/src/api.ts b/src/client/src/api.ts
+--- a/src/client/src/api.ts	2026-10-24 12:19:45.999967610 +0000
++++ b/src/client/src/api.ts	2026-10-24 12:19:46.311888961 +0000
 @@ -5,5 +5,5 @@
  export { DEFAULT_WORKSPACE_ATTACHMENTS_FOLDER, effectiveWorkspaceAttachmentsFolder, workspaceEffectiveAttachmentsFolder } from "./api/workspaceAttachments";
  export type { WorkspaceAttachmentsFolderConfig } from "./api/workspaceAttachments";
@@ -156,8 +159,9 @@
 -export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDockerMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
 +export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
  
---- a/src/client/src/chatDisclosureModes.ts
-+++ b/src/client/src/chatDisclosureModes.ts
+diff -ruN -x .git a/src/client/src/chatDisclosureModes.ts b/src/client/src/chatDisclosureModes.ts
+--- a/src/client/src/chatDisclosureModes.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/chatDisclosureModes.ts	2026-10-24 12:19:46.311888961 +0000
 @@ -0,0 +1,147 @@
 +import type { PiWebDisclosureConfig, PiWebDisclosureMode, PiWebGroupDisclosureMode } from "./api";
 +import type { ChatGroup } from "./chatGroups";
@@ -306,8 +310,9 @@
 +  if (options.mode === "last") return options.isLastGroup;
 +  return options.isLastGroup && options.isSessionLive;
 +}
---- a/src/client/src/components/ChatView.ts
-+++ b/src/client/src/components/ChatView.ts
+diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
+--- a/src/client/src/components/ChatView.ts	2026-10-24 12:19:46.007965598 +0000
++++ b/src/client/src/components/ChatView.ts	2026-10-24 12:19:46.311888961 +0000
 @@ -2,12 +2,13 @@
  import { customElement, property, query, state } from "lit/decorators.js";
  import { repeat } from "lit/directives/repeat.js";
@@ -505,8 +510,9 @@
    }
  
    private messageAnchorKey(index: number): string {
---- a/src/client/src/components/PiWebApp.ts
-+++ b/src/client/src/components/PiWebApp.ts
+diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
+--- a/src/client/src/components/PiWebApp.ts	2026-10-24 12:19:46.299891986 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-10-24 12:21:16.946236084 +0000
 @@ -1,6 +1,6 @@
  import { LitElement, html, type TemplateResult } from "lit";
  import { customElement, query, state } from "lit/decorators.js";
@@ -515,23 +521,23 @@
  import type { AppAction } from "../actions";
  import { initialAppState, type AppState, type ModelDialogOrigin } from "../appState";
  import { browserErrorContext, browserErrorScopeKey, BrowserErrorReporter, clearBrowserError, machineBrowserErrorScope, visibleBrowserErrors, workspaceBrowserErrorScope, type BrowserError, type BrowserErrorScope } from "../browserErrors";
-@@ -255,6 +255,7 @@
-   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
+@@ -256,6 +256,7 @@
    @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
    @state() private shortcutConfig: PiWebShortcutConfig = {};
+   @state() private defaultStreamingBehavior: "steer" | "followUp" = "steer";
 +  @state() private uiDisclosure: PiWebDisclosureConfig = {};
    @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
    @state() private workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(undefined);
    private sessionWarningVisibility = initialSessionWarningVisibilityState();
-@@ -514,6 +515,7 @@
- 
+@@ -529,6 +530,7 @@
    private applyClientConfig(config: PiWebConfigValues): void {
      this.shortcutConfig = config.shortcuts ?? {};
+     this.defaultStreamingBehavior = config.defaultStreamingBehavior ?? "steer";
 +    this.uiDisclosure = config.ui?.disclosure ?? {};
      this.workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(config);
      this.workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(config);
    }
-@@ -2239,7 +2241,7 @@
+@@ -2254,7 +2256,7 @@
  
    private renderChatView(state: AppState, session: SessionInfo) {
      return html`
@@ -540,8 +546,9 @@
      `;
    }
  
---- a/src/client/src/components/ToolExecutionView.ts
-+++ b/src/client/src/components/ToolExecutionView.ts
+diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/src/components/ToolExecutionView.ts
+--- a/src/client/src/components/ToolExecutionView.ts	2026-10-24 12:19:46.015963581 +0000
++++ b/src/client/src/components/ToolExecutionView.ts	2026-10-24 12:19:46.311888961 +0000
 @@ -13,9 +13,13 @@
  @customElement("tool-execution-view")
  export class ToolExecutionView extends LitElement {
@@ -640,8 +647,39 @@
      .detail-result pre { box-sizing: border-box; max-width: 100%; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: thin; border: 1px solid var(--pi-border-muted); border-radius: 7px; background: var(--pi-bg); padding: 8px; white-space: pre; overflow-wrap: normal; direction: ltr; text-align: left; unicode-bidi: isolate; }
      .detail-target-value { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--pi-accent); font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; direction: ltr; text-align: left; unicode-bidi: isolate; }
      .diff-details { min-width: 0; max-width: 100%; border-top: 1px solid var(--pi-border-muted); padding-top: 6px; }
---- a/src/config.ts
-+++ b/src/config.ts
+diff -ruN -x .git a/src/client/src/components/settings/settingsConfigDraft.test.ts b/src/client/src/components/settings/settingsConfigDraft.test.ts
+--- a/src/client/src/components/settings/settingsConfigDraft.test.ts	2026-10-24 12:19:46.019962573 +0000
++++ b/src/client/src/components/settings/settingsConfigDraft.test.ts	2026-10-24 12:19:46.315887953 +0000
+@@ -39,6 +39,7 @@
+       allowedHostsText: "ignored.local",
+     }, {
+       shortcuts: { "core:view.chat": "mod+1" },
++      ui: { disclosure: { thinking: "all", eventsGroup: "last" } },
+       plugins: { info: { enabled: false } },
+       pathAccess: { allowedPaths: ["/old"] },
+       uploads: { defaultFolder: "old/uploads" },
+@@ -52,6 +53,7 @@
+       port: 9000,
+       allowedHosts: true,
+       shortcuts: { "core:view.chat": "mod+1" },
++      ui: { disclosure: { thinking: "all", eventsGroup: "last" } },
+       plugins: { info: { enabled: false } },
+       pathAccess: { allowedPaths: ["/old"] },
+       uploads: { defaultFolder: "old/uploads" },
+diff -ruN -x .git a/src/client/src/components/settings/settingsConfigDraft.ts b/src/client/src/components/settings/settingsConfigDraft.ts
+--- a/src/client/src/components/settings/settingsConfigDraft.ts	2026-10-24 12:19:46.299891986 +0000
++++ b/src/client/src/components/settings/settingsConfigDraft.ts	2026-10-24 12:21:16.946236084 +0000
+@@ -67,6 +67,7 @@
+   return {
+     ...(baseConfig.shortcuts === undefined ? {} : { shortcuts: baseConfig.shortcuts }),
+     ...(baseConfig.defaultStreamingBehavior === undefined ? {} : { defaultStreamingBehavior: baseConfig.defaultStreamingBehavior }),
++    ...(baseConfig.ui === undefined ? {} : { ui: baseConfig.ui }),
+     ...(baseConfig.plugins === undefined ? {} : { plugins: baseConfig.plugins }),
+     ...(baseConfig.pathAccess === undefined ? {} : { pathAccess: baseConfig.pathAccess }),
+     ...(baseConfig.uploads === undefined ? {} : { uploads: baseConfig.uploads }),
+diff -ruN -x .git a/src/config.ts b/src/config.ts
+--- a/src/config.ts	2026-10-24 12:19:46.299891986 +0000
++++ b/src/config.ts	2026-10-24 12:21:16.946236084 +0000
 @@ -1,7 +1,7 @@
  import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
  import { homedir } from "node:os";
@@ -649,33 +687,33 @@
 -import type { PiWebConfigValues, PiWebDeprecatedAgentInput } from "./shared/apiTypes.js";
 +import type { PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebGroupDisclosureMode, PiWebUiConfig } from "./shared/apiTypes.js";
  import { isPiWebPluginId, piWebPluginIdPattern } from "./shared/pluginIds.js";
+ import { requireDefaultStreamingBehavior } from "./shared/streamingBehavior.js";
  
- export type PiWebConfig = PiWebConfigValues;
-@@ -223,6 +223,7 @@
-   delete existing["port"];
+@@ -225,6 +225,7 @@
    delete existing["allowedHosts"];
    delete existing["shortcuts"];
+   delete existing["defaultStreamingBehavior"];
 +  delete existing["ui"];
    delete existing["plugins"];
    delete existing["pathAccess"];
    delete existing["uploads"];
-@@ -253,6 +254,7 @@
-     ...(config.port !== undefined ? { port: config.port } : {}),
+@@ -256,6 +257,7 @@
      ...(config.allowedHosts !== undefined ? { allowedHosts: config.allowedHosts } : {}),
      ...(config.shortcuts !== undefined ? { shortcuts: config.shortcuts } : {}),
+     ...(config.defaultStreamingBehavior !== undefined ? { defaultStreamingBehavior: config.defaultStreamingBehavior } : {}),
 +    ...(config.ui !== undefined ? { ui: config.ui } : {}),
      ...(config.plugins !== undefined ? { plugins: config.plugins } : {}),
      ...(config.pathAccess !== undefined ? { pathAccess: config.pathAccess } : {}),
      ...(config.uploads !== undefined ? { uploads: config.uploads } : {}),
-@@ -272,6 +274,7 @@
-     ...(value["port"] !== undefined ? { port: parsePort(value["port"], "port", path) } : {}),
+@@ -276,6 +278,7 @@
      ...(value["allowedHosts"] !== undefined ? { allowedHosts: parseAllowedHosts(value["allowedHosts"], path) } : {}),
      ...(value["shortcuts"] !== undefined ? { shortcuts: parseShortcuts(value["shortcuts"], path) } : {}),
+     ...(value["defaultStreamingBehavior"] !== undefined ? { defaultStreamingBehavior: requireDefaultStreamingBehavior(value["defaultStreamingBehavior"], path) } : {}),
 +    ...(value["ui"] !== undefined ? { ui: parseUiConfig(value["ui"], path) } : {}),
      ...(value["plugins"] !== undefined ? { plugins: parsePlugins(value["plugins"], path) } : {}),
      ...(value["pathAccess"] !== undefined ? { pathAccess: parsePathAccessConfig(value["pathAccess"], path) } : {}),
      ...(value["uploads"] !== undefined ? { uploads: parseUploadsConfig(value["uploads"], path) } : {}),
-@@ -561,6 +564,58 @@
+@@ -565,6 +568,58 @@
    }));
  }
  
@@ -734,17 +772,18 @@
  function parsePlugins(value: unknown, path: string): NonNullable<PiWebConfigValues["plugins"]> {
    if (!isRecord(value) || Array.isArray(value)) throw new Error(`PI WEB config plugins must be an object: ${path}`);
    return Object.fromEntries(Object.entries(value).map(([pluginId, config]) => {
---- a/src/server/configRoutes.ts
-+++ b/src/server/configRoutes.ts
+diff -ruN -x .git a/src/server/configRoutes.ts b/src/server/configRoutes.ts
+--- a/src/server/configRoutes.ts	2026-10-24 12:19:46.299891986 +0000
++++ b/src/server/configRoutes.ts	2026-10-24 12:21:16.946236084 +0000
 @@ -1,6 +1,6 @@
  import type { FastifyInstance } from "fastify";
  import { loadPiWebConfig, parseAgentConfig, parseAttachmentsConfig, parseUploadsConfig, resolveEffectivePiWebConfig, savePiWebConfig, type AgentPathHost, type LoadOptions, type PiWebConfig } from "../config.js";
 -import type { PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues } from "../shared/apiTypes.js";
 +import type { PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebGroupDisclosureMode, PiWebUiConfig } from "../shared/apiTypes.js";
+ import { requireDefaultStreamingBehavior } from "../shared/streamingBehavior.js";
  import { isPiWebPluginId } from "../shared/pluginIds.js";
  
- export interface PiWebConfigService {
-@@ -127,6 +127,7 @@
+@@ -128,6 +128,7 @@
    const port = value["port"];
    const allowedHosts = value["allowedHosts"];
    const shortcuts = value["shortcuts"];
@@ -752,15 +791,15 @@
    const plugins = value["plugins"];
    const pathAccess = value["pathAccess"];
    const uploads = value["uploads"];
-@@ -146,6 +147,7 @@
-   }
+@@ -148,6 +149,7 @@
    if (allowedHosts !== undefined) config.allowedHosts = parseAllowedHostsRequest(allowedHosts);
    if (shortcuts !== undefined) config.shortcuts = parseShortcutsRequest(shortcuts);
+   if (value["defaultStreamingBehavior"] !== undefined) config.defaultStreamingBehavior = requireDefaultStreamingBehavior(value["defaultStreamingBehavior"], "request");
 +  if (ui !== undefined) config.ui = parseUiRequest(ui);
    if (plugins !== undefined) config.plugins = parsePluginsRequest(plugins);
    if (pathAccess !== undefined) config.pathAccess = parsePathAccessRequest(pathAccess);
    if (uploads !== undefined) config.uploads = parseUploadsConfig(uploads, "request");
-@@ -203,6 +205,58 @@
+@@ -205,6 +207,58 @@
    }));
  }
  
@@ -819,8 +858,9 @@
  function parsePathAccessRequest(value: unknown): NonNullable<PiWebConfig["pathAccess"]> {
    if (!isRecord(value)) throw new Error("PI WEB config pathAccess must be an object");
    const allowedPaths = value["allowedPaths"];
---- a/src/shared/apiTypes.ts
-+++ b/src/shared/apiTypes.ts
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-24 12:19:46.299891986 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 12:19:46.315887953 +0000
 @@ -120,6 +120,24 @@
  }
  
@@ -846,7 +886,7 @@
  export type PiWebPluginSettings = Record<string, unknown>;
  export type PiWebPluginConfigMap = Record<string, PiWebPluginConfig>;
  
-@@ -169,6 +187,8 @@
+@@ -171,6 +189,8 @@
    port?: number;
    allowedHosts?: string[] | true;
    shortcuts?: PiWebShortcutConfig;
@@ -855,31 +895,3 @@
    plugins?: PiWebPluginConfigMap;
    /** External filesystem roots PI WEB may expose outside a workspace. */
    pathAccess?: PiWebPathAccessConfig;
---- a/src/client/src/components/settings/settingsConfigDraft.ts
-+++ b/src/client/src/components/settings/settingsConfigDraft.ts
-@@ -66,6 +66,7 @@
- function preservedGatewayConfigRemainder(baseConfig: PiWebConfigValues): PiWebConfigValues {
-   return {
-     ...(baseConfig.shortcuts === undefined ? {} : { shortcuts: baseConfig.shortcuts }),
-+    ...(baseConfig.ui === undefined ? {} : { ui: baseConfig.ui }),
-     ...(baseConfig.plugins === undefined ? {} : { plugins: baseConfig.plugins }),
-     ...(baseConfig.pathAccess === undefined ? {} : { pathAccess: baseConfig.pathAccess }),
-     ...(baseConfig.uploads === undefined ? {} : { uploads: baseConfig.uploads }),
---- a/src/client/src/components/settings/settingsConfigDraft.test.ts
-+++ b/src/client/src/components/settings/settingsConfigDraft.test.ts
-@@ -39,6 +39,7 @@
-       allowedHostsText: "ignored.local",
-     }, {
-       shortcuts: { "core:view.chat": "mod+1" },
-+      ui: { disclosure: { thinking: "all", eventsGroup: "last" } },
-       plugins: { info: { enabled: false } },
-       pathAccess: { allowedPaths: ["/old"] },
-       uploads: { defaultFolder: "old/uploads" },
-@@ -52,6 +53,7 @@
-       port: 9000,
-       allowedHosts: true,
-       shortcuts: { "core:view.chat": "mod+1" },
-+      ui: { disclosure: { thinking: "all", eventsGroup: "last" } },
-       plugins: { info: { enabled: false } },
-       pathAccess: { allowedPaths: ["/old"] },
-       uploads: { defaultFolder: "old/uploads" },

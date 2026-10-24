@@ -1,87 +1,74 @@
-diff -ruN a/docs/config.md b/docs/config.md
---- a/docs/config.md	2026-10-23 19:52:18.543418207 +0000
-+++ b/docs/config.md	2026-10-23 19:52:18.743418798 +0000
-@@ -457,17 +457,20 @@
+diff -ruN -x .git a/docs/config.html b/docs/config.html
+--- a/docs/config.html	2026-10-24 13:33:44.098966398 +0000
++++ b/docs/config.html	2026-10-24 13:33:49.578917508 +0000
+@@ -1110,8 +1110,9 @@
+                 <code>mod</code> accepts Ctrl or ⌘; browsers and operating systems may reserve some combinations.
+               </p>
+               <p>
+-                App shortcuts support single keys and sequences. Unmodified and Shift-only shortcuts do not start in
+-                inputs, textareas, selects, or contenteditable editors. Sequences expire after 1.2 seconds; Escape or a
++                App shortcuts support single keys and sequences. Unmodified and Shift-only shortcuts do not start inside
++                inputs, textareas, selects, or contenteditable editors, except function keys <code>f1</code>-<code>f24</code>,
++                which work there too. Sequences expire after 1.2 seconds; Escape or a
+                 focus change cancels them. Custom bindings win over defaults, ties resolve by action id, and shorter
+                 bindings shadow longer sequences with the same prefix.
+               </p>
+diff -ruN -x .git a/docs/config.md b/docs/config.md
+--- a/docs/config.md	2026-10-24 13:33:44.106966327 +0000
++++ b/docs/config.md	2026-10-24 13:33:49.578917508 +0000
+@@ -465,7 +465,7 @@
  
  ### Shortcut config
  
--Shortcut values are keyed by action id. Values are shortcut strings such as `mod+k` or `mod+g p`; `null` disables that action's shortcut.
-+Shortcut values are keyed by action id. Values are shortcut strings such as `mod+k`, `mod+g p`, or a lone function key `f1`-`f24`; `null` disables that action's shortcut.
+-Shortcut values are keyed by action id. Values are shortcut strings such as `mod+k`, `g p`, or `shift+enter`; `null` disables that action's shortcut.
++Shortcut values are keyed by action id. Values are shortcut strings such as `mod+k`, `g p`, `f1`, or `shift+enter`; `null` disables that action's shortcut.
  
  ```json
  {
-   "shortcuts": {
+@@ -473,15 +473,18 @@
      "core:view.chat": "mod+1",
--    "core:session.stop": null
-+    "core:session.stop": null,
-+    "core:actions.show": "f1"
+     "core:session.stop": null,
+     "app.navigation.focus-projects": "g p",
++    "core:actions.show": "f1",
+     "composer.send.desktop": "mod+enter",
+     "composer.send.mobile": "shift+enter"
    }
  }
  ```
  
 +Assigning a function key suppresses the browser's own reaction to that key, but only once the shortcut is recognized: it stays inert while a modal dialog is open, and while another shortcut with the same key wins a conflict.
 +
- Prefer Settings → Keyboard for editing shortcuts interactively.
+ Prefer Settings → Keyboard for editing, recording, disabling, or resetting shortcuts. `mod` accepts Ctrl or ⌘. Browsers and operating systems may reserve some combinations.
  
- ### Chat card disclosure config
-diff -ruN a/src/client/src/components/settings/SettingsShortcutsPanel.ts b/src/client/src/components/settings/SettingsShortcutsPanel.ts
---- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-23 19:52:18.535418184 +0000
-+++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-23 19:52:18.743418798 +0000
-@@ -2,7 +2,7 @@
- import { customElement, property, state } from "lit/decorators.js";
- import type { AppAction } from "../../actions";
- import type { PiWebConfigResponse, PiWebConfigValues, PiWebShortcutConfig } from "../../api";
--import { formatShortcut, isShortcutSequenceStarter, parseShortcutInput, resolveShortcutBindings, shortcutPreferenceForAction, shortcutSequenceTimeoutMs, shortcutTokenFromEvent, type ShortcutBindingResolution } from "../../keyboardShortcuts";
-+import { formatShortcut, isShortcutActivatorToken, parseShortcutInput, resolveShortcutBindings, shortcutPreferenceForAction, shortcutSequenceTimeoutMs, shortcutTokenFromEvent, type ShortcutBindingResolution } from "../../keyboardShortcuts";
- import { readPromptEnterPreference, writePromptEnterPreference, type PromptEnterPreference } from "../../promptEnterBehavior";
- import "./SettingsPanelFrame";
- import type { SettingsNotice } from "./SettingsPanelFrame";
-@@ -33,7 +33,7 @@
- ];
+-App shortcuts can be single keys or sequences. Unmodified and Shift-only shortcuts do not start inside inputs, textareas, selects, or contenteditable editors. Sequences expire after 1.2 seconds; Escape or a focus change cancels them. Custom bindings win over defaults; ties resolve by action id. A shorter binding shadows sequences with that prefix (for example, `g` shadows `g p`).
++App shortcuts can be single keys or sequences. Unmodified and Shift-only shortcuts do not start inside inputs, textareas, selects, or contenteditable editors, except function keys `f1`-`f24`, which work there too. Sequences expire after 1.2 seconds; Escape or a focus change cancels them. Custom bindings win over defaults; ties resolve by action id. A shorter binding shadows sequences with that prefix (for example, `g` shadows `g p`).
+ 
+ The two **Chat composer** send bindings accept one key combination each, not sequences. **Send message — desktop** defaults to Enter; **Send message — touch or narrow screen** defaults to Shift+Enter. The latter applies when the browser reports a coarse primary pointer (typically touch) or a viewport at most 760px wide; otherwise, desktop applies. Its config key remains `composer.send.mobile`. Enter and Shift+Enter insert newlines when not assigned to send. Composer send bindings take priority over app shortcuts only inside the message editor, even when the draft is empty or sending is unavailable. Plain Enter accepts a selected completion first. `null` disables keyboard submission for that context; the send button remains available.
+ 
+diff -ruN -x .git a/src/client/src/components/settings/SettingsShortcutsPanel.ts b/src/client/src/components/settings/SettingsShortcutsPanel.ts
+--- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-24 13:33:44.098966398 +0000
++++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-24 13:33:49.578917508 +0000
+@@ -10,7 +10,7 @@
+ const RECORD_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
  
  function renderShortcutsDescription(): TemplateResult {
--  return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code> or <code>mod+g p</code>, record one from the keyboard, disable it with None, or reset it to the default. When shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
-+  return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code>, <code>mod+g p</code>, or a single function key such as <code>f1</code>, record one from the keyboard, disable it with None, or reset it to the default. When shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
+-  return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code> or <code>g p</code>, record one from the keyboard, disable it with None, or reset it to the default. Unmodified app shortcuts work outside editable fields. Composer send bindings accept one key combination and take priority inside the editor; unassigned Enter and Shift+Enter insert newlines. Touch or narrow screen applies when the browser reports a coarse primary pointer (typically touch) or a viewport at most 760px wide; otherwise, desktop applies. When app shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
++  return html`Edit app shortcuts by action. Type a shortcut such as <code>mod+k</code>, <code>g p</code>, or <code>f1</code>, record one from the keyboard, disable it with None, or reset it to the default. Unmodified app shortcuts work outside editable fields, except function keys F1-F24, which work everywhere. Composer send bindings accept one key combination and take priority inside the editor; unassigned Enter and Shift+Enter insert newlines. Touch or narrow screen applies when the browser reports a coarse primary pointer (typically touch) or a viewport at most 760px wide; otherwise, desktop applies. When app shortcuts conflict, custom shortcuts win before defaults; ties are resolved by action id, and shorter shortcuts shadow longer sequences with the same prefix.`;
  }
  
  @customElement("settings-shortcuts-panel")
-@@ -69,8 +69,8 @@
-       this.localError = "Press a letter, number, punctuation, function, or navigation key. Press Esc to cancel recording.";
-       return;
-     }
--    if (recording.tokens.length === 0 && !isShortcutSequenceStarter(token)) {
--      this.localError = "Start shortcuts with Ctrl/⌘ or Alt so normal typing is not captured.";
-+    if (recording.tokens.length === 0 && !isShortcutActivatorToken(token)) {
-+      this.localError = "Start shortcuts with Ctrl/⌘, Alt, or a function key (F1-F24) so normal typing is not captured.";
-       return;
-     }
- 
-@@ -231,7 +231,7 @@
+@@ -185,7 +185,7 @@
    private recordingHint(actionId: string): string {
      const recording = this.recording;
      if (recording?.actionId !== actionId) return "";
 -    if (recording.tokens.length === 0) return "Recording: press Ctrl/⌘ or Alt with a key. Press Esc to cancel.";
-+    if (recording.tokens.length === 0) return "Recording: press Ctrl/⌘ or Alt with a key, or a function key alone. Press Esc to cancel.";
++    if (recording.tokens.length === 0) return "Recording: press a key or a key combination. Press Esc to cancel.";
      return `Recording: ${formatShortcut(recording.tokens.join(" "))}. Press another key to add a sequence, or wait to finish.`;
    }
  
-diff -ruN a/src/client/src/keyboardShortcuts.test.ts b/src/client/src/keyboardShortcuts.test.ts
---- a/src/client/src/keyboardShortcuts.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/keyboardShortcuts.test.ts	2026-10-23 19:52:18.747418811 +0000
-@@ -197,8 +197,8 @@
-   });
- 
-   it("rejects shortcuts that would capture normal typing", () => {
--    expect(parseShortcutInput("r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." });
--    expect(parseShortcutInput("shift+r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." });
-+    expect(parseShortcutInput("r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘, Alt, or a function key (F1-F24) so normal typing is not captured." });
-+    expect(parseShortcutInput("shift+r")).toEqual({ ok: false, message: "Shortcuts must start with Ctrl/⌘, Alt, or a function key (F1-F24) so normal typing is not captured." });
-   });
- 
-   it("builds canonical tokens from recorded key events", () => {
-diff -ruN a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcuts.ts
---- a/src/client/src/keyboardShortcuts.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/keyboardShortcuts.ts	2026-10-23 19:52:18.743418798 +0000
+diff -ruN -x .git a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcuts.ts
+--- a/src/client/src/keyboardShortcuts.ts	2026-10-24 13:33:44.098966398 +0000
++++ b/src/client/src/keyboardShortcuts.ts	2026-10-24 13:34:02.982796203 +0000
 @@ -4,6 +4,7 @@
  
  const modifierOrder = ["mod", "alt", "shift"] as const;
@@ -90,53 +77,28 @@ diff -ruN a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcu
  
  export type ShortcutPreferenceConfig = Record<string, string | null>;
  export type ShortcutBindingSource = "default" | "custom";
-@@ -59,8 +60,8 @@
-       const handledPending = this.handleSequence([...this.pendingTokens, token], shortcuts);
-       if (handledPending) return true;
-       this.clearPending();
--      if (!isShortcutSequenceStarter(token)) return false;
--    } else if (!isShortcutSequenceStarter(token)) return false;
-+      if (!isShortcutActivatorToken(token)) return false;
-+    } else if (!isShortcutActivatorToken(token)) return false;
+@@ -64,7 +65,7 @@
+     const editable = isEditableShortcutEvent(event);
+     // Filter by the first chord so modified sequences can still finish with plain keys.
+     const shortcuts = resolveShortcutBindings(actions, options.shortcuts, { enabledOnly: true })
+-      .filter((binding) => binding.active && (!editable || isShortcutSequenceStarter(binding.tokens[0] ?? "")))
++      .filter((binding) => binding.active && (!editable || isShortcutActivatorToken(binding.tokens[0] ?? "")))
+       .map((binding) => ({ action: binding.action, tokens: binding.tokens }));
  
-     return this.handleSequence([token], shortcuts);
-   }
-@@ -180,6 +181,14 @@
+     if (this.pendingTokens.length > 0) {
+@@ -199,6 +200,11 @@
    return token.split("+").includes("mod") || token.split("+").includes("alt");
  }
  
 +/** Whether a token may start a shortcut binding: a modifier chord, or a lone function key `F1`-`F24`. */
 +export function isShortcutActivatorToken(token: string): boolean {
-+  if (isShortcutSequenceStarter(token)) return true;
-+  const parts = token.split("+");
-+  const key = parts[parts.length - 1];
-+  return key !== undefined && FUNCTION_KEY_PATTERN.test(key);
++  return isShortcutSequenceStarter(token) || FUNCTION_KEY_PATTERN.test(token);
 +}
 +
  function shortcutBindingForAction(action: AppAction, shortcuts: ShortcutPreferenceConfig | undefined, order: number): ShortcutBinding | undefined {
    const configured = shortcutPreferenceForAction(action, shortcuts);
    if (configured === null) return undefined;
-@@ -187,7 +196,7 @@
-   if (shortcut === undefined || shortcut === "") return undefined;
-   const tokens = normalizeShortcut(shortcut);
-   const firstToken = tokens[0];
--  if (firstToken === undefined || !isShortcutSequenceStarter(firstToken)) return undefined;
-+  if (firstToken === undefined || !isShortcutActivatorToken(firstToken)) return undefined;
-   return {
-     action,
-     shortcut: tokens.join(" "),
-@@ -251,8 +260,8 @@
-   for (const [index, chordInput] of chordInputs.entries()) {
-     const parsed = parseShortcutChord(chordInput);
-     if (!parsed.ok) return parsed;
--    if (index === 0 && options.requireFirstChordActivator && !isShortcutSequenceStarter(parsed.token)) {
--      return { ok: false, message: "Shortcuts must start with Ctrl/⌘ or Alt so normal typing is not captured." };
-+    if (index === 0 && options.requireFirstChordActivator && !isShortcutActivatorToken(parsed.token)) {
-+      return { ok: false, message: "Shortcuts must start with Ctrl/⌘, Alt, or a function key (F1-F24) so normal typing is not captured." };
-     }
-     tokens.push(parsed.token);
-   }
-@@ -314,7 +323,7 @@
+@@ -329,7 +335,7 @@
  function normalizeShortcutKeyName(key: string): string | undefined {
    const alias = keyAlias(key);
    if (alias !== undefined) return alias;
@@ -145,7 +107,7 @@ diff -ruN a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcu
    if (key.length === 1) return key;
    return undefined;
  }
-@@ -399,7 +408,7 @@
+@@ -414,7 +420,7 @@
    if (part === "home") return "Home";
    if (part === "end") return "End";
    if (part === "plus") return "+";
@@ -154,9 +116,9 @@ diff -ruN a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcu
    return part.length === 1 ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
  }
  
-diff -ruN a/src/server/dockerControlAssets.test.ts b/src/server/dockerControlAssets.test.ts
---- a/src/server/dockerControlAssets.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/dockerControlAssets.test.ts	2026-10-23 19:52:18.751418822 +0000
+diff -ruN -x .git a/src/server/dockerControlAssets.test.ts b/src/server/dockerControlAssets.test.ts
+--- a/src/server/dockerControlAssets.test.ts	2026-10-24 13:33:25.119373683 +0000
++++ b/src/server/dockerControlAssets.test.ts	2026-10-24 13:33:49.578917508 +0000
 @@ -34,6 +34,8 @@
    // The Docker control shell scripts intentionally support Linux and macOS hosts.
    // Keep Windows CI on static/syntax coverage instead of executing POSIX host-path and socket flows there.
