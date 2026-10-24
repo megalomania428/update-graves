@@ -1,22 +1,23 @@
---- a/docs/config.md
-+++ b/docs/config.md
+diff -ruN -x .git a/docs/config.md b/docs/config.md
+--- a/docs/config.md	2026-10-24 12:26:52.738376648 +0000
++++ b/docs/config.md	2026-10-24 12:26:52.854400747 +0000
 @@ -48,6 +48,7 @@
  - Pi package install/remove/update: not a PI WEB config key; after a mutation, type `/reload` in each idle PI WEB session on the target machine to refresh ordinary Pi resources such as extensions, skills, prompt templates, themes, and context/system prompt files. For a PI WEB package with `serverModule`, manually restart `pi-web-sessiond.service`, then reload the browser. If a global Pi extension adds or removes a model provider, or changes a provider's connection settings, the same manual sessiond restart is required; `/reload` cannot change either startup snapshot. A known Pi model provider refreshing only its own model list is applied without a restart. See [Pi extension provider baseline](#pi-extension-provider-baseline).
- - `shortcuts`: saved settings apply in the browser after config refresh/save.
+ - `shortcuts` / `defaultStreamingBehavior`: saved settings apply in the browser after config refresh/save; no service restart.
  - `ui.disclosure`: applies in the browser after settings save/config refresh; no service restart required.
 +- `ui.eventsGroupLimit`: applies in the browser after settings save/config refresh; no service restart required.
  
- ## Global config example
+ ### Streaming send default
  
-@@ -183,6 +184,7 @@
- | Server-plugin safe start | `serverPlugins.safeStart` | — | Global/offline recovery | Not supported locally; manage with `pi-web plugins safe-start ...` | Applied before discovery/import on next sessiond start |
+@@ -191,6 +192,7 @@
+ | Streaming send default | `defaultStreamingBehavior` | — | Global gateway | Not supported locally | Applies after settings save/config refresh; defaults to `steer` |
  | Keyboard shortcuts | `shortcuts.<actionId>` | — | Global | Not supported locally | Applies after settings save/config refresh |
  | Chat card disclosure | `ui.disclosure.<part>` | — | Global | Not supported locally | Applies after settings save/config refresh |
 +| Events group chunk limit | `ui.eventsGroupLimit` | — | Global | Not supported locally | Applies after settings save/config refresh |
  | Project config version | `version` | — | Project | Project-local only; must be `1` when present | Next project-config read |
  | **Runtime-only environment variables** |  |  |  |  |  |
  | Global config file path | — | `PI_WEB_CONFIG` (`XDG_CONFIG_HOME` affects the default path) | Process/env | Selects the global config file; not a project config | Restart services/processes after changing env |
-@@ -508,6 +510,8 @@
+@@ -525,6 +527,8 @@
  
  For `eventsGroup`, `last` and `live` target the last group of events in the loaded transcript, not the last entry of the transcript overall. The `live` class and `live events` label are shown only for the most recent group of an active session, independent of the chosen mode. Manual collapsing/expanding is remembered per group in any mode. Because this release also changes the storage key events groups use to persist their disclosure state, every previously saved group disclosure choice resets once after upgrading.
  
@@ -25,9 +26,10 @@
  ## Prompt completions
  
  The chat composer opens completion menus on three trigger characters:
---- a/src/client/src/api/parsers.ts
-+++ b/src/client/src/api/parsers.ts
-@@ -1600,14 +1600,21 @@
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-10-24 12:26:52.718372494 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-24 12:26:52.854400747 +0000
+@@ -1602,14 +1602,21 @@
    if (value === undefined) return undefined;
    if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEB ui field");
    for (const key of Object.keys(value)) {
@@ -50,8 +52,9 @@
  function optionalDisclosure(value: unknown): PiWebDisclosureConfig | undefined {
    if (value === undefined) return undefined;
    if (!isRecord(value) || Array.isArray(value)) throw new Error("Invalid PI WEB ui field");
---- a/src/client/src/chatGroups.test.ts
-+++ b/src/client/src/chatGroups.test.ts
+diff -ruN -x .git a/src/client/src/chatGroups.test.ts b/src/client/src/chatGroups.test.ts
+--- a/src/client/src/chatGroups.test.ts	2026-10-24 12:26:52.362298539 +0000
++++ b/src/client/src/chatGroups.test.ts	2026-10-24 12:26:52.854400747 +0000
 @@ -1,8 +1,9 @@
  import { describe, expect, it } from "vitest";
 -import { groupChatMessages, summarizeChatGroup } from "./chatGroups";
@@ -128,8 +131,9 @@
  describe("summarizeChatGroup", () => {
    it("summarizes special event groups", () => {
      expect(summarizeChatGroup([{ ...text("assistant", "a"), source: "compaction" }])).toBe("1 history compaction summary");
---- a/src/client/src/chatGroups.ts
-+++ b/src/client/src/chatGroups.ts
+diff -ruN -x .git a/src/client/src/chatGroups.ts b/src/client/src/chatGroups.ts
+--- a/src/client/src/chatGroups.ts	2026-10-24 12:26:52.362298539 +0000
++++ b/src/client/src/chatGroups.ts	2026-10-24 12:26:52.854400747 +0000
 @@ -1,23 +1,47 @@
  import type { ChatLine, ChatPart } from "./components/shared";
  
@@ -194,8 +198,9 @@
  function isToolImageMessage(message: ChatLine): boolean {
    return message.role === "tool" && message.parts.length > 0 && message.parts.every((part) => part.type === "image");
  }
---- a/src/client/src/components/ChatView.test.ts
-+++ b/src/client/src/components/ChatView.test.ts
+diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
+--- a/src/client/src/components/ChatView.test.ts	2026-10-24 12:26:52.770383296 +0000
++++ b/src/client/src/components/ChatView.test.ts	2026-10-24 12:26:52.854400747 +0000
 @@ -19,6 +19,7 @@
    chatQueuedSectionShowsClearAction,
    chatScrollButtonsState,
@@ -278,8 +283,9 @@
  describe("ChatView event-group disclosure wiring", () => {
    const messages: ChatLine[] = [
      { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
---- a/src/client/src/components/ChatView.ts
-+++ b/src/client/src/components/ChatView.ts
+diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
+--- a/src/client/src/components/ChatView.ts	2026-10-24 12:26:52.770383296 +0000
++++ b/src/client/src/components/ChatView.ts	2026-10-24 12:26:52.854400747 +0000
 @@ -3,7 +3,7 @@
  import { repeat } from "lit/directives/repeat.js";
  import { ChatDisclosureController } from "../chatDisclosure";
@@ -429,8 +435,9 @@
          </summary>
          ${open ? this.renderMessageGroupBody(messages, startIndex) : null}
        </details>
---- a/src/client/src/components/PiWebApp.ts
-+++ b/src/client/src/components/PiWebApp.ts
+diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
+--- a/src/client/src/components/PiWebApp.ts	2026-10-24 12:26:52.770383296 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-10-24 12:26:52.854400747 +0000
 @@ -4,6 +4,7 @@
  import type { AppAction } from "../actions";
  import { initialAppState, type AppState, type ModelDialogOrigin } from "../appState";
@@ -440,16 +447,16 @@
  import { workspaceDeleteOperation } from "../../../shared/workspaceDeletion";
  import { PI_WEB_CAPABILITIES, supportsPiWebCapability } from "../../../shared/capabilities";
 @@ -256,6 +257,7 @@
-   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
    @state() private shortcutConfig: PiWebShortcutConfig = {};
+   @state() private defaultStreamingBehavior: "steer" | "followUp" = "steer";
    @state() private uiDisclosure: PiWebDisclosureConfig = {};
 +  @state() private uiEventsGroupLimit: number | undefined;
    @state() private workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(undefined);
    @state() private workspaceAttachmentsDefaultFolder = effectiveWorkspaceAttachmentsFolder(undefined);
    private sessionWarningVisibility = initialSessionWarningVisibilityState();
-@@ -516,6 +518,7 @@
-   private applyClientConfig(config: PiWebConfigValues): void {
+@@ -530,6 +532,7 @@
      this.shortcutConfig = config.shortcuts ?? {};
+     this.defaultStreamingBehavior = config.defaultStreamingBehavior ?? "steer";
      this.uiDisclosure = config.ui?.disclosure ?? {};
 +    this.uiEventsGroupLimit = config.ui?.eventsGroupLimit;
      this.workspaceUploadDefaultFolder = effectiveWorkspaceUploadFolder(config);
@@ -464,9 +471,10 @@
      `;
    }
  
---- a/src/config.ts
-+++ b/src/config.ts
-@@ -586,14 +586,23 @@
+diff -ruN -x .git a/src/config.ts b/src/config.ts
+--- a/src/config.ts	2026-10-24 12:26:52.746378311 +0000
++++ b/src/config.ts	2026-10-24 12:26:52.854400747 +0000
+@@ -590,14 +590,23 @@
  function parseUiConfig(value: unknown, path: string): PiWebUiConfig {
    if (!isRecord(value)) throw new Error(`PI WEB config ui must be an object: ${path}`);
    for (const key of Object.keys(value)) {
@@ -491,9 +499,10 @@
  function parseDisclosureConfig(value: unknown, path: string): PiWebDisclosureConfig {
    if (!isRecord(value)) throw new Error(`PI WEB config ui.disclosure must be an object: ${path}`);
    const result: PiWebDisclosureConfig = {};
---- a/src/server/configRoutes.ts
-+++ b/src/server/configRoutes.ts
-@@ -227,14 +227,23 @@
+diff -ruN -x .git a/src/server/configRoutes.ts b/src/server/configRoutes.ts
+--- a/src/server/configRoutes.ts	2026-10-24 12:26:52.718372494 +0000
++++ b/src/server/configRoutes.ts	2026-10-24 12:26:52.854400747 +0000
+@@ -229,14 +229,23 @@
  function parseUiRequest(value: unknown): PiWebUiConfig {
    if (!isRecord(value)) throw new Error("PI WEB config ui must be an object");
    for (const key of Object.keys(value)) {
@@ -518,8 +527,9 @@
  function parseDisclosureRequest(value: unknown): PiWebDisclosureConfig {
    if (!isRecord(value)) throw new Error("PI WEB config ui.disclosure must be an object");
    const result: PiWebDisclosureConfig = {};
---- a/src/shared/apiTypes.ts
-+++ b/src/shared/apiTypes.ts
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-24 12:26:52.746378311 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 12:26:52.854400747 +0000
 @@ -136,6 +136,7 @@
  
  export interface PiWebUiConfig {

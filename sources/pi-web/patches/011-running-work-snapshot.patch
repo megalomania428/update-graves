@@ -1,6 +1,6 @@
-diff -ruN a/src/client/src/api/parsers.test.ts b/src/client/src/api/parsers.test.ts
---- a/src/client/src/api/parsers.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/api/parsers.test.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/api/parsers.test.ts b/src/client/src/api/parsers.test.ts
+--- a/src/client/src/api/parsers.test.ts	2026-10-24 12:27:38.624070282 +0000
++++ b/src/client/src/api/parsers.test.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -349,6 +349,21 @@
      expect(parseSessionStreamSnapshot({ seq: 3 })).toEqual({ seq: 3, partial: null });
    });
@@ -44,16 +44,16 @@ diff -ruN a/src/client/src/api/parsers.test.ts b/src/client/src/api/parsers.test
 +    { toolCallId: "A", toolName: "read", text: "done", end: { isError: "false" } },
 +  ] })).toThrow();
 +});
-diff -ruN a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
---- a/src/client/src/api/parsers.ts	2026-10-23 19:52:26.207440832 +0000
-+++ b/src/client/src/api/parsers.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-10-24 12:27:39.027956215 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -1,4 +1,4 @@
 -import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
 +import { PI_WEB_PLUGIN_LIFECYCLE_VERSION, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH, EXTENSION_DIALOG_ID_MAX_LENGTH, EXTENSION_DIALOG_INPUT_MAX_LENGTH, EXTENSION_DIALOG_OPTION_LIMIT, EXTENSION_DIALOG_TEXT_MAX_LENGTH, SESSION_NOTIFICATION_LIMIT, SESSION_NOTIFICATION_MESSAGE_BYTES, SESSION_UNREAD_CATALOG_ID_MAX_LENGTH, SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH, SESSION_UNREAD_CWD_MAX_LENGTH, SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type ArchiveSessionsResponse, type AskUserCloseReason, type AskUserCloseResponse, type AskUserOutcome, type AskUserQuestion, type AskUserQuestionOption, type AskUserQuestionRecord, type PendingAskUser, type PendingExtensionDialog, type AuthProviderOption, type AuthProviderStatus, type AuthProvidersResponse, type AuthStatusSource, type AuthType, type CommandOption, type CommandResult, type DeleteWorkspaceFileResponse, type ExtensionDialogAnswer, type ExtensionDialogCloseReason, type ExtensionDialogCloseResponse, type ExtensionDialogKind, type ExtensionDialogOutcome, type FileContentResponse, type FileSuggestion, type FileTreeEntry, type FileTreeResponse, type GlobalSessionEvent, type Machine, type MachineHealth, type MachineKind, type MachineRuntime, type MachineStatus, type MessagePage, type ModelSelectionResponse, type MoveWorkspaceFileResponse, type OAuthFlowState, type PiWebCapability, type PiWebComponentStatus, type PiWebConfigEnvOverrides, type PiWebConfigResponse, type PiWebConfigValues, type PiWebDeprecatedAgentInput, type PiWebDisclosureConfig, type PiWebDisclosureMode, type PiWebGroupDisclosureMode, type PiWebInstallationInfo, type PiWebPluginConfigMap, type PiWebPluginInfo, type PiWebPluginsResponse, type PiWebPluginScope, type PiWebReleaseStatus, type PiWebRuntimeComponent, type PiWebRuntimeResponse, type PiWebServiceComponent, type PiWebShortcutConfig, type PiWebStatusMessage, type PiWebStatusResponse, type PiWebStatusSeverity, type PiWebUiConfig, type Project, type QueuedSessionMessage, type SavedPromptAttachment, type SessionBulkArchiveResponse, type SessionBulkDeleteArchivedResponse, type SessionBulkFailure, type SessionCleanupExecuteResponse, type SessionCleanupPreviewResponse, type SessionCleanupProjectSummary, type SessionCleanupThresholds, type SessionCleanupTotals, type SessionInfo, type SessionModel, type SessionModelCatalogEntry, type SessionModelCatalogResponse, type SessionNotification, type SessionNotificationClearReason, type SessionNotificationDismissThrough, type SessionNotificationInboxDelta, type SessionNotificationInboxEvent, type SessionNotificationInboxSnapshot, type SessionNotificationSeverity, type SessionNotificationSummary, type ServerNotice, type ServerNoticeEvent, type ServerNoticeSeverity, type ServerNoticeSnapshot, type SessionRunningShell, type SessionRunningTool, type SessionStatus, type SessionStreamSnapshot, type SessionUiEvent, type SessionUnreadCatalogSnapshot, type SessionUnreadEvent, type SessionUnreadSummary, type SessionWarning, type SessionWarningSeverity, type SlashCommand, type TerminalCommandRun, type TerminalCommandRunStatus, type TerminalInfo, type TerminalUiEvent, type ThinkingLevelsResponse, type WriteWorkspaceFileResponse, type Workspace, type WorkspaceEffectiveConfig, type WorkspaceTrustResponse } from "../../../shared/apiTypes";
  import { parseMachineStatusSnapshot, type MachineStatusSnapshot, type MachineStatusUiEvent } from "../../../shared/machineStatus";
  import type { JsonValue, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageMutationAction, PiPackageMutationResponse, PiPackageScope, PiPackagesResponse, SessionActivity, SessionStartupProgressEvent, SessionTreeForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier } from "../../../shared/apiTypes";
  
-@@ -571,6 +571,45 @@
+@@ -572,6 +572,45 @@
    return {
      seq: requireNumber(record, "seq"),
      partial: record["partial"] ?? null,
@@ -99,9 +99,9 @@ diff -ruN a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
    };
  }
  
-diff -ruN a/src/client/src/api.ts b/src/client/src/api.ts
---- a/src/client/src/api.ts	2026-10-23 19:52:18.543418207 +0000
-+++ b/src/client/src/api.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/api.ts b/src/client/src/api.ts
+--- a/src/client/src/api.ts	2026-10-24 12:27:38.959975481 +0000
++++ b/src/client/src/api.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -5,5 +5,5 @@
  export { DEFAULT_WORKSPACE_ATTACHMENTS_FOLDER, effectiveWorkspaceAttachmentsFolder, workspaceEffectiveAttachmentsFolder } from "./api/workspaceAttachments";
  export type { WorkspaceAttachmentsFolderConfig } from "./api/workspaceAttachments";
@@ -109,9 +109,9 @@ diff -ruN a/src/client/src/api.ts b/src/client/src/api.ts
 -export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
 +export type { ArchiveSessionsResponse, AskUserCloseResponse, AskUserQuestion, AskUserSubmission, PendingAskUser, PendingExtensionDialog, AuthProviderOption, AuthProviderStatus, AuthProvidersResponse, AuthStatusSource, AuthType, CommandOption, CommandResult, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, ExtensionDialogCloseReason, ExtensionDialogCloseResponse, ExtensionDialogKind, ExtensionDialogOutcome, FileContentMediaType, FileContentResponse, FileSuggestion, FileTreeEntry, FileTreeResponse, JsonObject, JsonPrimitive, JsonValue, Machine, MachineHealth, MachineKind, MachineRuntime, MachineStatus, MessagePage, ModelSelectionResponse, MoveWorkspaceFileOptions, MoveWorkspaceFileResponse, OAuthFlowState, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageInstallRequest, PiPackageMutationAction, PiPackageMutationResponse, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiPackagesResponse, PiWebCapability, PiWebComponentStatus, PiWebConfigEnvOverrides, PiWebConfigResponse, PiWebConfigValues, PiWebDeprecatedAgentInput, PiWebDisclosureConfig, PiWebDisclosureMode, PiWebDockerMode, PiWebGroupDisclosureMode, PiWebInstallationInfo, PiWebInstallationKind, PiWebPluginConfig, PiWebPluginConfigMap, PiWebPluginInfo, PiWebPluginsResponse, PiWebPluginScope, PiWebPluginSettings, PiWebReleaseStatus, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebShortcutConfig, PiWebStatusMessage, PiWebStatusResponse, PiWebUiConfig, PiWebUploadsConfig, Project, PromptAttachment, QueuedSessionMessage, RealtimeEvent, RunTerminalCommandInput, SavedPromptAttachment, SessionActivity, SessionBulkArchiveResponse, SessionBulkDeleteArchivedResponse, SessionBulkFailure, SessionBulkMutationRef, SessionBulkMutationRequest, SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupRequest, SessionCleanupThresholds, SessionCleanupTotals, SessionInfo, SessionModel, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionModelScopeMode, ServerNotice, ServerNoticeDismissRequest, ServerNoticeEvent, ServerNoticeSeverity, ServerNoticeSnapshot, SessionRef, SessionRunningShell, SessionRunningTool, SessionStatus, SessionStreamSnapshot, SessionUnreadAcknowledgeRequest, SessionUnreadCatalogSnapshot, SessionUnreadEvent, SessionUnreadSummary, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, SessionTreeSummaryChoice, SessionWarning, SessionWarningSeverity, SlashCommand, SessionUiEvent, TerminalCommandRun, TerminalCommandRunFilter, TerminalCommandRunHandle, TerminalCommandRunStatus, TerminalInfo, TerminalUiEvent, ThinkingLevel, ThinkingLevelsResponse, WorkspaceProviderCapabilities, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderMetadata, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier, WorkspaceRemovalPresentation, WorkspaceRemovalRequest, WriteWorkspaceFileOptions, WriteWorkspaceFileResponse, Workspace, WorkspaceTrustResponse } from "../../shared/apiTypes";
  
-diff -ruN a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
---- a/src/client/src/chatTranscript.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/chatTranscript.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
+--- a/src/client/src/chatTranscript.ts	2026-10-24 12:27:38.628069154 +0000
++++ b/src/client/src/chatTranscript.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -1,3 +1,4 @@
 +import type { SessionStreamSnapshot } from "./api";
  import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
@@ -146,9 +146,9 @@ diff -ruN a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
  export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
    if (event.type === "message.append") return appendNewMessage(messages, event.message);
    if (event.type === "assistant.delta") return appendText(messages, "assistant", event.text);
-diff -ruN a/src/client/src/chatTranscriptStore.ts b/src/client/src/chatTranscriptStore.ts
---- a/src/client/src/chatTranscriptStore.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/chatTranscriptStore.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/chatTranscriptStore.ts b/src/client/src/chatTranscriptStore.ts
+--- a/src/client/src/chatTranscriptStore.ts	2026-10-24 12:27:38.628069154 +0000
++++ b/src/client/src/chatTranscriptStore.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -1,5 +1,6 @@
  import { normalizeMessages } from "./chatMessages";
 -import { applyTranscriptEvent, seedStreamingPartial } from "./chatTranscript";
@@ -169,9 +169,9 @@ diff -ruN a/src/client/src/chatTranscriptStore.ts b/src/client/src/chatTranscrip
    discard(sessionId: string): void {
      this.rawHistoryPages.delete(sessionId);
      this.cache.remove?.(sessionId);
-diff -ruN a/src/client/src/controllers/sessionController.cachedNew.test.ts b/src/client/src/controllers/sessionController.cachedNew.test.ts
---- a/src/client/src/controllers/sessionController.cachedNew.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/controllers/sessionController.cachedNew.test.ts	2026-10-23 19:52:26.323441174 +0000
+diff -ruN -x .git a/src/client/src/controllers/sessionController.cachedNew.test.ts b/src/client/src/controllers/sessionController.cachedNew.test.ts
+--- a/src/client/src/controllers/sessionController.cachedNew.test.ts	2026-10-24 12:27:38.644064640 +0000
++++ b/src/client/src/controllers/sessionController.cachedNew.test.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -96,6 +96,10 @@
          if (sessionLookupId(session) === oldSession.id) return Promise.reject(new Error("Session not found"));
          return Promise.resolve(emptyPage);
@@ -183,9 +183,9 @@ diff -ruN a/src/client/src/controllers/sessionController.cachedNew.test.ts b/src
        status: (session) => Promise.resolve(status(sessionLookupId(session))),
      };
      const controller = new SessionController(
-diff -ruN a/src/client/src/controllers/sessionController.pendingStarts.test.ts b/src/client/src/controllers/sessionController.pendingStarts.test.ts
---- a/src/client/src/controllers/sessionController.pendingStarts.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/controllers/sessionController.pendingStarts.test.ts	2026-10-23 19:52:26.327441186 +0000
+diff -ruN -x .git a/src/client/src/controllers/sessionController.pendingStarts.test.ts b/src/client/src/controllers/sessionController.pendingStarts.test.ts
+--- a/src/client/src/controllers/sessionController.pendingStarts.test.ts	2026-10-24 12:27:38.644064640 +0000
++++ b/src/client/src/controllers/sessionController.pendingStarts.test.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -19,6 +19,7 @@
        startSession: () => startRequest.promise,
        messages: (session) => { messageCalls.push(sessionLookupId(session)); return Promise.resolve(emptyPage); },
@@ -194,9 +194,9 @@ diff -ruN a/src/client/src/controllers/sessionController.pendingStarts.test.ts b
      };
      const controller = new SessionController(
        () => state,
-diff -ruN a/src/client/src/controllers/sessionController.refresh.test.ts b/src/client/src/controllers/sessionController.refresh.test.ts
---- a/src/client/src/controllers/sessionController.refresh.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/controllers/sessionController.refresh.test.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/controllers/sessionController.refresh.test.ts b/src/client/src/controllers/sessionController.refresh.test.ts
+--- a/src/client/src/controllers/sessionController.refresh.test.ts	2026-10-24 12:27:38.644064640 +0000
++++ b/src/client/src/controllers/sessionController.refresh.test.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -50,6 +50,7 @@
      const firstStatus = deferred<SessionStatus>();
      const trailingPage = deferred<MessagePage>();
@@ -330,9 +330,9 @@ diff -ruN a/src/client/src/controllers/sessionController.refresh.test.ts b/src/c
        thinkingLevels: () => Promise.resolve({ levels: [] }),
      };
      const controller = new SessionController(
-diff -ruN a/src/client/src/controllers/sessionController.streamSeed.test.ts b/src/client/src/controllers/sessionController.streamSeed.test.ts
---- a/src/client/src/controllers/sessionController.streamSeed.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/controllers/sessionController.streamSeed.test.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/controllers/sessionController.streamSeed.test.ts b/src/client/src/controllers/sessionController.streamSeed.test.ts
+--- a/src/client/src/controllers/sessionController.streamSeed.test.ts	2026-10-24 12:27:38.644064640 +0000
++++ b/src/client/src/controllers/sessionController.streamSeed.test.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -120,8 +120,9 @@
        }),
        status: () => Promise.resolve({ ...status(oldSession.id), isStreaming: true, isBashRunning: true }),
@@ -665,9 +665,9 @@ diff -ruN a/src/client/src/controllers/sessionController.streamSeed.test.ts b/sr
 +    }
 +  });
 +});
-diff -ruN a/src/client/src/controllers/sessionController.tree.test.ts b/src/client/src/controllers/sessionController.tree.test.ts
---- a/src/client/src/controllers/sessionController.tree.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/controllers/sessionController.tree.test.ts	2026-10-23 19:52:26.327441186 +0000
+diff -ruN -x .git a/src/client/src/controllers/sessionController.tree.test.ts b/src/client/src/controllers/sessionController.tree.test.ts
+--- a/src/client/src/controllers/sessionController.tree.test.ts	2026-10-24 12:27:38.644064640 +0000
++++ b/src/client/src/controllers/sessionController.tree.test.ts	2026-10-24 12:27:39.115931061 +0000
 @@ -123,7 +123,8 @@
      socket.emit({ type: "message.append", message: { role: "assistant", content: "stale live event" }, seq: 1 });
  
@@ -678,9 +678,9 @@ diff -ruN a/src/client/src/controllers/sessionController.tree.test.ts b/src/clie
      expect(messageCalls).toBe(2);
  
      const navigation = controller.navigateTree("root", { mode: "custom", instructions: "focus on the prompt" });
-diff -ruN a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
---- a/src/client/src/controllers/sessionController.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/controllers/sessionController.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
+--- a/src/client/src/controllers/sessionController.ts	2026-10-24 12:27:38.644064640 +0000
++++ b/src/client/src/controllers/sessionController.ts	2026-10-24 12:27:39.119929918 +0000
 @@ -123,6 +123,10 @@
    // in the committed history + seeded partial and must be dropped, so every event
    // applies exactly once. Reset whenever the selection changes.
@@ -819,9 +819,9 @@ diff -ruN a/src/client/src/controllers/sessionController.ts b/src/client/src/con
  }
  
  function omitSessionActivity(activities: Record<string, SessionActivity>, sessionId: string): Record<string, SessionActivity> {
-diff -ruN a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
---- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 12:27:38.668057869 +0000
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 12:27:39.119929918 +0000
 @@ -2,6 +2,7 @@
  import { tmpdir } from "node:os";
  import { join, resolve, sep } from "node:path";
@@ -1327,9 +1327,9 @@ diff -ruN a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/
 +    }
 +  });
  });
-diff -ruN a/src/server/sessions/piSessionService.testSupport.ts b/src/server/sessions/piSessionService.testSupport.ts
---- a/src/server/sessions/piSessionService.testSupport.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessions/piSessionService.testSupport.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/server/sessions/piSessionService.testSupport.ts b/src/server/sessions/piSessionService.testSupport.ts
+--- a/src/server/sessions/piSessionService.testSupport.ts	2026-10-24 12:27:38.668057869 +0000
++++ b/src/server/sessions/piSessionService.testSupport.ts	2026-10-24 12:27:39.119929918 +0000
 @@ -153,6 +153,7 @@
      isStreaming: false,
      isCompacting: false,
@@ -1338,9 +1338,9 @@ diff -ruN a/src/server/sessions/piSessionService.testSupport.ts b/src/server/ses
      pendingMessageCount: 0,
      sessionManager: fakeSessionManager(),
      settingsManager: { getWarnings: () => ({}), setWarnings: () => undefined, getEnabledModels: () => undefined, getProjectSettings: () => ({}), setEnabledModels: () => undefined },
-diff -ruN a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
---- a/src/server/sessions/piSessionService.ts	2026-10-23 19:52:21.927428195 +0000
-+++ b/src/server/sessions/piSessionService.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-10-24 12:27:38.995965323 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-10-24 12:27:39.119929918 +0000
 @@ -27,8 +27,8 @@
    type ProjectTrustEventResult,
    type ResourceDiagnostic,
@@ -1746,9 +1746,9 @@ diff -ruN a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSess
  function isRecord(value: unknown): value is Record<string, unknown> {
    return typeof value === "object" && value !== null;
  }
-diff -ruN a/src/server/types.ts b/src/server/types.ts
---- a/src/server/types.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/types.ts	2026-10-23 19:52:26.319441162 +0000
+diff -ruN -x .git a/src/server/types.ts b/src/server/types.ts
+--- a/src/server/types.ts	2026-10-24 12:27:38.676055611 +0000
++++ b/src/server/types.ts	2026-10-24 12:27:39.119929918 +0000
 @@ -13,6 +13,8 @@
    SessionCleanupExecuteResponse as ClientSessionCleanupExecuteResponse,
    MessagePage as ClientMessagePage,
@@ -1758,10 +1758,10 @@ diff -ruN a/src/server/types.ts b/src/server/types.ts
    SessionStatus as ClientSessionStatus,
    SessionModel as ClientSessionModel,
    SessionModelCatalogEntry as ClientSessionModelCatalogEntry,
-diff -ruN a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
---- a/src/shared/apiTypes.ts	2026-10-23 19:52:26.211440844 +0000
-+++ b/src/shared/apiTypes.ts	2026-10-23 19:52:26.319441162 +0000
-@@ -1330,6 +1330,37 @@
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-24 12:27:39.027956215 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 12:27:39.119929918 +0000
+@@ -1332,6 +1332,37 @@
    seq: number;
    /** Browser-projected in-flight `AssistantMessage`, or `null` when idle. */
    partial: unknown;

@@ -1,5 +1,91 @@
---- a/src/client/src/components/ChatView.ts
-+++ b/src/client/src/components/ChatView.ts
+diff -ruN -x .git a/src/client/src/appShell/navigationState.test.ts b/src/client/src/appShell/navigationState.test.ts
+--- a/src/client/src/appShell/navigationState.test.ts	2026-10-24 12:26:09.344638155 +0000
++++ b/src/client/src/appShell/navigationState.test.ts	2026-10-24 12:26:09.784518528 +0000
+@@ -4,14 +4,14 @@
+ describe("navigationState", () => {
+   it("defaults to the first incomplete selection section", () => {
+     expect(defaultNavigationSection({ selectedProject: undefined, selectedWorkspace: undefined })).toBe("projects");
+-    expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: undefined })).toBe("workspaces");
++    expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: undefined })).toBe("sessions");
+     expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: {} })).toBe("sessions");
+   });
+ 
+   it("expands the default section until the user explicitly toggles a section", () => {
+     const state = { selectedProject: {}, selectedWorkspace: undefined };
+ 
+-    expect(expandedNavigationSection(undefined, state)).toBe("workspaces");
++    expect(expandedNavigationSection(undefined, state)).toBe("sessions");
+     expect(expandedNavigationSection("sessions", state)).toBe("sessions");
+     expect(expandedNavigationSection("none", state)).toBeUndefined();
+   });
+@@ -36,7 +36,7 @@
+ 
+     expect(toggleNavigationSection(undefined, "projects", { isMobileLayout: true, state })).toBe("none");
+     expect(toggleNavigationSection("none", "projects", { isMobileLayout: true, state })).toBe("projects");
+-    expect(toggleNavigationSection("projects", "workspaces", { isMobileLayout: true, state })).toBe("workspaces");
++    expect(toggleNavigationSection("projects", "sessions", { isMobileLayout: true, state })).toBe("sessions");
+   });
+ 
+   it("does not mutate expanded section on desktop layouts", () => {
+diff -ruN -x .git a/src/client/src/appShell/navigationState.ts b/src/client/src/appShell/navigationState.ts
+--- a/src/client/src/appShell/navigationState.ts	2026-10-24 12:26:09.676547890 +0000
++++ b/src/client/src/appShell/navigationState.ts	2026-10-24 12:26:09.784518528 +0000
+@@ -1,7 +1,7 @@
+ import type { ReactiveController, ReactiveControllerHost } from "lit";
+ import { readStoredPanelCollapse, writeStoredPanelCollapse, type PanelCollapseStorage } from "./panelCollapseController";
+ 
+-export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "workspaces", "sessions"] as const;
++export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "sessions"] as const;
+ export type NavigationSection = (typeof NAVIGATION_SECTION_ORDER)[number];
+ export type ExpandedNavigationSection = NavigationSection | "none" | undefined;
+ 
+@@ -12,7 +12,6 @@
+ 
+ export function defaultNavigationSection(state: NavigationSelectionState): NavigationSection {
+   if (state.selectedProject === undefined) return "projects";
+-  if (state.selectedWorkspace === undefined) return "workspaces";
+   return "sessions";
+ }
+ 
+diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
+--- a/src/client/src/components/ChatView.test.ts	2026-10-24 12:26:09.348637067 +0000
++++ b/src/client/src/components/ChatView.test.ts	2026-10-24 12:26:09.780519615 +0000
+@@ -17,6 +17,7 @@
+   chatMessageMetadataLabel,
+   chatQueuedMessageSections,
+   chatQueuedSectionShowsClearAction,
++  chatScrollButtonsState,
+   chatSessionWarningRows,
+ } from "./ChatView";
+ import { templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
+@@ -286,6 +287,24 @@
+   });
+ });
+ 
++describe("chatScrollButtonsState", () => {
++  it("hides both buttons at the top of a session pinned to the bottom", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: true, atTop: true, atBottom: true })).toEqual({ up: false, down: false });
++  });
++
++  it("shows only the up button once scrolled away from the top while pinned to the bottom", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: true, atTop: false, atBottom: true })).toEqual({ up: true, down: false });
++  });
++
++  it("shows the down button once the user scrolls away from the bottom", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: false, atTop: false, atBottom: false })).toEqual({ up: true, down: true });
++  });
++
++  it("hides the down button while scrolled up but still resting at the bottom edge", () => {
++    expect(chatScrollButtonsState({ pinnedToBottom: false, atTop: true, atBottom: true })).toEqual({ up: false, down: false });
++  });
++});
++
+ describe("ChatView event-group disclosure wiring", () => {
+   const messages: ChatLine[] = [
+     { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
+diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
+--- a/src/client/src/components/ChatView.ts	2026-10-24 12:26:09.704540278 +0000
++++ b/src/client/src/components/ChatView.ts	2026-10-24 12:26:09.780519615 +0000
 @@ -125,6 +125,19 @@
    return `g:${String(endIndex)}`;
  }
@@ -113,104 +199,9 @@
    private scrollToBottom() {
      if (this.scrollToBottomFrame !== undefined) return;
      this.scrollToBottomFrame = requestAnimationFrame(() => {
---- a/src/client/src/components/ChatView.test.ts
-+++ b/src/client/src/components/ChatView.test.ts
-@@ -17,6 +17,7 @@
-   chatMessageMetadataLabel,
-   chatQueuedMessageSections,
-   chatQueuedSectionShowsClearAction,
-+  chatScrollButtonsState,
-   chatSessionWarningRows,
- } from "./ChatView";
- import { templateEventHandlerAfterMarker, templateEventHandlerNearMarker } from "../templateInspection.testSupport";
-@@ -286,6 +287,24 @@
-   });
- });
- 
-+describe("chatScrollButtonsState", () => {
-+  it("hides both buttons at the top of a session pinned to the bottom", () => {
-+    expect(chatScrollButtonsState({ pinnedToBottom: true, atTop: true, atBottom: true })).toEqual({ up: false, down: false });
-+  });
-+
-+  it("shows only the up button once scrolled away from the top while pinned to the bottom", () => {
-+    expect(chatScrollButtonsState({ pinnedToBottom: true, atTop: false, atBottom: true })).toEqual({ up: true, down: false });
-+  });
-+
-+  it("shows the down button once the user scrolls away from the bottom", () => {
-+    expect(chatScrollButtonsState({ pinnedToBottom: false, atTop: false, atBottom: false })).toEqual({ up: true, down: true });
-+  });
-+
-+  it("hides the down button while scrolled up but still resting at the bottom edge", () => {
-+    expect(chatScrollButtonsState({ pinnedToBottom: false, atTop: true, atBottom: true })).toEqual({ up: false, down: false });
-+  });
-+});
-+
- describe("ChatView event-group disclosure wiring", () => {
-   const messages: ChatLine[] = [
-     { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
---- a/src/client/src/components/shared.ts
-+++ b/src/client/src/components/shared.ts
-@@ -370,6 +370,11 @@
-     .notification-header { gap: 4px; padding-inline: 8px; }
-     .notification-list { padding-inline: 8px; }
-   }
-+  .scroll-buttons { position: absolute; bottom: 38px; right: 28px; z-index: 21; display: flex; gap: 6px; }
-+  .scroll-button { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 50%; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 13px system-ui, sans-serif; line-height: 1; opacity: .7; cursor: pointer; }
-+  .scroll-button:hover, .scroll-button:focus-visible { opacity: 1; color: var(--pi-text-bright); border-color: var(--pi-accent); }
-+  .scroll-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
-+  .scroll-button.hidden { visibility: hidden; }
-   .chat { --pi-chat-sticky-top: -26px; height: 100%; min-height: 0; overflow: auto; overflow-anchor: none; padding: 26px 16px 64px; box-sizing: border-box; }
-   .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
-   .activity-dock { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 8px 12px; font-size: 13px; pointer-events: none; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }
---- a/src/client/src/appShell/navigationState.ts
-+++ b/src/client/src/appShell/navigationState.ts
-@@ -1,7 +1,7 @@
- import type { ReactiveController, ReactiveControllerHost } from "lit";
- import { readStoredPanelCollapse, writeStoredPanelCollapse, type PanelCollapseStorage } from "./panelCollapseController";
- 
--export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "workspaces", "sessions"] as const;
-+export const NAVIGATION_SECTION_ORDER = ["machines", "projects", "sessions"] as const;
- export type NavigationSection = (typeof NAVIGATION_SECTION_ORDER)[number];
- export type ExpandedNavigationSection = NavigationSection | "none" | undefined;
- 
-@@ -12,7 +12,6 @@
- 
- export function defaultNavigationSection(state: NavigationSelectionState): NavigationSection {
-   if (state.selectedProject === undefined) return "projects";
--  if (state.selectedWorkspace === undefined) return "workspaces";
-   return "sessions";
- }
- 
---- a/src/client/src/appShell/navigationState.test.ts
-+++ b/src/client/src/appShell/navigationState.test.ts
-@@ -4,14 +4,14 @@
- describe("navigationState", () => {
-   it("defaults to the first incomplete selection section", () => {
-     expect(defaultNavigationSection({ selectedProject: undefined, selectedWorkspace: undefined })).toBe("projects");
--    expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: undefined })).toBe("workspaces");
-+    expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: undefined })).toBe("sessions");
-     expect(defaultNavigationSection({ selectedProject: {}, selectedWorkspace: {} })).toBe("sessions");
-   });
- 
-   it("expands the default section until the user explicitly toggles a section", () => {
-     const state = { selectedProject: {}, selectedWorkspace: undefined };
- 
--    expect(expandedNavigationSection(undefined, state)).toBe("workspaces");
-+    expect(expandedNavigationSection(undefined, state)).toBe("sessions");
-     expect(expandedNavigationSection("sessions", state)).toBe("sessions");
-     expect(expandedNavigationSection("none", state)).toBeUndefined();
-   });
-@@ -36,7 +36,7 @@
- 
-     expect(toggleNavigationSection(undefined, "projects", { isMobileLayout: true, state })).toBe("none");
-     expect(toggleNavigationSection("none", "projects", { isMobileLayout: true, state })).toBe("projects");
--    expect(toggleNavigationSection("projects", "workspaces", { isMobileLayout: true, state })).toBe("workspaces");
-+    expect(toggleNavigationSection("projects", "sessions", { isMobileLayout: true, state })).toBe("sessions");
-   });
- 
-   it("does not mutate expanded section on desktop layouts", () => {
---- a/src/client/src/components/PiWebApp.ts
-+++ b/src/client/src/components/PiWebApp.ts
+diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
+--- a/src/client/src/components/PiWebApp.ts	2026-10-24 12:26:09.664551153 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-10-24 12:26:09.784518528 +0000
 @@ -50,10 +50,9 @@
  import { readSettingsSection, writeSettingsSection, type SettingsSection } from "../settingsRoute";
  import { applyActiveShortcutPreferences } from "../shortcutPreferences";
@@ -223,7 +214,7 @@
  import { unreadSessionCount } from "./SessionList";
  import "./SessionCleanupDialog";
  import "./SessionTreeNavigator";
-@@ -1272,9 +1271,7 @@
+@@ -1287,9 +1286,7 @@
          .onRemoveMachine=${(machine: Machine) => { void this.removeMachine(machine); }}
          .projects=${this.state.projects}
          .selectedProject=${this.state.selectedProject}
@@ -233,7 +224,7 @@
          .sessions=${this.state.sessions}
          .sessionStatuses=${this.state.sessionStatuses}
          .sessionActivities=${this.state.sessionActivities}
-@@ -1286,18 +1283,14 @@
+@@ -1301,18 +1298,14 @@
          .collapsible=${true}
          .compact=${this.appShell.isMobileNavigationLayout}
          .projectsCollapsed=${this.navigationSections.isCollapsed("projects")}
@@ -253,7 +244,7 @@
          .onArchivedCollapsed=${() => { this.sessions.clearSelectionAfterArchivedCollapse(); }}
          .onStartSession=${() => this.startSessionFromNavigation()}
          .onSelectSession=${(session: SessionInfo) => this.selectNavigationItem("sessions", "chat", () => this.sessions.selectSession(session))}
-@@ -1445,11 +1438,11 @@
+@@ -1460,11 +1453,11 @@
        return this.state.projects.length === 0
          ? {
              title: "No projects yet",
@@ -267,7 +258,7 @@
            };
      }
      if (this.state.isLoadingWorkspaces) {
-@@ -1465,17 +1458,17 @@
+@@ -1480,17 +1473,17 @@
        };
      }
      return {
@@ -289,7 +280,7 @@
    }
  
    private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
-@@ -1638,14 +1631,6 @@
+@@ -1653,14 +1646,6 @@
          run: () => this.focusNavigationSection("projects"),
        },
        {
@@ -304,7 +295,7 @@
          id: "app.navigation.focus-sessions",
          title: "Focus Sessions",
          description: "Move keyboard focus to the sessions list",
-@@ -2260,7 +2245,6 @@
+@@ -2275,7 +2260,6 @@
          .machine=${this.state.selectedMachine}
          .locationIndicator=${this.appShell.isPwaDisplayMode}
          .project=${this.state.selectedProject}
@@ -312,8 +303,9 @@
          .session=${this.state.selectedSession}
          .refreshControl=${this.appShell.shouldShowAppRefreshInContextBar() ? this.renderAppRefresh() : undefined}
          .onOpenSection=${(section: NavigationSection) => { this.openNavigationSection(section); }}
---- a/src/client/src/components/ProjectList.ts
-+++ b/src/client/src/components/ProjectList.ts
+diff -ruN -x .git a/src/client/src/components/ProjectList.ts b/src/client/src/components/ProjectList.ts
+--- a/src/client/src/components/ProjectList.ts	2026-10-24 12:26:09.356634892 +0000
++++ b/src/client/src/components/ProjectList.ts	2026-10-24 12:26:09.784518528 +0000
 @@ -1,17 +1,34 @@
 -import { LitElement, html, type PropertyValues } from "lit";
 +import { LitElement, css, html, noChange, type PropertyValues, type TemplateResult } from "lit";
@@ -578,8 +570,9 @@
 +function projectMenuId(projectId: string): string {
 +  return `project-menu-${projectId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
  }
---- a/src/client/src/components/appShell/AppContextBar.ts
-+++ b/src/client/src/components/appShell/AppContextBar.ts
+diff -ruN -x .git a/src/client/src/components/appShell/AppContextBar.ts b/src/client/src/components/appShell/AppContextBar.ts
+--- a/src/client/src/components/appShell/AppContextBar.ts	2026-10-24 12:26:09.360633804 +0000
++++ b/src/client/src/components/appShell/AppContextBar.ts	2026-10-24 12:26:09.784518528 +0000
 @@ -1,6 +1,6 @@
  import { LitElement, css, html } from "lit";
  import { customElement, property, query, state } from "lit/decorators.js";
@@ -632,8 +625,76 @@
  function sessionContextLabel(session: SessionInfo | undefined): string {
    const name = session?.name?.trim();
    const firstMessage = session?.firstMessage.trim();
---- a/src/client/src/components/appShell/AppNavigationPanel.ts
-+++ b/src/client/src/components/appShell/AppNavigationPanel.ts
+diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.test.ts b/src/client/src/components/appShell/AppNavigationPanel.test.ts
+--- a/src/client/src/components/appShell/AppNavigationPanel.test.ts	2026-10-24 12:26:09.360633804 +0000
++++ b/src/client/src/components/appShell/AppNavigationPanel.test.ts	2026-10-24 12:26:09.784518528 +0000
+@@ -1,13 +1,12 @@
+ // @vitest-environment happy-dom
+ 
+ import { afterEach, describe, expect, it } from "vitest";
+-import type { Machine, Project, Workspace } from "../../api";
++import type { Machine, Project } from "../../api";
+ import type { MachineStatusSnapshot } from "../../../../shared/machineStatus";
+ import { machineStatusSnapshot } from "../../machineStatus.testSupport";
+ import { MachineList } from "../MachineList";
+ import { MachineSwitcher } from "../MachineSwitcher";
+ import { ProjectList } from "../ProjectList";
+-import { WorkspaceList } from "../WorkspaceList";
+ import { AppNavigationPanel, shouldShowMachinesSection } from "./AppNavigationPanel";
+ 
+ afterEach(() => {
+@@ -48,7 +47,7 @@
+ });
+ 
+ describe("machine status wiring", () => {
+-  it("gives machine sections every snapshot and project and workspace sections the selected machine's", async () => {
++  it("gives machine sections every snapshot and the project section the selected machine's", async () => {
+     const local = machineStatusSnapshot({ machine: { "core:working": true } });
+     const remote = machineStatusSnapshot({ machine: { "core:unread": true } });
+     const panel = await mountPanel({ local, "remote-a": remote }, machine("local"));
+@@ -56,7 +55,6 @@
+     expect(section(panel, "machine-switcher", MachineSwitcher).statusSnapshots).toEqual({ local, "remote-a": remote });
+     expect(section(panel, "machine-list", MachineList).statusSnapshots).toEqual({ local, "remote-a": remote });
+     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBe(local);
+-    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBe(local);
+   });
+ 
+   it("reads the local machine's snapshot before a machine has been selected", async () => {
+@@ -68,14 +66,12 @@
+     const panel = await mountPanel({ local }, undefined);
+ 
+     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBe(local);
+-    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBe(local);
+   });
+ 
+-  it("leaves project and workspace sections without a snapshot when the selected machine has none", async () => {
++  it("leaves the project section without a snapshot when the selected machine has none", async () => {
+     const panel = await mountPanel({ "remote-a": machineStatusSnapshot() }, machine("local"));
+ 
+     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBeUndefined();
+-    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBeUndefined();
+   });
+ });
+ 
+@@ -85,7 +81,6 @@
+   panel.machines = [machine("local"), machine("remote-a")];
+   if (selectedMachine !== undefined) panel.selectedMachine = selectedMachine;
+   panel.projects = [project("project-1")];
+-  panel.workspaces = [workspace("ws-1", "project-1")];
+   panel.machineStatusSnapshots = machineStatusSnapshots;
+   document.body.append(panel);
+   await panel.updateComplete;
+@@ -120,7 +115,3 @@
+ function project(id: string): Project {
+   return { id, name: id, path: `/repo/${id}`, createdAt: "2026-06-04T00:00:00.000Z" };
+ }
+-
+-function workspace(id: string, projectId: string): Workspace {
+-  return { id, projectId, path: `/repo/${id}`, label: id, isMain: true, effectiveConfig: {} };
+-}
+diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.ts b/src/client/src/components/appShell/AppNavigationPanel.ts
+--- a/src/client/src/components/appShell/AppNavigationPanel.ts	2026-10-24 12:26:09.360633804 +0000
++++ b/src/client/src/components/appShell/AppNavigationPanel.ts	2026-10-24 12:26:09.784518528 +0000
 @@ -10,7 +10,6 @@
  import "../MachineList";
  import "../MachineSwitcher";
@@ -738,74 +799,24 @@
      session-list[collapsed] { flex: 0 0 auto; min-height: auto; overflow: hidden; }
      button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
    `;
---- a/src/client/src/components/appShell/AppNavigationPanel.test.ts
-+++ b/src/client/src/components/appShell/AppNavigationPanel.test.ts
-@@ -1,13 +1,12 @@
- // @vitest-environment happy-dom
- 
- import { afterEach, describe, expect, it } from "vitest";
--import type { Machine, Project, Workspace } from "../../api";
-+import type { Machine, Project } from "../../api";
- import type { MachineStatusSnapshot } from "../../../../shared/machineStatus";
- import { machineStatusSnapshot } from "../../machineStatus.testSupport";
- import { MachineList } from "../MachineList";
- import { MachineSwitcher } from "../MachineSwitcher";
- import { ProjectList } from "../ProjectList";
--import { WorkspaceList } from "../WorkspaceList";
- import { AppNavigationPanel, shouldShowMachinesSection } from "./AppNavigationPanel";
- 
- afterEach(() => {
-@@ -48,7 +47,7 @@
- });
- 
- describe("machine status wiring", () => {
--  it("gives machine sections every snapshot and project and workspace sections the selected machine's", async () => {
-+  it("gives machine sections every snapshot and the project section the selected machine's", async () => {
-     const local = machineStatusSnapshot({ machine: { "core:working": true } });
-     const remote = machineStatusSnapshot({ machine: { "core:unread": true } });
-     const panel = await mountPanel({ local, "remote-a": remote }, machine("local"));
-@@ -56,7 +55,6 @@
-     expect(section(panel, "machine-switcher", MachineSwitcher).statusSnapshots).toEqual({ local, "remote-a": remote });
-     expect(section(panel, "machine-list", MachineList).statusSnapshots).toEqual({ local, "remote-a": remote });
-     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBe(local);
--    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBe(local);
-   });
- 
-   it("reads the local machine's snapshot before a machine has been selected", async () => {
-@@ -68,14 +66,12 @@
-     const panel = await mountPanel({ local }, undefined);
- 
-     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBe(local);
--    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBe(local);
-   });
- 
--  it("leaves project and workspace sections without a snapshot when the selected machine has none", async () => {
-+  it("leaves the project section without a snapshot when the selected machine has none", async () => {
-     const panel = await mountPanel({ "remote-a": machineStatusSnapshot() }, machine("local"));
- 
-     expect(section(panel, "project-list", ProjectList).statusSnapshot).toBeUndefined();
--    expect(section(panel, "workspace-list", WorkspaceList).statusSnapshot).toBeUndefined();
-   });
- });
- 
-@@ -85,7 +81,6 @@
-   panel.machines = [machine("local"), machine("remote-a")];
-   if (selectedMachine !== undefined) panel.selectedMachine = selectedMachine;
-   panel.projects = [project("project-1")];
--  panel.workspaces = [workspace("ws-1", "project-1")];
-   panel.machineStatusSnapshots = machineStatusSnapshots;
-   document.body.append(panel);
-   await panel.updateComplete;
-@@ -120,7 +115,3 @@
- function project(id: string): Project {
-   return { id, name: id, path: `/repo/${id}`, createdAt: "2026-06-04T00:00:00.000Z" };
- }
--
--function workspace(id: string, projectId: string): Workspace {
--  return { id, projectId, path: `/repo/${id}`, label: id, isMain: true, effectiveConfig: {} };
--}
---- a/src/client/src/controllers/workspaceController.ts
-+++ b/src/client/src/controllers/workspaceController.ts
+diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
+--- a/src/client/src/components/shared.ts	2026-10-24 12:26:09.704540278 +0000
++++ b/src/client/src/components/shared.ts	2026-10-24 12:26:09.784518528 +0000
+@@ -370,6 +370,11 @@
+     .notification-header { gap: 4px; padding-inline: 8px; }
+     .notification-list { padding-inline: 8px; }
+   }
++  .scroll-buttons { position: absolute; bottom: 38px; right: 28px; z-index: 21; display: flex; gap: 6px; }
++  .scroll-button { display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 50%; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 13px system-ui, sans-serif; line-height: 1; opacity: .7; cursor: pointer; }
++  .scroll-button:hover, .scroll-button:focus-visible { opacity: 1; color: var(--pi-text-bright); border-color: var(--pi-accent); }
++  .scroll-button:focus-visible { outline: 1px solid var(--pi-border); outline-offset: 2px; }
++  .scroll-button.hidden { visibility: hidden; }
+   .chat { --pi-chat-sticky-top: -26px; height: 100%; min-height: 0; overflow: auto; overflow-anchor: none; padding: 26px 16px 64px; box-sizing: border-box; }
+   .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
+   .activity-dock { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 8px 12px; font-size: 13px; pointer-events: none; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }
+diff -ruN -x .git a/src/client/src/controllers/workspaceController.ts b/src/client/src/controllers/workspaceController.ts
+--- a/src/client/src/controllers/workspaceController.ts	2026-10-24 12:26:09.372630542 +0000
++++ b/src/client/src/controllers/workspaceController.ts	2026-10-24 12:26:09.784518528 +0000
 @@ -61,7 +61,7 @@
        const workspaces = await this.api.workspaces(project.id, machineId);
        if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedProject?.id !== project.id) return;
@@ -815,26 +826,9 @@
        if (workspace) await this.selectWorkspace(workspace, { sessionId: target?.sessionId, updateUrl: target?.updateUrl });
        else if (target?.updateUrl !== false) this.updateUrl();
      } catch (error) {
---- a/src/client/src/controllers/workspaceSelection.ts
-+++ b/src/client/src/controllers/workspaceSelection.ts
-@@ -45,12 +45,7 @@
-   }
- }
- 
--export function selectPreferredWorkspace(workspaces: Workspace[], options?: { targetWorkspaceId?: string | undefined; latestWorkspaceId?: string | undefined }): Workspace | undefined {
--  const targetWorkspaceId = options?.targetWorkspaceId;
--  if (targetWorkspaceId !== undefined && targetWorkspaceId !== "") return workspaces.find((workspace) => workspace.id === targetWorkspaceId);
--
--  const latestWorkspaceId = options?.latestWorkspaceId;
--  if (latestWorkspaceId !== undefined && latestWorkspaceId !== "") return workspaces.find((workspace) => workspace.id === latestWorkspaceId) ?? workspaces[0];
--
--  return workspaces[0];
-+/** Projects always open their default (main) workspace; other workspaces are not selectable. */
-+export function selectPreferredWorkspace(workspaces: Workspace[]): Workspace | undefined {
-+  return workspaces.find((workspace) => workspace.isMain) ?? workspaces[0];
- }
---- a/src/client/src/controllers/workspaceSelection.test.ts
-+++ b/src/client/src/controllers/workspaceSelection.test.ts
+diff -ruN -x .git a/src/client/src/controllers/workspaceSelection.test.ts b/src/client/src/controllers/workspaceSelection.test.ts
+--- a/src/client/src/controllers/workspaceSelection.test.ts	2026-10-24 12:26:09.372630542 +0000
++++ b/src/client/src/controllers/workspaceSelection.test.ts	2026-10-24 12:26:09.784518528 +0000
 @@ -4,28 +4,16 @@
  import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, SessionStorageWorkspaceSelectionMemory } from "./workspaceSelection";
  
@@ -870,3 +864,22 @@
    });
  });
  
+diff -ruN -x .git a/src/client/src/controllers/workspaceSelection.ts b/src/client/src/controllers/workspaceSelection.ts
+--- a/src/client/src/controllers/workspaceSelection.ts	2026-10-24 12:26:09.372630542 +0000
++++ b/src/client/src/controllers/workspaceSelection.ts	2026-10-24 12:26:09.784518528 +0000
+@@ -45,12 +45,7 @@
+   }
+ }
+ 
+-export function selectPreferredWorkspace(workspaces: Workspace[], options?: { targetWorkspaceId?: string | undefined; latestWorkspaceId?: string | undefined }): Workspace | undefined {
+-  const targetWorkspaceId = options?.targetWorkspaceId;
+-  if (targetWorkspaceId !== undefined && targetWorkspaceId !== "") return workspaces.find((workspace) => workspace.id === targetWorkspaceId);
+-
+-  const latestWorkspaceId = options?.latestWorkspaceId;
+-  if (latestWorkspaceId !== undefined && latestWorkspaceId !== "") return workspaces.find((workspace) => workspace.id === latestWorkspaceId) ?? workspaces[0];
+-
+-  return workspaces[0];
++/** Projects always open their default (main) workspace; other workspaces are not selectable. */
++export function selectPreferredWorkspace(workspaces: Workspace[]): Workspace | undefined {
++  return workspaces.find((workspace) => workspace.isMain) ?? workspaces[0];
+ }

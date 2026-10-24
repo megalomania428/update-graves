@@ -1,8 +1,7 @@
-diff --git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
-index 1e27ea0..cdb38c9 100644
---- a/src/client/src/api/parsers.ts
-+++ b/src/client/src/api/parsers.ts
-@@ -507,7 +507,7 @@ export function parseSessionDialogOpenedEvent(value: unknown): { type: "dialog.o
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-10-24 12:28:11.901168270 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -508,7 +508,7 @@
    return { type: "dialog.opened", dialog: parsePendingExtensionDialog(record["dialog"]) };
  }
  
@@ -11,7 +10,7 @@ index 1e27ea0..cdb38c9 100644
    const record = requireRecord(value);
    if (record["type"] !== "dialog.closed") throw new Error("Invalid dialog closed event type");
    const reason = parseExtensionDialogCloseReason(record["reason"]);
-@@ -520,6 +520,7 @@ export function parseSessionDialogClosedEvent(value: unknown): { type: "dialog.c
+@@ -521,6 +521,7 @@
      dialogId: requireBoundedNonEmptyString(record, "dialogId", EXTENSION_DIALOG_ID_MAX_LENGTH),
      reason,
      ...(answer === undefined ? {} : { answer }),
@@ -19,7 +18,7 @@ index 1e27ea0..cdb38c9 100644
    };
  }
  
-@@ -583,12 +584,13 @@ function parseSessionRunningTool(value: unknown): SessionRunningTool {
+@@ -584,12 +585,13 @@
    const end = record["end"] === undefined ? undefined : requireRecord(record["end"]);
    return {
      ...optionalField("end", end === undefined
@@ -34,7 +33,7 @@ index 1e27ea0..cdb38c9 100644
    };
  }
  
-@@ -598,6 +600,7 @@ function parseSessionRunningShell(value: unknown): SessionRunningShell {
+@@ -599,6 +601,7 @@
      command: requireString(record, "command"),
      excludeFromContext: requireBoolean(record, "excludeFromContext"),
      output: requireString(record, "output"),
@@ -42,7 +41,7 @@ index 1e27ea0..cdb38c9 100644
      ...optionalField("end", record["end"] === undefined ? undefined : parseSessionRunningShellEnd(record["end"])),
    };
  }
-@@ -610,6 +613,7 @@ function parseSessionRunningShellEnd(value: unknown): NonNullable<SessionRunning
+@@ -611,6 +614,7 @@
      ...optionalField("truncated", parseOptionalBoolean(record["truncated"], "truncated")),
      ...optionalField("fullOutputPath", optionalString(record, "fullOutputPath")),
      ...optionalField("isError", parseOptionalBoolean(record["isError"], "isError")),
@@ -50,7 +49,7 @@ index 1e27ea0..cdb38c9 100644
    };
  }
  
-@@ -718,9 +722,9 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+@@ -719,9 +723,9 @@
        // guaranteed at this boundary.
        return { type: "message.append", message: requirePresent(record, "message") };
      case "assistant.delta":
@@ -62,7 +61,7 @@ index 1e27ea0..cdb38c9 100644
      case "tool.start":
        return {
          type: "tool.start",
-@@ -728,6 +732,7 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+@@ -729,6 +733,7 @@
          toolCallId: requireString(record, "toolCallId"),
          summary: requireString(record, "summary"),
          ...optionalField("args", record["args"]),
@@ -70,7 +69,7 @@ index 1e27ea0..cdb38c9 100644
        };
      case "tool.update":
        return {
-@@ -747,12 +752,14 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+@@ -748,12 +753,14 @@
          isError: requireBoolean(record, "isError"),
          ...optionalField("content", record["content"]),
          ...optionalField("details", record["details"]),
@@ -85,7 +84,7 @@ index 1e27ea0..cdb38c9 100644
        };
      case "shell.chunk":
        return { type: "shell.chunk", chunk: requireString(record, "chunk") };
-@@ -765,6 +772,7 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
+@@ -766,6 +773,7 @@
          ...optionalField("truncated", parseOptionalBoolean(record["truncated"], "truncated")),
          ...optionalField("fullOutputPath", optionalString(record, "fullOutputPath")),
          ...optionalField("isError", parseOptionalBoolean(record["isError"], "isError")),
@@ -93,7 +92,7 @@ index 1e27ea0..cdb38c9 100644
        };
      case "agent.start":
        return { type: "agent.start" };
-@@ -1226,6 +1234,7 @@ function parseTokens(value: unknown): SessionStatus["tokens"] {
+@@ -1227,6 +1235,7 @@
      cacheRead: requireNumber(record, "cacheRead"),
      cacheWrite: requireNumber(record, "cacheWrite"),
      total: requireNumber(record, "total"),
@@ -101,11 +100,10 @@ index 1e27ea0..cdb38c9 100644
    };
  }
  
-diff --git a/src/client/src/appState.ts b/src/client/src/appState.ts
-index 6eb1b39..ac0f5c4 100644
---- a/src/client/src/appState.ts
-+++ b/src/client/src/appState.ts
-@@ -103,6 +103,8 @@ export interface ClosedExtensionDialog {
+diff -ruN -x .git a/src/client/src/appState.ts b/src/client/src/appState.ts
+--- a/src/client/src/appState.ts	2026-10-24 12:28:11.493314608 +0000
++++ b/src/client/src/appState.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -103,6 +103,8 @@
    reason: ExtensionDialogCloseReason;
    /** Present only when `reason` is `"answered"`. */
    answer?: ExtensionDialogAnswer;
@@ -114,11 +112,10 @@ index 6eb1b39..ac0f5c4 100644
  }
  
  /** `machineId` stays bound to the machine selected when the auth operation began. */
-diff --git a/src/client/src/chatGroups.test.ts b/src/client/src/chatGroups.test.ts
-index 92e5e17..be560b0 100644
---- a/src/client/src/chatGroups.test.ts
-+++ b/src/client/src/chatGroups.test.ts
-@@ -70,6 +70,18 @@ describe("groupChatMessages", () => {
+diff -ruN -x .git a/src/client/src/chatGroups.test.ts b/src/client/src/chatGroups.test.ts
+--- a/src/client/src/chatGroups.test.ts	2026-10-24 12:28:11.889172574 +0000
++++ b/src/client/src/chatGroups.test.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -70,6 +70,18 @@
      ]);
    });
  
@@ -137,11 +134,10 @@ index 92e5e17..be560b0 100644
    it("keeps user images as ordinary messages", () => {
      const image = { type: "image" as const, mimeType: "image/png", data: "QUJD" };
      const message: ChatLine = { role: "user", parts: [image] };
-diff --git a/src/client/src/chatGroups.ts b/src/client/src/chatGroups.ts
-index 21e7d4b..4268ba7 100644
---- a/src/client/src/chatGroups.ts
-+++ b/src/client/src/chatGroups.ts
-@@ -57,7 +57,7 @@ export function groupChatMessages(messages: ChatLine[], indexOffset = 0, eventLi
+diff -ruN -x .git a/src/client/src/chatGroups.ts b/src/client/src/chatGroups.ts
+--- a/src/client/src/chatGroups.ts	2026-10-24 12:28:11.889172574 +0000
++++ b/src/client/src/chatGroups.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -57,7 +57,7 @@
        const readableMessage = { role, parts: readableParts, ...metadata };
        if (isToolImageMessage(readableMessage)) {
          const toolName = toolNameFromParts(technicalParts);
@@ -150,7 +146,7 @@ index 21e7d4b..4268ba7 100644
        } else {
          groups.push({ kind: "message", message: readableMessage, index: absoluteIndex });
        }
-@@ -83,6 +83,18 @@ export function chatGroupPartLabel(part: number, partCount: number): string {
+@@ -83,6 +83,18 @@
    return `part ${String(part)}/${String(partCount)}`;
  }
  
@@ -169,20 +165,18 @@ index 21e7d4b..4268ba7 100644
  function isToolImageMessage(message: ChatLine): boolean {
    return message.role === "tool" && message.parts.length > 0 && message.parts.every((part) => part.type === "image");
  }
-diff --git a/src/client/src/chatHistoryCache.ts b/src/client/src/chatHistoryCache.ts
-index f6c1c94..12ddba1 100644
---- a/src/client/src/chatHistoryCache.ts
-+++ b/src/client/src/chatHistoryCache.ts
+diff -ruN -x .git a/src/client/src/chatHistoryCache.ts b/src/client/src/chatHistoryCache.ts
+--- a/src/client/src/chatHistoryCache.ts	2026-10-24 12:28:11.493314608 +0000
++++ b/src/client/src/chatHistoryCache.ts	2026-10-24 12:28:12.037119444 +0000
 @@ -1,4 +1,4 @@
 -const CACHE_PREFIX = "pi-web:chat-history:v2:";
 +const CACHE_PREFIX = "pi-web:chat-history:v3:";
  const CACHE_TTL_MS = 30 * 60 * 1000;
  
  export interface RawMessagePage {
-diff --git a/src/client/src/chatMessages.ts b/src/client/src/chatMessages.ts
-index 3c93a48..c9b2bfd 100644
---- a/src/client/src/chatMessages.ts
-+++ b/src/client/src/chatMessages.ts
+diff -ruN -x .git a/src/client/src/chatMessages.ts b/src/client/src/chatMessages.ts
+--- a/src/client/src/chatMessages.ts	2026-10-24 12:28:11.493314608 +0000
++++ b/src/client/src/chatMessages.ts	2026-10-24 12:28:12.037119444 +0000
 @@ -1,6 +1,6 @@
  import { ASK_USER_ANSWERS_CUSTOM_TYPE } from "../../shared/apiTypes";
  import { parseAskUserOutcome } from "./api/parsers";
@@ -191,7 +185,7 @@ index 3c93a48..c9b2bfd 100644
  
  export function normalizeMessages(messages: unknown[]): ChatLine[] {
    return coalesceToolExecutions(messages.flatMap(normalizeMessage)).filter((message) => message.parts.length > 0);
-@@ -15,37 +15,43 @@ export function withMessageMeta(line: ChatLine, rawMessage: unknown): ChatLine {
+@@ -15,37 +15,43 @@
    return meta === undefined ? line : { ...line, meta };
  }
  
@@ -244,7 +238,7 @@ index 3c93a48..c9b2bfd 100644
    const rawRole = getString(message, "role");
    const role = normalizeRole(rawRole);
    const contentParts = normalizeContent(getProperty(message, "content"), message);
-@@ -62,7 +68,10 @@ export function normalizeMessage(message: unknown): ChatLine[] {
+@@ -62,7 +68,10 @@
    const displayRole = role === "assistant" && visible.length > 0 && visible.every((part) => part.type === "skillRead") ? "skill" : role;
    const lines = visible.length > 0 ? [withMessageMeta({ role: displayRole, parts: visible, ...(source === undefined ? {} : { source }) }, message)] : [];
    const errorLine = assistantErrorLine(message);
@@ -256,7 +250,7 @@ index 3c93a48..c9b2bfd 100644
  }
  
  function assistantErrorLine(message: unknown): ChatLine | undefined {
-@@ -108,16 +117,43 @@ function normalizeSource(message: unknown): ChatLine["source"] | undefined {
+@@ -108,16 +117,43 @@
  
  function normalizeMeta(message: unknown): ChatLine["meta"] | undefined {
    const timestamp = normalizeTimestamp(getProperty(message, "timestamp"));
@@ -301,7 +295,7 @@ index 3c93a48..c9b2bfd 100644
  function normalizeTimestamp(value: unknown): string | undefined {
    if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
    if (typeof value !== "string" || value === "") return undefined;
-@@ -152,6 +188,12 @@ function normalizeBashExecution(message: unknown): ChatLine {
+@@ -152,6 +188,12 @@
    return { role: "bash", parts: [{ type: "text", text: lines.join("\n") }] };
  }
  
@@ -314,7 +308,7 @@ index 3c93a48..c9b2bfd 100644
  function normalizeRole(role: unknown): ChatLine["role"] {
    if (role === "assistant") return "assistant";
    if (role === "user") return "user";
-@@ -245,6 +287,9 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+@@ -245,6 +287,9 @@
    for (const line of lines) {
      let passthroughParts: ChatPart[] = [];
      const metadata = { ...(line.source === undefined ? {} : { source: line.source }), ...(line.meta === undefined ? {} : { meta: line.meta }) };
@@ -324,7 +318,7 @@ index 3c93a48..c9b2bfd 100644
      const flushPassthrough = () => {
        if (passthroughParts.length === 0) return;
        result.push({ role: line.role, parts: passthroughParts, ...metadata });
-@@ -254,7 +299,7 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+@@ -254,7 +299,7 @@
      for (const part of line.parts) {
        if (part.type === "toolCall") {
          flushPassthrough();
@@ -333,7 +327,7 @@ index 3c93a48..c9b2bfd 100644
          const lineIndex = result.length;
          result.push({ role: "tool", parts: [execution], ...metadata });
          if (execution.toolCallId !== undefined) pendingTools.set(execution.toolCallId, { lineIndex, partIndex: 0 });
-@@ -263,7 +308,7 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+@@ -263,7 +308,7 @@
  
        if (part.type === "toolResult") {
          const target = part.toolCallId === undefined ? undefined : pendingTools.get(part.toolCallId);
@@ -342,7 +336,7 @@ index 3c93a48..c9b2bfd 100644
            pendingTools.delete(part.toolCallId ?? "");
            continue;
          }
-@@ -278,7 +323,7 @@ function coalesceToolExecutions(lines: ChatLine[]): ChatLine[] {
+@@ -278,7 +323,7 @@
    return result;
  }
  
@@ -351,7 +345,7 @@ index 3c93a48..c9b2bfd 100644
    return {
      type: "toolExecution",
      ...(part.toolCallId === undefined ? {} : { toolCallId: part.toolCallId }),
-@@ -286,10 +331,11 @@ function toolExecutionFromCall(part: Extract<ChatPart, { type: "toolCall" }>): T
+@@ -286,10 +331,11 @@
      summary: part.summary,
      ...(part.args === undefined ? {} : { args: part.args }),
      status: "pending",
@@ -364,7 +358,7 @@ index 3c93a48..c9b2bfd 100644
    const line = lines[target.lineIndex];
    const current = line?.parts[target.partIndex];
    if (line === undefined || current?.type !== "toolExecution") return false;
-@@ -301,6 +347,8 @@ function mergeToolResultInto(lines: ChatLine[], target: { lineIndex: number; par
+@@ -301,6 +347,8 @@
      ...(result.content === undefined ? {} : { content: result.content }),
      ...(result.details === undefined ? {} : { details: result.details }),
      ...(preview === undefined ? {} : { preview }),
@@ -373,11 +367,9 @@ index 3c93a48..c9b2bfd 100644
    };
    lines[target.lineIndex] = { ...line, parts: [...line.parts.slice(0, target.partIndex), next, ...line.parts.slice(target.partIndex + 1)] };
    return true;
-diff --git a/src/client/src/chatMeta.test.ts b/src/client/src/chatMeta.test.ts
-new file mode 100644
-index 0000000..faac02e
---- /dev/null
-+++ b/src/client/src/chatMeta.test.ts
+diff -ruN -x .git a/src/client/src/chatMeta.test.ts b/src/client/src/chatMeta.test.ts
+--- a/src/client/src/chatMeta.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/chatMeta.test.ts	2026-10-24 12:28:12.037119444 +0000
 @@ -0,0 +1,302 @@
 +import { describe, expect, it } from "vitest";
 +import { chatGroupMetaSegments, chatMessageMetaSegments, chatMetaFirstIndexes, chatSpanSegments, chatTokenSegment, chatToolAnswerHeaderIndexes, chatTurnDurations, formatChatDuration, formatChatTimestamp, formatChatTokens, metaSegmentsText, sumChatUsage } from "./chatMeta";
@@ -681,11 +673,9 @@ index 0000000..faac02e
 +    expect(chatToolAnswerHeaderIndexes([withImage], 3)).toEqual(new Set([3]));
 +  });
 +});
-diff --git a/src/client/src/chatMeta.ts b/src/client/src/chatMeta.ts
-new file mode 100644
-index 0000000..f654bff
---- /dev/null
-+++ b/src/client/src/chatMeta.ts
+diff -ruN -x .git a/src/client/src/chatMeta.ts b/src/client/src/chatMeta.ts
+--- a/src/client/src/chatMeta.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/chatMeta.ts	2026-10-24 12:28:12.037119444 +0000
 @@ -0,0 +1,379 @@
 +import type { ChatLine, ChatUsage } from "./components/shared";
 +
@@ -1066,11 +1056,10 @@ index 0000000..f654bff
 +  // A streaming answer is the tail: an assistant line after its first card is its own and shows the header.
 +  return new Set([...firstCards].flatMap(([meta, index]) => shown.has(meta) || (meta.completedAt === undefined && index - start < lastAnswerLine) ? [] : [index]));
 +}
-diff --git a/src/client/src/chatTranscript.test.ts b/src/client/src/chatTranscript.test.ts
-index 04f4243..7c4372c 100644
---- a/src/client/src/chatTranscript.test.ts
-+++ b/src/client/src/chatTranscript.test.ts
-@@ -307,6 +307,7 @@ describe("applyTranscriptEvent", () => {
+diff -ruN -x .git a/src/client/src/chatTranscript.test.ts b/src/client/src/chatTranscript.test.ts
+--- a/src/client/src/chatTranscript.test.ts	2026-10-24 12:28:11.493314608 +0000
++++ b/src/client/src/chatTranscript.test.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -307,6 +307,7 @@
          resultText: "Read image file [image/png]",
          content: finalContent,
          details: { source: "message.end" },
@@ -1078,7 +1067,7 @@ index 04f4243..7c4372c 100644
        }, finalImage],
        meta: { timestamp },
      };
-@@ -599,3 +600,66 @@ describe("applyTranscriptEvent", () => {
+@@ -599,3 +600,66 @@
      ]);
    });
  });
@@ -1145,10 +1134,9 @@ index 04f4243..7c4372c 100644
 +    expect(again[1]?.meta).toBe(again[0]?.meta);
 +  });
 +});
-diff --git a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
-index a01f1c2..ea3d247 100644
---- a/src/client/src/chatTranscript.ts
-+++ b/src/client/src/chatTranscript.ts
+diff -ruN -x .git a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
+--- a/src/client/src/chatTranscript.ts	2026-10-24 12:28:11.901168270 +0000
++++ b/src/client/src/chatTranscript.ts	2026-10-24 12:28:12.037119444 +0000
 @@ -1,6 +1,6 @@
  import type { SessionStreamSnapshot } from "./api";
  import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
@@ -1157,7 +1145,7 @@ index a01f1c2..ea3d247 100644
  import { appendShellChunk, finalizeShellMessage, shellStartMessage } from "./shellMessages";
  import type { SessionUiEvent } from "./sessionSocket";
  
-@@ -19,6 +19,8 @@ interface ToolResultUpdate {
+@@ -19,6 +19,8 @@
    content: unknown;
    details: unknown;
    presentation: ToolResultPresentation;
@@ -1166,7 +1154,7 @@ index a01f1c2..ea3d247 100644
  }
  
  /**
-@@ -49,15 +51,17 @@ export function seedStreamingPartial(messages: ChatLine[], partial: unknown): Ch
+@@ -49,15 +51,17 @@
   */
  export function seedRunningWork(messages: ChatLine[], snapshot: Pick<SessionStreamSnapshot, "tools" | "shells">): ChatLine[] {
    const seeded = (snapshot.tools ?? []).reduce((next, tool) => {
@@ -1188,7 +1176,7 @@ index a01f1c2..ea3d247 100644
      const output = shell.output === "" ? started : appendShellChunk(started, shell.output);
      return shell.end === undefined ? output : finalizeShellMessage(output, { type: "shell.end", ...shell.end, output: shell.output });
    }, seeded);
-@@ -65,8 +69,8 @@ export function seedRunningWork(messages: ChatLine[], snapshot: Pick<SessionStre
+@@ -65,8 +69,8 @@
  
  export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
    if (event.type === "message.append") return appendNewMessage(messages, event.message);
@@ -1199,7 +1187,7 @@ index a01f1c2..ea3d247 100644
    if (event.type === "tool.start") return appendToolExecutionStart(messages, event);
    if (event.type === "tool.update") return updateToolExecution(messages, event.toolCallId, (part) => mergeToolExecutionUpdate(part, event));
    if (event.type === "tool.end") {
-@@ -78,9 +82,10 @@ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent
+@@ -78,9 +82,10 @@
        content: event.content,
        details: event.details,
        presentation: toolResultPresentation({ role: "toolResult", content: event.content }),
@@ -1211,7 +1199,7 @@ index a01f1c2..ea3d247 100644
    if (event.type === "shell.chunk") return appendShellChunk(messages, event.chunk);
    if (event.type === "shell.end") return finalizeShellMessage(messages, event);
    if (event.type === "command.output") return [...messages, textMessage(event.level === "error" ? "system" : "tool", event.message)];
-@@ -98,8 +103,10 @@ function applyFinalMessage(messages: ChatLine[], rawMessage: unknown): ChatLine[
+@@ -98,8 +103,10 @@
    const displayEnded = ended
      .map((line) => line.role === "assistant" ? withoutToolCalls(line) : line)
      .filter((line) => line.parts.length > 0);
@@ -1224,7 +1212,7 @@ index a01f1c2..ea3d247 100644
  }
  
  function applyFinalLine(messages: ChatLine[], displayEnded: ChatLine): ChatLine[] {
-@@ -130,6 +137,84 @@ function withoutToolCalls(message: ChatLine): ChatLine {
+@@ -130,6 +137,84 @@
    return { ...message, parts: message.parts.filter((part) => part.type !== "toolCall") };
  }
  
@@ -1309,7 +1297,7 @@ index a01f1c2..ea3d247 100644
  function parseSkillReadPath(path: string | undefined): { name: string; path: string } | undefined {
    if (path === undefined || path === "") return undefined;
    const normalized = path.replace(/\\/g, "/");
-@@ -142,8 +227,10 @@ function parseSkillReadPath(path: string | undefined): { name: string; path: str
+@@ -142,8 +227,10 @@
  function appendToolExecutionStart(messages: ChatLine[], event: Extract<SessionUiEvent, { type: "tool.start" }>): ChatLine[] {
    const skillRead = event.toolName === "read" ? parseSkillReadPath(getString(event.args, "path")) : undefined;
    if (skillRead !== undefined) {
@@ -1321,7 +1309,7 @@ index a01f1c2..ea3d247 100644
  
    const part: ToolExecutionPart = {
      type: "toolExecution",
-@@ -152,6 +239,7 @@ function appendToolExecutionStart(messages: ChatLine[], event: Extract<SessionUi
+@@ -152,6 +239,7 @@
      summary: event.summary || summarizeArgs(event.args),
      ...(event.args === undefined ? {} : { args: event.args }),
      status: "running",
@@ -1329,7 +1317,7 @@ index a01f1c2..ea3d247 100644
    };
    return [...messages, { role: "tool", parts: [part] }];
  }
-@@ -169,7 +257,7 @@ function mergeToolExecutionUpdate(part: ToolExecutionPart, event: Extract<Sessio
+@@ -169,7 +257,7 @@
  }
  
  function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate): ChatLine[] {
@@ -1338,7 +1326,7 @@ index a01f1c2..ea3d247 100644
    const updated = updateToolExecution(messages, toolCallId, (part) => {
      const preview = previewFromDetails(details) ?? part.preview;
      return {
-@@ -179,6 +267,8 @@ function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate):
+@@ -179,6 +267,8 @@
        ...(content === undefined ? {} : { content }),
        ...(details === undefined ? {} : { details }),
        ...(preview === undefined ? {} : { preview }),
@@ -1347,7 +1335,7 @@ index a01f1c2..ea3d247 100644
      };
    }, (line) => reconcileToolResultPresentation(line, presentation));
  
-@@ -195,6 +285,8 @@ function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate):
+@@ -195,6 +285,8 @@
        ...(content === undefined ? {} : { content }),
        ...(details === undefined ? {} : { details }),
        ...(preview === undefined ? {} : { preview }),
@@ -1356,7 +1344,7 @@ index a01f1c2..ea3d247 100644
      };
      finalized = [...messages, reconcileToolResultPresentation({ role: "tool", parts: [part] }, presentation)];
    }
-@@ -245,7 +337,7 @@ function updateToolExecution(
+@@ -245,7 +337,7 @@
  
  function reconcileToolResultPresentation(line: ChatLine, presentation: ToolResultPresentation): ChatLine {
    const next = { ...line, parts: [...line.parts.filter((part) => part.type !== "image"), ...presentation.images] };
@@ -1365,7 +1353,7 @@ index a01f1c2..ea3d247 100644
  }
  
  function toolResultPresentation(message: unknown): ToolResultPresentation {
-@@ -259,6 +351,9 @@ function toolResultFromRawMessage(message: unknown): ToolResultUpdate | undefine
+@@ -259,6 +351,9 @@
    if (getString(message, "role") !== "toolResult") return undefined;
    const toolCallId = getString(message, "toolCallId");
    const content = getProperty(message, "content");
@@ -1375,7 +1363,7 @@ index a01f1c2..ea3d247 100644
    return {
      ...(toolCallId === undefined ? {} : { toolCallId }),
      toolName: getString(message, "toolName") ?? "tool",
-@@ -266,7 +361,9 @@ function toolResultFromRawMessage(message: unknown): ToolResultUpdate | undefine
+@@ -266,7 +361,9 @@
      isError: getBoolean(message, "isError") === true,
      content,
      details: getProperty(message, "details"),
@@ -1386,11 +1374,10 @@ index a01f1c2..ea3d247 100644
    };
  }
  
-diff --git a/src/client/src/components/AskUserCard.ts b/src/client/src/components/AskUserCard.ts
-index 97eed33..e501553 100644
---- a/src/client/src/components/AskUserCard.ts
-+++ b/src/client/src/components/AskUserCard.ts
-@@ -21,6 +21,10 @@ import {
+diff -ruN -x .git a/src/client/src/components/AskUserCard.ts b/src/client/src/components/AskUserCard.ts
+--- a/src/client/src/components/AskUserCard.ts	2026-10-24 12:28:11.853185486 +0000
++++ b/src/client/src/components/AskUserCard.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -21,6 +21,10 @@
    type AskDraftAnswer,
    type AskDraftAnswers,
  } from "../askDrafts";
@@ -1401,7 +1388,7 @@ index 97eed33..e501553 100644
  
  export type AskUserSubmitCallback = (askId: string, submission: AskUserSubmission) => void | Promise<void>;
  
-@@ -76,9 +80,12 @@ export class AskUserCard extends LitElement {
+@@ -76,9 +80,12 @@
        <article class="card open-card" aria-labelledby="ask-user-heading" @dblclick=${selectInlineCodeOnDoubleClick}>
          <header class="card-header">
            <h2 id="ask-user-heading">Questions</h2>
@@ -1417,7 +1404,7 @@ index 97eed33..e501553 100644
          </header>
          <form class="ask-form" @submit=${(event: SubmitEvent) => { this.handleSubmit(event, ask); }}>
            <div class="questions">
-@@ -193,7 +200,10 @@ export class AskUserCard extends LitElement {
+@@ -193,7 +200,10 @@
        <article class="card record-card" aria-labelledby="ask-user-record-heading" @dblclick=${selectInlineCodeOnDoubleClick}>
          <header class="card-header">
            <h2 id="ask-user-record-heading">Questions</h2>
@@ -1429,7 +1416,7 @@ index 97eed33..e501553 100644
          </header>
          <p class="record-summary">
            ${outcome.reason === "superseded"
-@@ -207,6 +217,11 @@ export class AskUserCard extends LitElement {
+@@ -207,6 +217,11 @@
      `;
    }
  
@@ -1441,7 +1428,7 @@ index 97eed33..e501553 100644
    private renderQuestionRecord(outcome: AskUserOutcome, record: AskUserQuestionRecord, index: number): TemplateResult {
      const answer = this.displayedRecordAnswer(outcome, record);
      return html`
-@@ -452,6 +467,8 @@ export class AskUserCard extends LitElement {
+@@ -452,6 +467,8 @@
        text-transform: uppercase;
      }
      .header-status { flex: 0 1 auto; color: var(--pi-muted); font-size: 11px; text-align: end; }
@@ -1450,11 +1437,10 @@ index 97eed33..e501553 100644
      .header-status.submitted { color: var(--pi-success); }
      .header-status.superseded { color: var(--pi-warning); }
      .questions { display: grid; padding-top: 8px; }
-diff --git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
-index 7ac270d..9ac3bb9 100644
---- a/src/client/src/components/ChatView.test.ts
-+++ b/src/client/src/components/ChatView.test.ts
-@@ -246,26 +246,39 @@ describe("ChatView notification tray wiring", () => {
+diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
+--- a/src/client/src/components/ChatView.test.ts	2026-10-24 12:28:11.889172574 +0000
++++ b/src/client/src/components/ChatView.test.ts	2026-10-24 12:28:12.037119444 +0000
+@@ -246,26 +246,39 @@
  });
  
  describe("chatMessageMetadataLabel", () => {
@@ -1504,11 +1490,10 @@ index 7ac270d..9ac3bb9 100644
    });
  });
  
-diff --git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
-index 9a87336..8bd049d 100644
---- a/src/client/src/components/ChatView.ts
-+++ b/src/client/src/components/ChatView.ts
-@@ -4,6 +4,7 @@ import { repeat } from "lit/directives/repeat.js";
+diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
+--- a/src/client/src/components/ChatView.ts	2026-10-24 12:28:11.889172574 +0000
++++ b/src/client/src/components/ChatView.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -4,6 +4,7 @@
  import { ChatDisclosureController } from "../chatDisclosure";
  import { chatCardKey, chatCardOpen, eventsGroupDisclosureMode, groupDisclosureOpen, lastDisclosureCards, lastEventsGroupIndex, type PiWebPartDisclosureKind } from "../chatDisclosureModes";
  import { chatGroupPartLabel, DEFAULT_EVENTS_GROUP_LIMIT, groupChatMessages, summarizeChatGroup, type ChatGroup } from "../chatGroups";
@@ -1516,7 +1501,7 @@ index 9a87336..8bd049d 100644
  import { writeClipboardText } from "../clipboard";
  import { capturePrependScrollAnchor, PREPEND_RESTORE_SETTLE_FRAMES, restorePrependScrollAnchor, type PrependScrollAnchor } from "../chatScrollAnchoring";
  import { shouldRequestEarlierMessages } from "../chatHistoryLoading";
-@@ -28,7 +29,7 @@ import {
+@@ -28,7 +29,7 @@
  } from "../sessionNotifications";
  import type { ChatLine, ChatPart } from "./shared";
  import type { FormattedText } from "./FormattedText";
@@ -1525,7 +1510,7 @@ index 9a87336..8bd049d 100644
  import "./AskUserCard";
  import "./ExtensionDialogCard";
  import type { ExtensionDialogAnswerCallback, ExtensionDialogCancelCallback, ExtensionDialogDismissCallback } from "./ExtensionDialogCard";
-@@ -37,7 +38,6 @@ import "./ConversationMeter";
+@@ -37,7 +38,6 @@
  import "./FormattedText";
  import "./ToolExecutionView";
  
@@ -1533,7 +1518,7 @@ index 9a87336..8bd049d 100644
  const notificationTimestampFormatter = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
  
  function renderNotificationDisclosureIcon(collapsed: boolean) {
-@@ -200,26 +200,9 @@ export function chatSessionWarningRows(status: SessionStatus | undefined): ChatS
+@@ -200,26 +200,9 @@
    }));
  }
  
@@ -1563,7 +1548,7 @@ index 9a87336..8bd049d 100644
  }
  
  @customElement("chat-view")
-@@ -283,7 +266,12 @@ export class ChatView extends LitElement {
+@@ -283,7 +266,12 @@
    private stickyChunkKeys: ReadonlySet<string> = new Set();
    private previousDefaultOpenChunkKeys: ReadonlySet<string> = new Set();
    private lastDisclosureCardsCache = new Map<PiWebPartDisclosureKind, string>();
@@ -1577,7 +1562,7 @@ index 9a87336..8bd049d 100644
    private readonly messageCopyTextCache = new WeakMap<ChatLine, string>();
    private lastScrollTop = 0;
    private lastClientHeight = 0;
-@@ -749,6 +737,11 @@ export class ChatView extends LitElement {
+@@ -749,6 +737,11 @@
      this.groupedMessagesStart = this.messageStart;
      this.groupedMessagesLimit = this.eventsGroupLimit;
      this.groupedMessagesCache = groupChatMessages(this.messages, this.messageStart, this.eventsGroupLimit);
@@ -1589,7 +1574,7 @@ index 9a87336..8bd049d 100644
      this.lastDisclosureCardsCache = lastDisclosureCards(this.groupedMessagesCache);
      return this.groupedMessagesCache;
    }
-@@ -992,7 +985,7 @@ export class ChatView extends LitElement {
+@@ -992,7 +985,7 @@
      return html`
        ${this.renderScrollMarker(this.messageScrollMarkerId(index))}
        <article class=${toolOnly || askUserRecordOnly ? shellClass : `msg ${message.role}`} data-index=${index} data-scroll-anchor-id=${this.messageAnchorKey(index)}>
@@ -1598,7 +1583,7 @@ index 9a87336..8bd049d 100644
          ${message.parts.map((part, partIndex) => this.renderPart(part, message, index, partIndex))}
        </article>
      `;
-@@ -1028,12 +1021,18 @@ export class ChatView extends LitElement {
+@@ -1028,12 +1021,18 @@
          <summary>
            <b class="label">${chatMessageGroupLabel(isLiveTail)}</b>
            <span>${partLabel}${summarizeChatGroup(messages)}</span>
@@ -1617,7 +1602,7 @@ index 9a87336..8bd049d 100644
    private renderMessageGroupBody(messages: ChatLine[], startIndex: number) {
      return html`
        <div class="group-body">
-@@ -1041,7 +1040,7 @@ export class ChatView extends LitElement {
+@@ -1041,7 +1040,7 @@
            const toolOnly = this.isToolExecutionOnlyMessage(message);
            return html`
              <section class=${toolOnly ? "group-msg tool-execution-shell" : `group-msg ${message.role}`} data-index=${startIndex + offset} data-scroll-anchor-id=${this.eventAnchorKey(startIndex + offset)}>
@@ -1626,7 +1611,7 @@ index 9a87336..8bd049d 100644
                ${message.parts.map((part, partIndex) => this.renderPart(part, message, startIndex + offset, partIndex))}
              </section>
            `;
-@@ -1054,15 +1053,15 @@ export class ChatView extends LitElement {
+@@ -1054,15 +1053,15 @@
      return html`<span class="scroll-marker" data-marker-id=${markerId} aria-hidden="true"></span>`;
    }
  
@@ -1645,7 +1630,7 @@ index 9a87336..8bd049d 100644
          </div>
        </div>
      `;
-@@ -1113,12 +1112,13 @@ export class ChatView extends LitElement {
+@@ -1113,12 +1112,13 @@
    }
  
  
@@ -1663,11 +1648,10 @@ index 9a87336..8bd049d 100644
    }
  
    private renderPart(part: ChatPart, message: ChatLine | undefined, index: number, partIndex: number) {
-diff --git a/src/client/src/components/ExtensionDialogCard.ts b/src/client/src/components/ExtensionDialogCard.ts
-index f33a5f8..97d4468 100644
---- a/src/client/src/components/ExtensionDialogCard.ts
-+++ b/src/client/src/components/ExtensionDialogCard.ts
-@@ -8,6 +8,10 @@ import {
+diff -ruN -x .git a/src/client/src/components/ExtensionDialogCard.ts b/src/client/src/components/ExtensionDialogCard.ts
+--- a/src/client/src/components/ExtensionDialogCard.ts	2026-10-24 12:28:11.497313174 +0000
++++ b/src/client/src/components/ExtensionDialogCard.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -8,6 +8,10 @@
    type PendingExtensionDialog,
  } from "../../../shared/apiTypes";
  import type { ClosedExtensionDialog } from "../appState";
@@ -1678,7 +1662,7 @@ index f33a5f8..97d4468 100644
  
  export type ExtensionDialogAnswerCallback = (dialogId: string, value: ExtensionDialogAnswer) => void | Promise<void>;
  export type ExtensionDialogCancelCallback = (dialogId: string) => void | Promise<void>;
-@@ -129,12 +133,15 @@ export class ExtensionDialogCard extends LitElement {
+@@ -129,12 +133,15 @@
        <article class="card open-card" aria-labelledby="extension-dialog-heading">
          <header class="card-header">
            <h2 id="extension-dialog-heading">${dialog.title}</h2>
@@ -1700,7 +1684,7 @@ index f33a5f8..97d4468 100644
          </header>
          ${this.renderOpenBody(dialog)}
        </article>
-@@ -198,7 +205,10 @@ export class ExtensionDialogCard extends LitElement {
+@@ -198,7 +205,10 @@
        <article class="card closed-card" aria-labelledby="extension-dialog-closed-heading">
          <header class="card-header">
            <h2 id="extension-dialog-closed-heading">${closed.dialog.title}</h2>
@@ -1712,7 +1696,7 @@ index f33a5f8..97d4468 100644
          </header>
          <p class="closed-summary">${extensionDialogCloseSummary(closed)}</p>
          <footer class="dialog-footer">
-@@ -208,6 +218,11 @@ export class ExtensionDialogCard extends LitElement {
+@@ -208,6 +218,11 @@
      `;
    }
  
@@ -1724,7 +1708,7 @@ index f33a5f8..97d4468 100644
    private answerDialog(dialog: PendingExtensionDialog, value: ExtensionDialogAnswer): void {
      this.closeWith(dialog, () => this.onAnswer?.(dialog.dialogId, value));
    }
-@@ -309,6 +324,8 @@ export class ExtensionDialogCard extends LitElement {
+@@ -309,6 +324,8 @@
        overflow-wrap: anywhere;
      }
      .header-status { flex: 0 0 auto; color: var(--pi-muted); font-size: 11px; text-align: end; }
@@ -1733,10 +1717,9 @@ index f33a5f8..97d4468 100644
      .header-status.answered { color: var(--pi-success); }
      .header-status.timeout, .header-status.aborted, .header-status.session-ended { color: var(--pi-warning); }
      .dialog-message {
-diff --git a/src/client/src/components/StatusBar.ts b/src/client/src/components/StatusBar.ts
-index 91b6c17..79d3576 100644
---- a/src/client/src/components/StatusBar.ts
-+++ b/src/client/src/components/StatusBar.ts
+diff -ruN -x .git a/src/client/src/components/StatusBar.ts b/src/client/src/components/StatusBar.ts
+--- a/src/client/src/components/StatusBar.ts	2026-10-24 12:28:11.501311739 +0000
++++ b/src/client/src/components/StatusBar.ts	2026-10-24 12:28:12.041118005 +0000
 @@ -1,8 +1,11 @@
  import { LitElement, html } from "lit";
  import { customElement, property } from "lit/decorators.js";
@@ -1750,7 +1733,7 @@ index 91b6c17..79d3576 100644
  
  export interface StatusBarWarningControlContent {
    countText: string;
-@@ -18,6 +21,17 @@ export function statusBarWarningControlContent(count: number, expanded: boolean)
+@@ -18,6 +21,17 @@
    };
  }
  
@@ -1768,7 +1751,7 @@ index 91b6c17..79d3576 100644
  @customElement("status-bar")
  export class StatusBar extends LitElement {
    @property({ attribute: false }) status?: SessionStatus;
-@@ -55,8 +69,7 @@ export class StatusBar extends LitElement {
+@@ -55,8 +69,7 @@
              <span>${warningControl.countText}</span>
            </button>
          `}
@@ -1778,11 +1761,10 @@ index 91b6c17..79d3576 100644
          <span class="context">${contextText}</span>
          <span>${formatCost(status.cost)}</span>
          ${status.pendingMessageCount > 0 ? html`<span>${String(status.pendingMessageCount)} queued</span>` : null}
-diff --git a/src/client/src/components/ToolExecutionView.ts b/src/client/src/components/ToolExecutionView.ts
-index 16fa4f2..165758a 100644
---- a/src/client/src/components/ToolExecutionView.ts
-+++ b/src/client/src/components/ToolExecutionView.ts
-@@ -5,8 +5,10 @@ import { toolArgsCardVisible, toolContentCardVisible } from "../chatDisclosureMo
+diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/src/components/ToolExecutionView.ts
+--- a/src/client/src/components/ToolExecutionView.ts	2026-10-24 12:28:11.909165401 +0000
++++ b/src/client/src/components/ToolExecutionView.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -5,8 +5,10 @@
  import type { CodeHighlightLine } from "../codeHighlight";
  import { languageForPath } from "../codeLanguage";
  import type { CodeLanguage } from "../codeLanguage";
@@ -1794,7 +1776,7 @@ index 16fa4f2..165758a 100644
  const MAX_COLLAPSED_DIFF_LINES = 180;
  let codeHighlightModulePromise: Promise<typeof import("../codeHighlight")> | undefined;
  
-@@ -339,6 +341,10 @@ export class ToolExecutionView extends LitElement {
+@@ -339,6 +341,10 @@
      const isLive = execution.status === "pending" || execution.status === "running";
      const previewError = isLive && preview?.error !== undefined && preview.error !== "" ? preview.error : undefined;
      const target = toolTarget(execution, path);
@@ -1805,7 +1787,7 @@ index 16fa4f2..165758a 100644
  
      return html`
        <section class=${`tool-card ${execution.status}`}>
-@@ -352,6 +358,7 @@ export class ToolExecutionView extends LitElement {
+@@ -352,6 +358,7 @@
              ${editCountLabel(execution) === undefined ? null : html`<span>${editCountLabel(execution)}</span>`}
              ${diffStats === undefined ? null : html`<span class="diff-stats"><b class="added">+${diffStats.added}</b><span>/</span><b class="removed">-${diffStats.removed}</b></span>`}
              <span class="status-label">${statusLabel(execution.status)}</span>
@@ -1813,7 +1795,7 @@ index 16fa4f2..165758a 100644
            </div>
          </div>
  
-@@ -605,6 +612,7 @@ export class ToolExecutionView extends LitElement {
+@@ -605,6 +612,7 @@
      .added, .diff .added { color: var(--pi-success); }
      .removed, .diff .removed { color: var(--pi-danger); }
      .status-label { text-transform: uppercase; letter-spacing: .04em; color: var(--pi-muted); }
@@ -1821,10 +1803,9 @@ index 16fa4f2..165758a 100644
      .notice { margin: 0; color: var(--pi-warning); }
      .muted { margin: 0; color: var(--pi-muted); }
      .text-body, .result-body { border-top: 1px solid var(--pi-border-muted); padding-top: 6px; }
-diff --git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
-index 8ebd153..cf73091 100644
---- a/src/client/src/components/shared.ts
-+++ b/src/client/src/components/shared.ts
+diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
+--- a/src/client/src/components/shared.ts	2026-10-24 12:28:11.861182617 +0000
++++ b/src/client/src/components/shared.ts	2026-10-24 12:28:12.041118005 +0000
 @@ -1,6 +1,7 @@
 -import { css, svg, type TemplateResult } from "lit";
 +import { css, html, svg, type TemplateResult } from "lit";
@@ -1834,7 +1815,7 @@ index 8ebd153..cf73091 100644
  
  /** Shared downstream shadow for content passing beneath sticky scroll controls. */
  export const scrollHideShadow = css`0 8px 18px var(--pi-shadow-soft)`;
-@@ -52,6 +53,22 @@ export interface ToolExecutionPart {
+@@ -52,6 +53,22 @@
    content?: unknown;
    details?: unknown;
    preview?: ToolPreview;
@@ -1857,7 +1838,7 @@ index 8ebd153..cf73091 100644
  }
  
  export type ChatPart =
-@@ -75,9 +92,20 @@ export interface ChatLine {
+@@ -75,9 +92,20 @@
      model?: { provider?: string; id?: string; responseId?: string };
      /** Thinking level the assistant message was generated with, when known. */
      thinkingLevel?: string;
@@ -1878,7 +1859,7 @@ index 8ebd153..cf73091 100644
  export interface CompletionItem {
    kind: "command" | "file" | "model";
    replaceFrom: number;
-@@ -396,6 +424,7 @@ export const chatStyles = css`
+@@ -396,6 +424,7 @@
    .msg.event-group > summary { position: sticky; top: -26px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px 9px 0 0; border-bottom: 1px solid var(--pi-border-muted); background: var(--pi-bg); color: var(--pi-muted); }
    .msg.event-group.live > summary { border-bottom-color: var(--pi-success-border); background: var(--pi-success-bg); color: var(--pi-success); }
    .msg.event-group > summary .label { margin: 0; }
@@ -1886,11 +1867,10 @@ index 8ebd153..cf73091 100644
    .group-body { padding: 0 12px 12px; }
    .chat-image { display: block; max-width: 100%; max-height: 320px; margin: 8px 0 0; border: 1px solid var(--pi-border-muted); border-radius: 8px; object-fit: contain; cursor: zoom-in; }
    .chat-image:focus-visible { outline: 2px solid var(--pi-accent, var(--pi-success-border)); outline-offset: 2px; }
-diff --git a/src/client/src/controllers/sessionController.extensionDialogs.test.ts b/src/client/src/controllers/sessionController.extensionDialogs.test.ts
-index cb2f043..4fd7c72 100644
---- a/src/client/src/controllers/sessionController.extensionDialogs.test.ts
-+++ b/src/client/src/controllers/sessionController.extensionDialogs.test.ts
-@@ -194,7 +194,7 @@ describe("SessionController extension dialog answers", () => {
+diff -ruN -x .git a/src/client/src/controllers/sessionController.extensionDialogs.test.ts b/src/client/src/controllers/sessionController.extensionDialogs.test.ts
+--- a/src/client/src/controllers/sessionController.extensionDialogs.test.ts	2026-10-24 12:28:11.509308870 +0000
++++ b/src/client/src/controllers/sessionController.extensionDialogs.test.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -194,7 +194,7 @@
      await controller.answerDialog("dialog-1", true);
  
      expect(answerCalls).toEqual([{ dialogId: "dialog-1", value: true, machineId: "local" }]);
@@ -1899,7 +1879,7 @@ index cb2f043..4fd7c72 100644
      expect(state.pendingDialogs).toEqual([]);
      expect(state.status).toEqual(closedStatus);
    });
-@@ -224,7 +224,7 @@ describe("SessionController extension dialog answers", () => {
+@@ -224,7 +224,7 @@
      await controller.cancelDialog("dialog-1");
  
      expect(cancelCalls).toEqual(["dialog-1"]);
@@ -1908,11 +1888,10 @@ index cb2f043..4fd7c72 100644
      expect(state.pendingDialogs).toEqual([]);
    });
  
-diff --git a/src/client/src/controllers/sessionController.startupDialogs.test.ts b/src/client/src/controllers/sessionController.startupDialogs.test.ts
-index e756a6f..7415924 100644
---- a/src/client/src/controllers/sessionController.startupDialogs.test.ts
-+++ b/src/client/src/controllers/sessionController.startupDialogs.test.ts
-@@ -192,7 +192,7 @@ describe("SessionController session_start dialog startup reachability", () => {
+diff -ruN -x .git a/src/client/src/controllers/sessionController.startupDialogs.test.ts b/src/client/src/controllers/sessionController.startupDialogs.test.ts
+--- a/src/client/src/controllers/sessionController.startupDialogs.test.ts	2026-10-24 12:28:11.509308870 +0000
++++ b/src/client/src/controllers/sessionController.startupDialogs.test.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -192,7 +192,7 @@
  
      expect(answerCalls).toEqual([{ sessionId: BACKEND_SESSION_ID, dialogId: "dialog-1", value: true, machineId: "local" }]);
      expect(harness.state.current.pendingDialogs).toEqual([]);
@@ -1921,7 +1900,7 @@ index e756a6f..7415924 100644
      expect(harness.state.current.error).toBe("");
  
      // The answer settled the hook daemon-side, so the create resolves and the
-@@ -225,7 +225,7 @@ describe("SessionController session_start dialog startup reachability", () => {
+@@ -225,7 +225,7 @@
  
      expect(cancelCalls).toEqual([{ sessionId: BACKEND_SESSION_ID, dialogId: "dialog-1" }]);
      expect(harness.state.current.pendingDialogs).toEqual([]);
@@ -1930,11 +1909,10 @@ index e756a6f..7415924 100644
      resolveBackendSession(harness);
      await start;
    });
-diff --git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
-index 237803a..e301f23 100644
---- a/src/client/src/controllers/sessionController.ts
-+++ b/src/client/src/controllers/sessionController.ts
-@@ -1058,7 +1058,7 @@ export class SessionController {
+diff -ruN -x .git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
+--- a/src/client/src/controllers/sessionController.ts	2026-10-24 12:28:11.901168270 +0000
++++ b/src/client/src/controllers/sessionController.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -1058,7 +1058,7 @@
        const outcome: ExtensionDialogOutcome | undefined = response.outcome;
        if (outcome !== undefined) {
          const dialog = this.getState().pendingDialogs.find((pending) => pending.dialogId === outcome.dialogId);
@@ -1943,7 +1921,7 @@ index 237803a..e301f23 100644
        }
        // Both outcomes carry the recomputed status, so no follow-up status
        // request is needed to learn what the session's open dialogs are now.
-@@ -1091,7 +1091,7 @@ export class SessionController {
+@@ -1091,7 +1091,7 @@
        const outcome: ExtensionDialogOutcome | undefined = response.outcome;
        if (outcome !== undefined) {
          const dialog = this.getState().pendingDialogs.find((candidate) => candidate.dialogId === outcome.dialogId);
@@ -1952,7 +1930,7 @@ index 237803a..e301f23 100644
        }
        this.applyPendingStartStatus(pending, response.sessionStatus);
      } catch (error) {
-@@ -1600,13 +1600,13 @@ export class SessionController {
+@@ -1600,13 +1600,13 @@
      this.setState({ pendingDialogs: [...state.pendingDialogs, dialog] });
    }
  
@@ -1968,7 +1946,7 @@ index 237803a..e301f23 100644
    }
  
    private recordClosedDialog(closed: ClosedExtensionDialog): void {
-@@ -1708,7 +1708,7 @@ export class SessionController {
+@@ -1708,7 +1708,7 @@
        return;
      }
      if (event.type === "dialog.closed") {
@@ -1977,7 +1955,7 @@ index 237803a..e301f23 100644
        return;
      }
      const transcript = this.transcripts.applyLiveEvent(this.getState().messages, event);
-@@ -1831,7 +1831,7 @@ export class SessionController {
+@@ -1831,7 +1831,7 @@
        return;
      }
      if (event.type === "dialog.closed") {
@@ -1986,11 +1964,10 @@ index 237803a..e301f23 100644
        return;
      }
      if (event.type === "status.update") this.applyPendingStartStatus(pending, event.status);
-diff --git a/src/client/src/shellMessages.ts b/src/client/src/shellMessages.ts
-index db1b735..f264d14 100644
---- a/src/client/src/shellMessages.ts
-+++ b/src/client/src/shellMessages.ts
-@@ -2,8 +2,9 @@ import { textMessage } from "./chatMessages";
+diff -ruN -x .git a/src/client/src/shellMessages.ts b/src/client/src/shellMessages.ts
+--- a/src/client/src/shellMessages.ts	2026-10-24 12:28:11.517306000 +0000
++++ b/src/client/src/shellMessages.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -2,8 +2,9 @@
  import type { ChatLine } from "./components/shared";
  import type { SessionUiEvent } from "./sessionSocket";
  
@@ -2002,7 +1979,7 @@ index db1b735..f264d14 100644
  }
  
  export function appendShellChunk(messages: ChatLine[], chunk: string): ChatLine[] {
-@@ -25,8 +26,9 @@ export function finalizeShellMessage(messages: ChatLine[], event: Extract<Sessio
+@@ -25,8 +26,9 @@
    if (event.cancelled === true) notes.push("cancelled");
    if (event.truncated === true) notes.push("output truncated");
    if (event.fullOutputPath !== undefined && event.fullOutputPath !== "") notes.push(`full output: ${event.fullOutputPath}`);
@@ -2014,11 +1991,10 @@ index db1b735..f264d14 100644
  }
  
  function hasShellOutput(text: string): boolean {
-diff --git a/src/server/sessions/piSessionService.extensionDialogs.test.ts b/src/server/sessions/piSessionService.extensionDialogs.test.ts
-index 1661a7e..e45dee3 100644
---- a/src/server/sessions/piSessionService.extensionDialogs.test.ts
-+++ b/src/server/sessions/piSessionService.extensionDialogs.test.ts
-@@ -164,7 +164,7 @@ describe("PiSessionService.answerDialog", () => {
+diff -ruN -x .git a/src/server/sessions/piSessionService.extensionDialogs.test.ts b/src/server/sessions/piSessionService.extensionDialogs.test.ts
+--- a/src/server/sessions/piSessionService.extensionDialogs.test.ts	2026-10-24 12:28:11.533300261 +0000
++++ b/src/server/sessions/piSessionService.extensionDialogs.test.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -164,7 +164,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2027,7 +2003,7 @@ index 1661a7e..e45dee3 100644
      ]);
      await service.dispose();
    });
-@@ -265,7 +265,7 @@ describe("PiSessionService extension dialog timeout", () => {
+@@ -265,7 +265,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2036,7 +2012,7 @@ index 1661a7e..e45dee3 100644
      ]);
      await service.dispose();
    });
-@@ -316,7 +316,7 @@ describe("PiSessionService extension dialog signal", () => {
+@@ -316,7 +316,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2045,7 +2021,7 @@ index 1661a7e..e45dee3 100644
      ]);
      await service.dispose();
    });
-@@ -395,7 +395,7 @@ describe("PiSessionService extension dialog run end and teardown", () => {
+@@ -395,7 +395,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2054,7 +2030,7 @@ index 1661a7e..e45dee3 100644
      ]);
      // The replacement runtime is bound with a fresh UI context of its own.
      expect(replacement.calls.bindExtensions).toHaveLength(1);
-@@ -416,7 +416,7 @@ describe("PiSessionService extension dialog abort request", () => {
+@@ -416,7 +416,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2063,7 +2039,7 @@ index 1661a7e..e45dee3 100644
      ]);
      const statuses = events.sessionEvents.flatMap(({ event }) => (event.type === "status.update" ? [event.status] : []));
      expect(statuses.at(-1)?.pendingDialogs).toBeUndefined();
-@@ -463,7 +463,7 @@ describe("PiSessionService extension dialog abort request", () => {
+@@ -463,7 +463,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2072,7 +2048,7 @@ index 1661a7e..e45dee3 100644
      ]);
      fake.session.abort = healthyAbort;
      await service.dispose();
-@@ -496,7 +496,7 @@ describe("PiSessionService extension dialog abort request", () => {
+@@ -496,7 +496,7 @@
      await expect(consent).resolves.toBe(false);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
        { type: "dialog.opened", dialog: openDialog(events) },
@@ -2081,11 +2057,10 @@ index 1661a7e..e45dee3 100644
      ]);
      await service.dispose();
    });
-diff --git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
-index d9ef4a6..7dd84f1 100644
---- a/src/server/sessions/piSessionService.lifecycle.test.ts
-+++ b/src/server/sessions/piSessionService.lifecycle.test.ts
-@@ -9,6 +9,8 @@ import { SessionNotificationStore } from "./sessionNotificationStore.js";
+diff -ruN -x .git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 12:28:11.901168270 +0000
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -9,6 +9,8 @@
  import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime, type RuntimeCreator, type SessionGateway } from "./piSessionService.testSupport.js";
  
  const TEST_AGENT_DIR = "/tmp/pi-web-test-agent";
@@ -2094,7 +2069,7 @@ index d9ef4a6..7dd84f1 100644
  
  function deferred<T = void>() {
    let resolve!: (value: T | PromiseLike<T>) => void;
-@@ -119,6 +121,34 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
+@@ -119,6 +121,34 @@
      }
    });
  
@@ -2129,7 +2104,7 @@ index d9ef4a6..7dd84f1 100644
    it("shares one runtime when concurrent cold lookups resolve to the same session", async () => {
      const sessionId = "single-flight-session";
      const createStarted = deferred();
-@@ -1549,14 +1579,14 @@ describe("PiSessionService.streamSnapshot", () => {
+@@ -1549,14 +1579,14 @@
        fake.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "bash" });
  
        expect((await service.streamSnapshot(sessionRef("snap-tools"))).tools).toEqual([
@@ -2147,7 +2122,7 @@ index d9ef4a6..7dd84f1 100644
  
        // An aborted run may never end its tools; the run end forgets them.
        fake.emit({ type: "agent_end", messages: [] });
-@@ -1590,10 +1620,10 @@ describe("PiSessionService.streamSnapshot", () => {
+@@ -1590,10 +1620,10 @@
        await service.shell(sessionRef("snap-shell"), "!!sleep 60");
        await vi.waitFor(() => { expect(onChunk).toBeDefined(); });
  
@@ -2160,7 +2135,7 @@ index d9ef4a6..7dd84f1 100644
        // The tail cut must not leave the low half of a surrogate pair at the start.
        onChunk?.(`\u{1F600}${"x".repeat(999_999)}`);
        expect((await service.streamSnapshot(sessionRef("snap-shell"))).shells?.[0]?.output).toBe("x".repeat(999_999));
-@@ -1637,7 +1667,7 @@ describe("PiSessionService.streamSnapshot", () => {
+@@ -1637,7 +1667,7 @@
        await vi.waitFor(() => { expect(hub.sessionEvents.some(({ event }) => event.type === "shell.end")).toBe(true); });
  
        expect((await service.streamSnapshot(sessionRef("snap-deferred"))).shells).toEqual([
@@ -2169,7 +2144,7 @@ index d9ef4a6..7dd84f1 100644
        ]);
  
        // The run end flushes the deferred results into history.
-@@ -1722,7 +1752,7 @@ describe("consistent running-work snapshots", () => {
+@@ -1722,7 +1752,7 @@
        expect(before.messagePage?.messages).toEqual([]);
        expect(before.shells).toEqual([{
          command: "make", excludeFromContext: false, output: "done\n",
@@ -2178,7 +2153,7 @@ index d9ef4a6..7dd84f1 100644
        }]);
        // SDK flush is synchronous and drains the entire pending queue.
        append(f.branch, bashMessage("make"));
-@@ -1812,7 +1842,7 @@ describe("consistent running-work snapshots", () => {
+@@ -1812,7 +1842,7 @@
          append(f.branch, result);
          f.stream.streamingMessage = undefined;
          const after = await f.service.streamSnapshot(f.ref);
@@ -2187,7 +2162,7 @@ index d9ef4a6..7dd84f1 100644
          expect(after.messagePage?.messages).toEqual([call, result]);
          f.fake.emit({ type: "agent_end", messages: [] });
          expect((await f.service.streamSnapshot(f.ref)).tools).toBeUndefined();
-@@ -1874,7 +1904,7 @@ describe("consistent running-work snapshots", () => {
+@@ -1874,7 +1904,7 @@
        const middle = await f.service.streamSnapshot(f.ref);
        expect(middle.messagePage?.messages).toEqual([bashMessage("same")]);
        expect(middle.shells).toEqual([
@@ -2196,11 +2171,10 @@ index d9ef4a6..7dd84f1 100644
        ]);
        second.resolve({ output: "done\n", exitCode: 0,
          cancelled: false, truncated: false });
-diff --git a/src/server/sessions/piSessionService.messages.test.ts b/src/server/sessions/piSessionService.messages.test.ts
-index 50d0e61..e340120 100644
---- a/src/server/sessions/piSessionService.messages.test.ts
-+++ b/src/server/sessions/piSessionService.messages.test.ts
-@@ -63,7 +63,8 @@ describe("PiSessionService", () => {
+diff -ruN -x .git a/src/server/sessions/piSessionService.messages.test.ts b/src/server/sessions/piSessionService.messages.test.ts
+--- a/src/server/sessions/piSessionService.messages.test.ts	2026-10-24 12:28:11.533300261 +0000
++++ b/src/server/sessions/piSessionService.messages.test.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -63,7 +63,8 @@
  
        const messageEnds = events.sessionEvents.map(({ event }) => event).filter((event) => event.type === "message.end");
        expect(messageEnds).toEqual([
@@ -2210,11 +2184,10 @@ index 50d0e61..e340120 100644
          { type: "message.end", message: { role: "user", content: [{ type: "text", text: "next" }] } },
        ]);
        await service.dispose();
-diff --git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
-index 69789f0..8ff7537 100644
---- a/src/server/sessions/piSessionService.ts
-+++ b/src/server/sessions/piSessionService.ts
-@@ -1991,6 +1991,7 @@ export class PiSessionService implements SessionRouteService {
+diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-10-24 12:28:11.901168270 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -1991,6 +1991,7 @@
        dialogId: outcome.dialogId,
        reason: outcome.reason,
        ...(outcome.answer === undefined ? {} : { answer: outcome.answer }),
@@ -2222,7 +2195,7 @@ index 69789f0..8ff7537 100644
      });
    }
  
-@@ -2430,6 +2431,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -2430,6 +2431,7 @@
              command: shell.command,
              excludeFromContext: shell.excludeFromContext,
              output: runningShellOutputTail(shell.output),
@@ -2230,7 +2203,7 @@ index 69789f0..8ff7537 100644
              ...(shell.end === undefined ? {} : { end: { ...shell.end } }),
            })),
          }),
-@@ -2673,7 +2675,8 @@ export class PiSessionService implements SessionRouteService {
+@@ -2673,7 +2675,8 @@
      }
  
      this.publishActivity(session, "running bash", "active", command);
@@ -2240,7 +2213,7 @@ index 69789f0..8ff7537 100644
      this.runningShells.set(session, [...(this.runningShells.get(session) ?? []), running]);
      const finalizations = this.shellFinalizations.get(session) ?? new Map<
        SessionRunningShell, { started: boolean; completion: Promise<void> }
-@@ -2685,7 +2688,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -2685,7 +2688,7 @@
      };
      finalizations.set(running, finalization);
      this.shellFinalizations.set(session, finalizations);
@@ -2249,7 +2222,7 @@ index 69789f0..8ff7537 100644
      void this.runSessionEntryMutation(session, "run a shell command", () => {
        finalization.started = true;
        return session.executeBash(command, (chunk) => {
-@@ -2704,6 +2707,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -2704,6 +2707,7 @@
          cancelled: result.cancelled,
          truncated: result.truncated,
          ...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
@@ -2257,7 +2230,7 @@ index 69789f0..8ff7537 100644
        };
        // A result deferred by an active run stays visible to joining clients until pi records it.
        // `end` skips `output`: the client needs it only to tell whether there was any, and the
-@@ -2716,7 +2720,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -2716,7 +2720,7 @@
      }).catch((error: unknown) => {
        const message = error instanceof Error ? error.message : String(error);
        this.clearRunningShell(session, running);
@@ -2266,7 +2239,7 @@ index 69789f0..8ff7537 100644
        this.events.publish(session.sessionId, { type: "session.error", message });
        this.publishActivity(session, "bash failed", "error", message);
        this.publishStatus(session);
-@@ -4016,9 +4020,9 @@ export class PiSessionService implements SessionRouteService {
+@@ -4016,9 +4020,9 @@
        toolCallId: event.toolCallId, toolName: event.toolName, text: event.text,
        ...(event.content === undefined ? {} : { content: event.content }),
        ...(event.details === undefined ? {} : { details: event.details }),
@@ -2278,7 +2251,7 @@ index 69789f0..8ff7537 100644
      else {
        // Merge like the client's live `tool.update`: empty text and absent content/details keep the previous ones.
        const previous = tools.get(event.toolCallId);
-@@ -4030,6 +4034,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -4030,6 +4034,7 @@
          text: event.text === "" ? previous?.text ?? "" : event.text,
          ...(content === undefined ? {} : { content }),
          ...(details === undefined ? {} : { details }),
@@ -2286,7 +2259,7 @@ index 69789f0..8ff7537 100644
        });
      }
      if (tools.size === 0) this.runningTools.delete(session);
-@@ -4423,7 +4428,7 @@ export class PiSessionService implements SessionRouteService {
+@@ -4423,7 +4428,7 @@
        pendingMessageCount: this.pendingMessageCount(session),
        queuedMessages: queuedMessagesFromSession(session, this.compactionQueuedMessages(session.sessionId)),
        messageCount,
@@ -2295,7 +2268,7 @@ index 69789f0..8ff7537 100644
        cost: stats.cost,
        ...(contextUsage === undefined ? {} : { contextUsage }),
        ...(warnings.length === 0 ? {} : { warnings }),
-@@ -4936,6 +4941,71 @@ function annotateAssistantThinkingLevel(message: unknown, thinkingLevel: string
+@@ -4936,6 +4941,71 @@
    return { ...message, thinkingLevel };
  }
  
@@ -2367,7 +2340,7 @@ index 69789f0..8ff7537 100644
  function historyMessages(session: PiAgentSession): unknown[] {
    return historyMessagesFromEntries(session.sessionManager.getBranch());
  }
-@@ -4947,14 +5017,14 @@ function historyMessagesFromEntries(entries: readonly unknown[]): unknown[] {
+@@ -4947,14 +5017,14 @@
    let thinkingLevel: string | undefined;
    for (const entry of entries) {
      if (!isRecord(entry)) continue;
@@ -2386,7 +2359,7 @@ index 69789f0..8ff7537 100644
    }
    return messages;
  }
-@@ -5033,14 +5103,14 @@ function toClientEvent(event: unknown, thinkingLevel?: string): SessionUiEvent {
+@@ -5033,14 +5103,14 @@
    const eventType = getString(event, "type");
    const assistantMessageEvent = getProperty(event, "assistantMessageEvent");
    if (eventType === "message_update" && getString(assistantMessageEvent, "type") === "text_delta") {
@@ -2404,7 +2377,7 @@ index 69789f0..8ff7537 100644
    }
    if (eventType === "tool_execution_update") {
      const partialResult = getProperty(event, "partialResult");
-@@ -5048,14 +5118,14 @@ function toClientEvent(event: unknown, thinkingLevel?: string): SessionUiEvent {
+@@ -5048,14 +5118,14 @@
    }
    if (eventType === "tool_execution_end") {
      const result = getProperty(event, "result");
@@ -2421,7 +2394,7 @@ index 69789f0..8ff7537 100644
    }
    return { type: "pi.event", eventType: eventType ?? "unknown" };
  }
-@@ -5132,7 +5202,8 @@ function copySnapshotTool(tool: SessionRunningTool): SessionRunningTool {
+@@ -5132,7 +5202,8 @@
      text: tool.text,
      ...(content === undefined ? {} : { content }),
      ...(details === undefined ? {} : { details }),
@@ -2431,11 +2404,10 @@ index 69789f0..8ff7537 100644
    };
  }
  function isRecord(value: unknown): value is Record<string, unknown> {
-diff --git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
-index 741f4cf..39adcb8 100644
---- a/src/shared/apiTypes.ts
-+++ b/src/shared/apiTypes.ts
-@@ -1152,7 +1152,8 @@ export interface SessionStatus {
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-24 12:28:11.901168270 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 12:28:12.041118005 +0000
+@@ -1154,7 +1154,8 @@
    pendingMessageCount: number;
    queuedMessages: QueuedSessionMessage[];
    messageCount?: number;
@@ -2445,7 +2417,7 @@ index 741f4cf..39adcb8 100644
    cost: number;
    contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
    /**
-@@ -1345,13 +1346,15 @@ export interface SessionStreamSnapshot {
+@@ -1347,13 +1348,15 @@
  }
  
  export interface SessionRunningTool {
@@ -2463,7 +2435,7 @@ index 741f4cf..39adcb8 100644
  }
  
  export interface SessionRunningShell {
-@@ -1359,6 +1362,8 @@ export interface SessionRunningShell {
+@@ -1361,6 +1364,8 @@
    excludeFromContext: boolean;
    /** Output streamed so far; only its tail is kept for a very chatty command. */
    output: string;
@@ -2472,7 +2444,7 @@ index 741f4cf..39adcb8 100644
    /** The `shell.end` payload, minus the output `output` already holds, once finished but not yet in history. */
    end?: Omit<Extract<SessionUiEvent, { type: "shell.end" }>, "type" | "output">;
  }
-@@ -1379,14 +1384,14 @@ export type SessionUiEvent = SessionUiEventBody & { seq?: number };
+@@ -1381,14 +1386,14 @@
  
  type SessionUiEventBody =
    | { type: "message.append"; message: unknown }
@@ -2493,7 +2465,7 @@ index 741f4cf..39adcb8 100644
    | { type: "agent.start" }
    | { type: "agent.end" }
    | { type: "message.end"; message?: unknown }
-@@ -1398,7 +1403,7 @@ type SessionUiEventBody =
+@@ -1400,7 +1405,7 @@
    | { type: "ask.opened"; ask: PendingAskUser }
    | { type: "ask.closed"; askId: string; reason: AskUserCloseReason }
    | { type: "dialog.opened"; dialog: PendingExtensionDialog }
