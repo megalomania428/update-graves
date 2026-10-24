@@ -106,7 +106,7 @@ When a pull request changes an application's upstream ref, version, patch number
 - `pi-web`:
 
   ```bash
-  git checkout master && git pull; TAG4REL='pi-web-v1.202609.0p7'
+  git checkout master && git pull; TAG4REL='pi-web-v1.202609.0p8'
   git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
   ```
 

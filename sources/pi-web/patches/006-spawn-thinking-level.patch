@@ -1,6 +1,6 @@
-diff -ruN a/src/client/src/components/settings/SettingsSessiondPanel.ts b/src/client/src/components/settings/SettingsSessiondPanel.ts
---- a/src/client/src/components/settings/SettingsSessiondPanel.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/client/src/components/settings/SettingsSessiondPanel.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/client/src/components/settings/SettingsSessiondPanel.ts b/src/client/src/components/settings/SettingsSessiondPanel.ts
+--- a/src/client/src/components/settings/SettingsSessiondPanel.ts	2026-10-24 12:25:31.545913705 +0000
++++ b/src/client/src/components/settings/SettingsSessiondPanel.ts	2026-10-24 12:25:31.945831308 +0000
 @@ -23,8 +23,8 @@
      // state, so an unset config file still shows the feature as enabled.
      const effectiveSpawn = config?.effectiveConfig.spawnSessions !== false;
@@ -27,10 +27,10 @@ diff -ruN a/src/client/src/components/settings/SettingsSessiondPanel.ts b/src/cl
            </div>
            <div class="field">
              <span class="field-heading">
-diff -ruN a/src/config.ts b/src/config.ts
---- a/src/config.ts	2026-10-23 19:52:18.543418207 +0000
-+++ b/src/config.ts	2026-10-23 19:52:21.927428195 +0000
-@@ -321,8 +321,8 @@
+diff -ruN -x .git a/src/config.ts b/src/config.ts
+--- a/src/config.ts	2026-10-24 12:25:31.865847787 +0000
++++ b/src/config.ts	2026-10-24 12:25:31.945831308 +0000
+@@ -325,8 +325,8 @@
   * Whether LLMs may start tracked child sessions via the spawn_subsession
   * family of tools. On by default; set the env var `PI_WEB_SUBSESSIONS` or the
   * `subsessions` config key to `false` to disable. The env var takes precedence
@@ -41,9 +41,9 @@ diff -ruN a/src/config.ts b/src/config.ts
   */
  export function subsessionsEnabled(env: NodeJS.ProcessEnv = process.env, config: PiWebConfig = {}): boolean {
    const fromEnv = env["PI_WEB_SUBSESSIONS"];
-diff -ruN a/src/server/sessiond/sessionServiceDependencies.test.ts b/src/server/sessiond/sessionServiceDependencies.test.ts
---- a/src/server/sessiond/sessionServiceDependencies.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessiond/sessionServiceDependencies.test.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/server/sessiond/sessionServiceDependencies.test.ts b/src/server/sessiond/sessionServiceDependencies.test.ts
+--- a/src/server/sessiond/sessionServiceDependencies.test.ts	2026-10-24 12:25:31.569908761 +0000
++++ b/src/server/sessiond/sessionServiceDependencies.test.ts	2026-10-24 12:25:31.945831308 +0000
 @@ -26,6 +26,7 @@
      onUnreadChanged: () => { /* no-op */ },
      catalogRefreshStatus: { isRefreshInFlight: () => false },
@@ -52,9 +52,9 @@ diff -ruN a/src/server/sessiond/sessionServiceDependencies.test.ts b/src/server/
      subsessionsEnabled: false,
      askUserEnabled: true,
      appendSystemPromptSections: [],
-diff -ruN a/src/server/sessiond/sessionServiceDependencies.ts b/src/server/sessiond/sessionServiceDependencies.ts
---- a/src/server/sessiond/sessionServiceDependencies.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessiond/sessionServiceDependencies.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/server/sessiond/sessionServiceDependencies.ts b/src/server/sessiond/sessionServiceDependencies.ts
+--- a/src/server/sessiond/sessionServiceDependencies.ts	2026-10-24 12:25:31.569908761 +0000
++++ b/src/server/sessiond/sessionServiceDependencies.ts	2026-10-24 12:25:31.945831308 +0000
 @@ -23,9 +23,11 @@
    catalogRefreshStatus: NonNullable<PiSessionServiceDependencies["catalogRefreshStatus"]>;
    /** Live global config reader for request-time workspace-effective defaults (e.g. the attachments save folder). */
@@ -81,9 +81,9 @@ diff -ruN a/src/server/sessiond/sessionServiceDependencies.ts b/src/server/sessi
      subsessionsEnabled: input.spawnTargets !== undefined && input.subsessionsEnabled,
      askUserEnabled: input.askUserEnabled,
      appendSystemPromptSections: input.appendSystemPromptSections,
-diff -ruN a/src/server/sessiond.ts b/src/server/sessiond.ts
---- a/src/server/sessiond.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessiond.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/server/sessiond.ts b/src/server/sessiond.ts
+--- a/src/server/sessiond.ts	2026-10-24 12:25:31.569908761 +0000
++++ b/src/server/sessiond.ts	2026-10-24 12:25:31.945831308 +0000
 @@ -251,7 +251,7 @@
      // daemon startup must not depend on how long that takes.
      machineStatus.notifyChanged();
@@ -101,9 +101,9 @@ diff -ruN a/src/server/sessiond.ts b/src/server/sessiond.ts
        subsessionsEnabled: config.subsessions,
        askUserEnabled: config.askUser,
        config: configService,
-diff -ruN a/src/server/sessions/piSessionService.spawnSession.test.ts b/src/server/sessions/piSessionService.spawnSession.test.ts
---- a/src/server/sessions/piSessionService.spawnSession.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessions/piSessionService.spawnSession.test.ts	2026-10-23 19:52:21.931428206 +0000
+diff -ruN -x .git a/src/server/sessions/piSessionService.spawnSession.test.ts b/src/server/sessions/piSessionService.spawnSession.test.ts
+--- a/src/server/sessions/piSessionService.spawnSession.test.ts	2026-10-24 12:25:31.573907937 +0000
++++ b/src/server/sessions/piSessionService.spawnSession.test.ts	2026-10-24 12:25:31.945831308 +0000
 @@ -28,9 +28,9 @@
  
        const result = await service.spawnSession({ spawningCwd: "/workspace", spawningSessionId: "spawner-1", prompt: "continue the plan", cwd: "/workspace-feature" });
@@ -152,9 +152,9 @@ diff -ruN a/src/server/sessions/piSessionService.spawnSession.test.ts b/src/serv
          expect(spawned.calls.prompt).toEqual([{ text: "go", options: undefined }]);
          await service.dispose();
        });
-diff -ruN a/src/server/sessions/piSessionService.spawnSubsession.test.ts b/src/server/sessions/piSessionService.spawnSubsession.test.ts
---- a/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-10-23 19:52:21.931428206 +0000
+diff -ruN -x .git a/src/server/sessions/piSessionService.spawnSubsession.test.ts b/src/server/sessions/piSessionService.spawnSubsession.test.ts
+--- a/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-10-24 12:25:31.573907937 +0000
++++ b/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-10-24 12:25:31.953829660 +0000
 @@ -56,7 +56,7 @@
  
        const result = await service.spawnSubsession({ spawningCwd: "/workspace", parentSessionId: "parent-1", parentSessionFile: "/tmp/parent-1.jsonl", prompt: "do the slice" });
@@ -182,9 +182,9 @@ diff -ruN a/src/server/sessions/piSessionService.spawnSubsession.test.ts b/src/s
        await service.dispose();
      });
  
-diff -ruN a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
---- a/src/server/sessions/piSessionService.ts	2026-10-23 19:52:18.547418219 +0000
-+++ b/src/server/sessions/piSessionService.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-10-24 12:25:31.873846139 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-10-24 12:25:31.953829660 +0000
 @@ -43,6 +43,7 @@
  import type { PiWebConfigService } from "../configRoutes.js";
  import { parsePromptAttachments } from "../../shared/promptAttachments.js";
@@ -429,9 +429,9 @@ diff -ruN a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSess
     * Register the question set an agent wants the user to answer as the session's
     * open ask. Deliberately does not wait for the user: `ask_user` terminates the
     * run and the submitted answers come back later as a follow-up message.
-diff -ruN a/src/server/sessions/spawnSessionTool.ts b/src/server/sessions/spawnSessionTool.ts
---- a/src/server/sessions/spawnSessionTool.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessions/spawnSessionTool.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/server/sessions/spawnSessionTool.ts b/src/server/sessions/spawnSessionTool.ts
+--- a/src/server/sessions/spawnSessionTool.ts	2026-10-24 12:25:31.577907112 +0000
++++ b/src/server/sessions/spawnSessionTool.ts	2026-10-24 12:25:31.953829660 +0000
 @@ -1,11 +1,21 @@
  import { Type } from "typebox";
 +import { StringEnum } from "@earendil-works/pi-ai";
@@ -498,9 +498,9 @@ diff -ruN a/src/server/sessions/spawnSessionTool.ts b/src/server/sessions/spawnS
          details: result,
        };
      },
-diff -ruN a/src/server/sessions/spawnSubsessionTool.ts b/src/server/sessions/spawnSubsessionTool.ts
---- a/src/server/sessions/spawnSubsessionTool.ts	2026-09-05 21:34:30.000000000 +0000
-+++ b/src/server/sessions/spawnSubsessionTool.ts	2026-10-23 19:52:21.927428195 +0000
+diff -ruN -x .git a/src/server/sessions/spawnSubsessionTool.ts b/src/server/sessions/spawnSubsessionTool.ts
+--- a/src/server/sessions/spawnSubsessionTool.ts	2026-10-24 12:25:31.577907112 +0000
++++ b/src/server/sessions/spawnSubsessionTool.ts	2026-10-24 12:25:31.953829660 +0000
 @@ -1,5 +1,7 @@
  import { Type } from "typebox";
 +import { StringEnum } from "@earendil-works/pi-ai";
@@ -567,10 +567,10 @@ diff -ruN a/src/server/sessions/spawnSubsessionTool.ts b/src/server/sessions/spa
          details: result,
        };
      },
-diff -ruN a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
---- a/src/shared/apiTypes.ts	2026-10-23 19:52:18.543418207 +0000
-+++ b/src/shared/apiTypes.ts	2026-10-23 19:52:21.927428195 +0000
-@@ -203,8 +203,8 @@
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-10-24 12:25:31.865847787 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 12:25:31.953829660 +0000
+@@ -205,8 +205,8 @@
    /**
     * When true, LLMs can start tracked child sessions via the
     * spawn_subsession / list_subsessions / check_subsession / read_subsession
