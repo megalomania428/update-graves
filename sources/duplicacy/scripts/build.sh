@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# cspell:ignore ldflags trimpath goproxy modzip
+# cspell:ignore ldflags trimpath goproxy modzip gcflags asmflags
+# cspell:ignore GOTOOLCHAIN GOPATH modcache
 # cspell:ignore duplicacy gilbertchen xargs GOARCH lzma gomod endgroup GOARM riscv ppc
-MODULE='duplicacy.invalid/v3'
+MODULE='duplicacy.invalid/v2'
 OUT_DIR="${GRAVES_OUT_DIR:?}"
 FILE_VERSION="${GRAVES_FILE_VERSION:?}"
 GO_VERSION="v${GRAVES_VERSION:?}"
 MODZIP_DIR="${GRAVES_SOURCE_DIR:?}/scripts/modzip"
+# Go 1.12.9 built the original 2.7.2 release: a Go 1.21+ go command downloads it and
+# runs it instead of itself, and GOTOOLCHAIN=local returns to that command for modzip
+export GOTOOLCHAIN='go1.12.9'
+# Go 1.12 resolves modules through VCS by default and accepts no list of proxies
+export GO111MODULE='on' GOPROXY='https://proxy.golang.org'
 STAGE="${1:-}"
 STEP=''
 STEP_START=0
@@ -61,9 +67,12 @@ test)
   ;;
 bin)
   sha="$(git rev-parse --short HEAD)"
+  tree="$(pwd)"
+  gopath="$(go env GOPATH)"
+  modcache="${gopath%%:*}/pkg/mod"
   platforms=(
-    linux/amd64 linux/arm64 linux/386 linux/arm linux/riscv64 linux/ppc64le
-    darwin/amd64 darwin/arm64 windows/amd64 windows/386 freebsd/amd64 freebsd/arm64
+    linux/amd64 linux/arm64 linux/386 linux/arm linux/ppc64le
+    darwin/amd64 windows/amd64 windows/386 freebsd/amd64
   )
   for platform in "${platforms[@]}"; do
     os="${platform%/*}"
@@ -74,9 +83,14 @@ bin)
       ext='.exe'
     fi
     step_begin "go build ${platform}"
-    # GOARM only affects linux/arm and is ignored by every other GOARCH
-    CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" GOARM=7 go build -trimpath -o \
+    # GOARM only affects linux/arm and is ignored by every other GOARCH. Go 1.12 has no
+    # -trimpath, so the compiler and the assembler trim the module cache everywhere and
+    # the tree in the module packages, where the later pattern wins
+    CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" GOARM=7 go build -o \
       "${OUT_DIR}/${name}${ext}" \
+      -gcflags="all='-trimpath=${modcache}'" -asmflags="all='-trimpath=${modcache}'" \
+      -gcflags="${MODULE}/...='-trimpath=${tree}'" \
+      -asmflags="${MODULE}/...='-trimpath=${tree}'" \
       -ldflags "-s -w -X 'main.GitCommit=${sha} ${GRAVES_VERSION}'" ./duplicacy
     if [[ "${os}" == 'linux' || "${os}" == 'freebsd' ]]; then
       info="$(file -b "${OUT_DIR}/${name}")"
@@ -108,7 +122,7 @@ gomod)
   work="$(mktemp -d)"
   proxy="duplicacy-${FILE_VERSION}-goproxy"
   step_begin 'module zip'
-  go -C "${MODZIP_DIR}" run . "${MODULE}" "${GO_VERSION}" "$(pwd)" \
+  GOTOOLCHAIN='local' go -C "${MODZIP_DIR}" run . "${MODULE}" "${GO_VERSION}" "$(pwd)" \
     "${work}/${proxy}" "$(git log -1 --format=%cI)"
   step_end
   step_begin "archive ${proxy}"
