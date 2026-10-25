@@ -1,19 +1,227 @@
---- a/src/client/src/components/ToolExecutionView.ts
-+++ b/src/client/src/components/ToolExecutionView.ts
-@@ -22,6 +22,12 @@
-   initialized: boolean;
- }
+diff -ruN -x .git a/src/client/src/components/FormattedText.ts b/src/client/src/components/FormattedText.ts
+--- a/src/client/src/components/FormattedText.ts	2026-10-24 21:47:56.333357516 +0000
++++ b/src/client/src/components/FormattedText.ts	2026-10-24 21:48:24.438083574 +0000
+@@ -4,27 +4,113 @@
+ import { writeClipboardText } from "../clipboard";
+ import { toSafeMarkdownHtml } from "../formatting/markdown";
+ import { selectInlineCodeOnDoubleClick } from "../formatting/inlineCodeSelection";
++import { findWrapAnchor, measureAnchorTop } from "../formatting/wrapAnchor";
+ import { formattedTextStyles } from "./shared";
  
-+interface WrapAnchor {
-+  line: boolean;
-+  offset: number;
-+  distance: number;
++interface CodeBlockState {
++  wrapped: boolean;
++  pinned: boolean;
++  scrollTop: number;
++  scrollLeft: number;
 +}
 +
- interface InputCardOptions {
-   scroller: "args" | "content";
-   label: string;
-@@ -48,6 +54,20 @@
++const CODE_WRAP_LABEL = "Wrap long lines in code block";
++const PINNED_DISTANCE = 4;
++
+ @customElement("formatted-text")
+ export class FormattedText extends LitElement {
+   @property() text = "";
++  private readonly codeBlockStates = new Map<number, CodeBlockState>();
++  private readonly untouchedBlocks = new Map<number, boolean>();
++  private textExtended = false;
++  private textStreaming = false;
+ 
+   override render() {
+     return html`<div class="formatted" dir="auto" @click=${this.onFormattedClick} @dblclick=${selectInlineCodeOnDoubleClick}>${unsafeHTML(toSafeMarkdownHtml(this.text))}</div>`;
+   }
+ 
++  override willUpdate(changed: Map<PropertyKey, unknown>): void {
++    if (!changed.has("text")) return;
++    const previous = changed.get("text");
++    this.textExtended = typeof previous === "string" && previous !== "" && this.text.startsWith(previous.trimEnd() || previous);
++    if (!this.textExtended) {
++      this.textStreaming = false;
++      this.codeBlockStates.clear();
++      this.resetCodeBlocks();
++      return;
++    }
++    this.saveCodeBlockStates(!this.textStreaming);
++    this.textStreaming = true;
++  }
++
+   override updated(): void {
+     this.enhanceCodeBlocks();
+   }
+ 
++  private saveCodeBlockStates(pinUntouched: boolean): void {
++    this.renderRoot.querySelectorAll(".code-block-wrapper").forEach((wrapper) => {
++      if (!(wrapper instanceof HTMLElement)) return;
++      const index = Number(wrapper.dataset["codeBlockIndex"]);
++      const pre = wrapper.querySelector(":scope > pre");
++      if (!Number.isInteger(index) || !(pre instanceof HTMLPreElement)) return;
++      const saved = this.codeBlockStates.get(index);
++      const hidden = pre.getClientRects().length === 0;
++      if (saved !== undefined && (hidden || (pre.hasAttribute("data-restore-pending") && pre.scrollTop === 0 && pre.scrollLeft === 0))) {
++        this.codeBlockStates.set(index, { ...saved, wrapped: pre.classList.contains("wrap") });
++        return;
++      }
++      pre.removeAttribute("data-restore-pending");
++      const untouched = pinUntouched && saved === undefined && pre.scrollTop === 0;
++      const pinned = !hidden && pre.scrollHeight - pre.clientHeight - pre.scrollTop <= PINNED_DISTANCE;
++      if (untouched) this.untouchedBlocks.set(index, pinned);
++      this.codeBlockStates.set(index, {
++        wrapped: pre.classList.contains("wrap"),
++        pinned: untouched || pinned,
++        scrollTop: pre.scrollTop,
++        scrollLeft: pre.scrollLeft,
++      });
++    });
++  }
++
++  private resetCodeBlocks(): void {
++    this.renderRoot.querySelectorAll(".code-block-wrapper").forEach((wrapper) => {
++      const pre = wrapper.querySelector(":scope > pre");
++      const button = wrapper.querySelector(":scope > .code-wrap-button");
++      if (!(pre instanceof HTMLPreElement) || !(button instanceof HTMLButtonElement)) return;
++      setCodeWrap(pre, button, false);
++      pre.scrollTop = 0;
++      pre.scrollLeft = 0;
++    });
++  }
++
+   private enhanceCodeBlocks(): void {
++    const restored: { element: HTMLPreElement; state: CodeBlockState }[] = [];
++    let index = 0;
+     this.renderRoot.querySelectorAll("pre").forEach((element) => {
+-      if (!(element instanceof HTMLPreElement) || element.parentElement?.classList.contains("code-block-wrapper") === true) return;
++      if (!(element instanceof HTMLPreElement)) return;
++      if (element.parentElement?.classList.contains("code-block-wrapper") === true) {
++        const state = this.textExtended ? this.codeBlockStates.get(index) : undefined;
++        if (state !== undefined && (state.pinned || element.hasAttribute("data-restore-pending") || element.getClientRects().length === 0)) restored.push({ element, state });
++        index += 1;
++        return;
++      }
+       const code = element.querySelector("code");
+       if (!(code instanceof HTMLElement)) return;
++      const blockIndex = index;
++      index += 1;
+       const wrapper = document.createElement("div");
+       wrapper.className = "code-block-wrapper";
++      wrapper.dataset["codeBlockIndex"] = String(blockIndex);
++      element.setAttribute("part", "code-block");
++      const wrapButton = document.createElement("button");
++      wrapButton.type = "button";
++      wrapButton.className = "code-wrap-button";
++      wrapButton.title = CODE_WRAP_LABEL;
++      wrapButton.setAttribute("aria-label", CODE_WRAP_LABEL);
++      const wrapIcon = document.createElement("span");
++      wrapIcon.setAttribute("aria-hidden", "true");
++      wrapIcon.textContent = "⎆";
++      wrapButton.append(wrapIcon);
+       const button = document.createElement("button");
+       button.type = "button";
+       button.className = "code-copy-button";
+@@ -35,12 +121,40 @@
+       icon.textContent = "⧉";
+       button.append(icon);
+       element.before(wrapper);
+-      wrapper.append(element, button);
++      wrapper.append(element, wrapButton, button);
++      let state = this.codeBlockStates.get(blockIndex);
++      if (state === undefined && this.textExtended) {
++        state = { wrapped: false, pinned: isTrailingBlock(wrapper, this.renderRoot), scrollTop: 0, scrollLeft: 0 };
++        this.codeBlockStates.set(blockIndex, state);
++      }
++      setCodeWrap(element, wrapButton, state?.wrapped === true);
++      if (state !== undefined) restored.push({ element, state });
+     });
++    for (const [blockIndex, pinned] of this.untouchedBlocks) {
++      const state = this.codeBlockStates.get(blockIndex);
++      const wrapper = this.renderRoot.querySelector(`.code-block-wrapper[data-code-block-index="${String(blockIndex)}"]`);
++      if (state !== undefined && (wrapper === null || !isTrailingBlock(wrapper, this.renderRoot))) state.pinned = pinned;
++    }
++    this.untouchedBlocks.clear();
++    this.textExtended = false;
++    for (const { element, state } of restored) {
++      if (element.getClientRects().length === 0) {
++        element.setAttribute("data-restore-pending", "");
++        continue;
++      }
++      element.removeAttribute("data-restore-pending");
++      element.scrollLeft = state.scrollLeft;
++      element.scrollTop = state.pinned ? element.scrollHeight : state.scrollTop;
++    }
+   }
+ 
+   private readonly onFormattedClick = (event: MouseEvent): void => {
+     if (!(event.target instanceof Element)) return;
++    const wrapButton = event.target.closest(".code-wrap-button");
++    if (wrapButton instanceof HTMLButtonElement) {
++      this.toggleCodeWrap(wrapButton);
++      return;
++    }
+     const button = event.target.closest(".code-copy-button");
+     if (!(button instanceof HTMLButtonElement)) return;
+     const wrapper = button.closest(".code-block-wrapper");
+@@ -50,6 +164,32 @@
+     void this.copyCode(code.textContent, button);
+   };
+ 
++  private toggleCodeWrap(button: HTMLButtonElement): void {
++    const wrapper = button.closest(".code-block-wrapper");
++    if (!(wrapper instanceof HTMLElement)) return;
++    const index = Number(wrapper.dataset["codeBlockIndex"]);
++    const pre = wrapper.querySelector(":scope > pre");
++    if (!Number.isInteger(index) || !(pre instanceof HTMLPreElement)) return;
++    const range = pre.scrollHeight - pre.clientHeight;
++    const pinned = range > 0 && range - pre.scrollTop <= PINNED_DISTANCE;
++    const ratio = range <= 0 ? 0 : pre.scrollTop / range;
++    const anchor = range <= 0 || pinned ? undefined : findWrapAnchor(pre);
++    const wrapped = !pre.classList.contains("wrap");
++    this.codeBlockStates.set(index, { pinned: false, scrollTop: 0, scrollLeft: 0, ...this.codeBlockStates.get(index), wrapped });
++    setCodeWrap(pre, button, wrapped);
++    if (range <= 0) return;
++    if (pinned) {
++      pre.scrollTop = pre.scrollHeight;
++      return;
++    }
++    const anchorTop = anchor === undefined ? undefined : measureAnchorTop(pre, anchor);
++    if (anchor !== undefined && anchorTop !== undefined) {
++      pre.scrollTop += anchorTop - pre.getBoundingClientRect().top - anchor.distance;
++      return;
++    }
++    pre.scrollTop = ratio * Math.max(0, pre.scrollHeight - pre.clientHeight);
++  }
++
+   private async copyCode(text: string, button: HTMLButtonElement): Promise<void> {
+     const copied = await writeClipboardText(text);
+     this.setCopyButtonState(button, copied ? "copied" : "failed");
+@@ -68,3 +208,18 @@
+ 
+   static override styles = formattedTextStyles;
+ }
++
++function isTrailingBlock(wrapper: Element, root: Node): boolean {
++  for (let node: Node | null = wrapper; node !== null && node !== root; node = node.parentNode) {
++    for (let next = node.nextSibling; next !== null; next = next.nextSibling) {
++      if (next.nodeType === Node.ELEMENT_NODE) return false;
++      if (next.nodeType === Node.TEXT_NODE && next.textContent?.trim() !== "") return false;
++    }
++  }
++  return true;
++}
++
++function setCodeWrap(pre: HTMLPreElement, button: HTMLButtonElement, wrapped: boolean): void {
++  pre.classList.toggle("wrap", wrapped);
++  button.setAttribute("aria-pressed", String(wrapped));
++}
+diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/src/components/ToolExecutionView.ts
+--- a/src/client/src/components/ToolExecutionView.ts	2026-10-24 21:47:56.321357206 +0000
++++ b/src/client/src/components/ToolExecutionView.ts	2026-10-24 21:47:56.561363412 +0000
+@@ -2,6 +2,7 @@
+ import { customElement, property, state } from "lit/decorators.js";
+ import { writeClipboardText } from "../clipboard";
+ import { toolArgsCardVisible, toolContentCardVisible } from "../chatDisclosureModes";
++import { findWrapAnchor, measureAnchorTop, type WrapAnchor } from "../formatting/wrapAnchor";
+ import type { CodeHighlightLine } from "../codeHighlight";
+ import { languageForPath } from "../codeLanguage";
+ import type { CodeLanguage } from "../codeLanguage";
+@@ -48,6 +49,20 @@
    diff: ".diff-details .diff",
    result: ".result-body .detail-result pre",
  };
@@ -34,7 +242,7 @@
  const MAX_LIVE_HIGHLIGHT_TEXT_LENGTH = 65_536;
  
  @customElement("tool-execution-view")
-@@ -64,6 +84,11 @@
+@@ -64,6 +79,11 @@
    @state() private copied = false;
    @state() private copiedArgs = false;
    @state() private copiedContent = false;
@@ -46,7 +254,7 @@
    private codeHighlightModule: typeof import("../codeHighlight") | undefined;
    private codeHighlightLoadStarted = false;
    private scrollerListenersAttached = false;
-@@ -72,6 +97,7 @@
+@@ -72,6 +92,7 @@
    private callIdentityStatus: ToolExecutionPart["status"] | undefined;
    private pendingInputScrollRestore: { scroller: "args" | "content"; scrollTop: number } | undefined;
    private sawLiveExecution = false;
@@ -54,7 +262,7 @@
    private readonly scrollerStates: Record<ToolScroller, ToolScrollerState> = {
      details: { pinned: true, initialized: false },
      args: { pinned: true, initialized: false },
-@@ -106,6 +132,7 @@
+@@ -106,6 +127,7 @@
        }
        if (state.pinned && (live || wasLive)) this.scrollScrollerToBottom(scroller, element);
      }
@@ -62,7 +270,7 @@
      this.restorePendingInputScroll();
      if (!live && wasLive) this.sawLiveExecution = false;
    }
-@@ -162,6 +189,15 @@
+@@ -162,6 +184,15 @@
      this.pendingInputScrollRestore = undefined;
      this.copiedArgs = false;
      this.copiedContent = false;
@@ -78,7 +286,7 @@
    }
  
    private readonly onScrollerScroll = (event: Event): void => {
-@@ -227,6 +263,69 @@
+@@ -227,6 +258,69 @@
      this.pendingInputScrollRestore = undefined;
    }
  
@@ -148,7 +356,7 @@
    override render() {
      const execution = this.execution;
      if (execution === undefined) return null;
-@@ -277,7 +376,7 @@
+@@ -277,7 +371,7 @@
      return html`
        <div class="detail-target">
          <span class="detail-label">${target.label}</span>
@@ -157,7 +365,7 @@
        </div>
      `;
    }
-@@ -286,7 +385,7 @@
+@@ -286,7 +380,7 @@
      if (target === undefined) return null;
      return html`
        <details class="text-body" ?open=${this.detailsOpen}>
@@ -166,7 +374,7 @@
          ${this.renderExpandedTarget(target)}
        </details>
      `;
-@@ -375,9 +474,10 @@
+@@ -375,9 +469,10 @@
          </summary>
          <div class="diff-toolbar">
            <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : fullLabel}</span>
@@ -178,7 +386,7 @@
          ${truncated ? html`
            <button class="show-more" type="button" @click=${onShowAll}>
              Show all ${String(lines.length)} lines
-@@ -442,8 +542,8 @@
+@@ -442,8 +537,8 @@
      if (text === undefined || text === "") return null;
      return html`
        <details class="result-body" ?open=${this.resultOpen || isError}>
@@ -189,7 +397,7 @@
        </details>
      `;
    }
-@@ -460,9 +560,10 @@
+@@ -460,9 +555,10 @@
          </summary>
          <div class="diff-toolbar">
            <span>${truncated ? `Showing ${String(visibleLines.length)} of ${String(lines.length)} lines` : "Full diff"}</span>
@@ -201,7 +409,7 @@
          ${truncated ? html`
            <button class="show-more" type="button" @click=${() => { this.showFullDiff = true; }}>
              Show all ${String(lines.length)} diff lines
-@@ -542,6 +643,16 @@
+@@ -542,6 +638,16 @@
      .tool-card .text-body .detail-target-value { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
      .tool-card .result-body .detail-result pre { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
      .tool-card .diff { max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
@@ -218,13 +426,52 @@
    `;
  }
  
-@@ -626,3 +737,98 @@
-   const property = getProperty(value, key);
-   return typeof property === "string" ? property : undefined;
- }
+diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
+--- a/src/client/src/components/shared.ts	2026-10-24 21:47:56.349357930 +0000
++++ b/src/client/src/components/shared.ts	2026-10-24 21:47:56.565363515 +0000
+@@ -468,6 +468,7 @@
+   .part:is(details) { border-top: 1px solid var(--pi-border); padding-top: 8px; }
+   .part > formatted-text { display: block; max-width: 100%; min-width: 0; overflow: visible; }
+   details.part.tool-result > formatted-text { display: block; max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
++  details.part.tool-result > formatted-text::part(code-block) { max-height: none; }
+   .skill-invocation, .skill-read { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); padding: 8px 10px; }
+   .skill-invocation > summary, .skill-read > strong { color: var(--pi-purple); }
+   .skill-invocation > small, .skill-read > small { display: block; margin: 6px 0 0; color: var(--pi-muted); }
+@@ -486,11 +487,14 @@
+   li + li { margin-top: 3px; }
+   code { border: 1px solid var(--pi-border); border-radius: 4px; background: var(--pi-bg); padding: 1px 4px; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; direction: ltr; text-align: left; unicode-bidi: isolate; }
+   .code-block-wrapper { position: relative; }
+-  .code-block-wrapper pre { margin: 0; padding-right: 40px; }
++  .code-block-wrapper pre { margin: 0; padding-right: 68px; max-height: 50vh; max-height: 50dvh; overflow-y: auto; }
+   pre { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-bg); padding: 10px; overflow-x: auto; overflow-y: hidden; direction: ltr; text-align: left; unicode-bidi: isolate; }
+   pre code { border: 0; padding: 0; background: transparent; }
+-  .code-copy-button { position: absolute; top: 6px; right: 6px; z-index: 1; display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 14px system-ui, sans-serif; line-height: 1; cursor: pointer; }
+-  .code-copy-button:hover, .code-copy-button:focus { color: var(--pi-text); border-color: var(--pi-accent); }
++  .code-block-wrapper pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
++  .code-copy-button, .code-wrap-button { position: absolute; top: 6px; right: 6px; z-index: 1; display: inline-grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--pi-border); border-radius: 6px; background: var(--pi-surface); color: var(--pi-muted); padding: 0; font: 14px system-ui, sans-serif; line-height: 1; cursor: pointer; }
++  .code-wrap-button { right: 34px; }
++  .code-copy-button:hover, .code-copy-button:focus, .code-wrap-button:hover, .code-wrap-button:focus { color: var(--pi-text); border-color: var(--pi-accent); }
++  .code-wrap-button[aria-pressed="true"] { border-color: var(--pi-accent); background: color-mix(in srgb, var(--pi-accent) 15%, var(--pi-surface)); color: var(--pi-accent); }
+   blockquote { border-left: 3px solid var(--pi-border); padding-left: 10px; color: var(--pi-muted); }
+   a { color: var(--pi-accent); }
+   h1, h2, h3, h4 { margin: 14px 0 8px; line-height: 1.2; }
+diff -ruN -x .git a/src/client/src/formatting/wrapAnchor.ts b/src/client/src/formatting/wrapAnchor.ts
+--- a/src/client/src/formatting/wrapAnchor.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/formatting/wrapAnchor.ts	2026-10-24 21:47:56.565363515 +0000
+@@ -0,0 +1,105 @@
++export interface WrapAnchor {
++  line: boolean;
++  offset: number;
++  distance: number;
++}
 +
 +function findTextNode(element: HTMLElement): Text | undefined {
 +  for (const node of Array.from(element.childNodes)) {
++    if (node instanceof Text && node.length > 0) return node;
++  }
++  const code = element.querySelector(":scope > code");
++  if (code === null) return undefined;
++  for (const node of Array.from(code.childNodes)) {
 +    if (node instanceof Text && node.length > 0) return node;
 +  }
 +  return undefined;
@@ -255,7 +502,7 @@
 +  return (Number.isNaN(lineHeight) ? Number.parseFloat(style.fontSize) * 1.2 : lineHeight) / 2;
 +}
 +
-+function findWrapAnchor(element: HTMLElement): WrapAnchor | undefined {
++export function findWrapAnchor(element: HTMLElement): WrapAnchor | undefined {
 +  const lines = wrapLines(element);
 +  if (lines.length > 0) return findLineAnchor(element, lines);
 +  const node = findTextNode(element);
@@ -294,7 +541,7 @@
 +  return Array.from(element.querySelectorAll<HTMLElement>(":scope > code > span"));
 +}
 +
-+function measureAnchorTop(element: HTMLElement, anchor: WrapAnchor): number | undefined {
++export function measureAnchorTop(element: HTMLElement, anchor: WrapAnchor): number | undefined {
 +  if (!anchor.line) return measureTextTop(element, anchor.offset);
 +  return wrapLines(element)[anchor.offset]?.getBoundingClientRect().top;
 +}

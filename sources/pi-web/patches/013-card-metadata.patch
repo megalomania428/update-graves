@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
---- a/src/client/src/api/parsers.ts	2026-10-24 12:28:11.901168270 +0000
-+++ b/src/client/src/api/parsers.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/api/parsers.ts	2026-10-24 18:10:32.910668394 +0000
++++ b/src/client/src/api/parsers.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -508,7 +508,7 @@
    return { type: "dialog.opened", dialog: parsePendingExtensionDialog(record["dialog"]) };
  }
@@ -101,8 +101,8 @@ diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.t
  }
  
 diff -ruN -x .git a/src/client/src/appState.ts b/src/client/src/appState.ts
---- a/src/client/src/appState.ts	2026-10-24 12:28:11.493314608 +0000
-+++ b/src/client/src/appState.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/appState.ts	2026-10-24 18:10:24.334446605 +0000
++++ b/src/client/src/appState.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -103,6 +103,8 @@
    reason: ExtensionDialogCloseReason;
    /** Present only when `reason` is `"answered"`. */
@@ -113,8 +113,8 @@ diff -ruN -x .git a/src/client/src/appState.ts b/src/client/src/appState.ts
  
  /** `machineId` stays bound to the machine selected when the auth operation began. */
 diff -ruN -x .git a/src/client/src/chatGroups.test.ts b/src/client/src/chatGroups.test.ts
---- a/src/client/src/chatGroups.test.ts	2026-10-24 12:28:11.889172574 +0000
-+++ b/src/client/src/chatGroups.test.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/chatGroups.test.ts	2026-10-24 18:10:32.890667877 +0000
++++ b/src/client/src/chatGroups.test.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -70,6 +70,18 @@
      ]);
    });
@@ -135,8 +135,8 @@ diff -ruN -x .git a/src/client/src/chatGroups.test.ts b/src/client/src/chatGroup
      const image = { type: "image" as const, mimeType: "image/png", data: "QUJD" };
      const message: ChatLine = { role: "user", parts: [image] };
 diff -ruN -x .git a/src/client/src/chatGroups.ts b/src/client/src/chatGroups.ts
---- a/src/client/src/chatGroups.ts	2026-10-24 12:28:11.889172574 +0000
-+++ b/src/client/src/chatGroups.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/chatGroups.ts	2026-10-24 18:10:32.890667877 +0000
++++ b/src/client/src/chatGroups.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -57,7 +57,7 @@
        const readableMessage = { role, parts: readableParts, ...metadata };
        if (isToolImageMessage(readableMessage)) {
@@ -166,8 +166,8 @@ diff -ruN -x .git a/src/client/src/chatGroups.ts b/src/client/src/chatGroups.ts
    return message.role === "tool" && message.parts.length > 0 && message.parts.every((part) => part.type === "image");
  }
 diff -ruN -x .git a/src/client/src/chatHistoryCache.ts b/src/client/src/chatHistoryCache.ts
---- a/src/client/src/chatHistoryCache.ts	2026-10-24 12:28:11.493314608 +0000
-+++ b/src/client/src/chatHistoryCache.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/chatHistoryCache.ts	2026-10-24 18:10:24.338446708 +0000
++++ b/src/client/src/chatHistoryCache.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -1,4 +1,4 @@
 -const CACHE_PREFIX = "pi-web:chat-history:v2:";
 +const CACHE_PREFIX = "pi-web:chat-history:v3:";
@@ -175,8 +175,8 @@ diff -ruN -x .git a/src/client/src/chatHistoryCache.ts b/src/client/src/chatHist
  
  export interface RawMessagePage {
 diff -ruN -x .git a/src/client/src/chatMessages.ts b/src/client/src/chatMessages.ts
---- a/src/client/src/chatMessages.ts	2026-10-24 12:28:11.493314608 +0000
-+++ b/src/client/src/chatMessages.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/chatMessages.ts	2026-10-24 18:10:24.338446708 +0000
++++ b/src/client/src/chatMessages.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -1,6 +1,6 @@
  import { ASK_USER_ANSWERS_CUSTOM_TYPE } from "../../shared/apiTypes";
  import { parseAskUserOutcome } from "./api/parsers";
@@ -369,7 +369,7 @@ diff -ruN -x .git a/src/client/src/chatMessages.ts b/src/client/src/chatMessages
    return true;
 diff -ruN -x .git a/src/client/src/chatMeta.test.ts b/src/client/src/chatMeta.test.ts
 --- a/src/client/src/chatMeta.test.ts	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/client/src/chatMeta.test.ts	2026-10-24 12:28:12.037119444 +0000
++++ b/src/client/src/chatMeta.test.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -0,0 +1,302 @@
 +import { describe, expect, it } from "vitest";
 +import { chatGroupMetaSegments, chatMessageMetaSegments, chatMetaFirstIndexes, chatSpanSegments, chatTokenSegment, chatToolAnswerHeaderIndexes, chatTurnDurations, formatChatDuration, formatChatTimestamp, formatChatTokens, metaSegmentsText, sumChatUsage } from "./chatMeta";
@@ -675,7 +675,7 @@ diff -ruN -x .git a/src/client/src/chatMeta.test.ts b/src/client/src/chatMeta.te
 +});
 diff -ruN -x .git a/src/client/src/chatMeta.ts b/src/client/src/chatMeta.ts
 --- a/src/client/src/chatMeta.ts	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/client/src/chatMeta.ts	2026-10-24 12:28:12.037119444 +0000
++++ b/src/client/src/chatMeta.ts	2026-10-24 18:12:41.033979743 +0000
 @@ -0,0 +1,379 @@
 +import type { ChatLine, ChatUsage } from "./components/shared";
 +
@@ -1057,8 +1057,8 @@ diff -ruN -x .git a/src/client/src/chatMeta.ts b/src/client/src/chatMeta.ts
 +  return new Set([...firstCards].flatMap(([meta, index]) => shown.has(meta) || (meta.completedAt === undefined && index - start < lastAnswerLine) ? [] : [index]));
 +}
 diff -ruN -x .git a/src/client/src/chatTranscript.test.ts b/src/client/src/chatTranscript.test.ts
---- a/src/client/src/chatTranscript.test.ts	2026-10-24 12:28:11.493314608 +0000
-+++ b/src/client/src/chatTranscript.test.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/chatTranscript.test.ts	2026-10-24 18:10:24.338446708 +0000
++++ b/src/client/src/chatTranscript.test.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -307,6 +307,7 @@
          resultText: "Read image file [image/png]",
          content: finalContent,
@@ -1135,8 +1135,8 @@ diff -ruN -x .git a/src/client/src/chatTranscript.test.ts b/src/client/src/chatT
 +  });
 +});
 diff -ruN -x .git a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
---- a/src/client/src/chatTranscript.ts	2026-10-24 12:28:11.901168270 +0000
-+++ b/src/client/src/chatTranscript.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/chatTranscript.ts	2026-10-24 18:10:32.910668394 +0000
++++ b/src/client/src/chatTranscript.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -1,6 +1,6 @@
  import type { SessionStreamSnapshot } from "./api";
  import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
@@ -1375,8 +1375,8 @@ diff -ruN -x .git a/src/client/src/chatTranscript.ts b/src/client/src/chatTransc
  }
  
 diff -ruN -x .git a/src/client/src/components/AskUserCard.ts b/src/client/src/components/AskUserCard.ts
---- a/src/client/src/components/AskUserCard.ts	2026-10-24 12:28:11.853185486 +0000
-+++ b/src/client/src/components/AskUserCard.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/components/AskUserCard.ts	2026-10-24 18:10:32.854666946 +0000
++++ b/src/client/src/components/AskUserCard.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -21,6 +21,10 @@
    type AskDraftAnswer,
    type AskDraftAnswers,
@@ -1438,8 +1438,8 @@ diff -ruN -x .git a/src/client/src/components/AskUserCard.ts b/src/client/src/co
      .header-status.superseded { color: var(--pi-warning); }
      .questions { display: grid; padding-top: 8px; }
 diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
---- a/src/client/src/components/ChatView.test.ts	2026-10-24 12:28:11.889172574 +0000
-+++ b/src/client/src/components/ChatView.test.ts	2026-10-24 12:28:12.037119444 +0000
+--- a/src/client/src/components/ChatView.test.ts	2026-10-24 18:10:32.890667877 +0000
++++ b/src/client/src/components/ChatView.test.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -246,26 +246,39 @@
  });
  
@@ -1491,8 +1491,8 @@ diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/
  });
  
 diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
---- a/src/client/src/components/ChatView.ts	2026-10-24 12:28:11.889172574 +0000
-+++ b/src/client/src/components/ChatView.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/components/ChatView.ts	2026-10-24 18:10:32.894667980 +0000
++++ b/src/client/src/components/ChatView.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -4,6 +4,7 @@
  import { ChatDisclosureController } from "../chatDisclosure";
  import { chatCardKey, chatCardOpen, eventsGroupDisclosureMode, groupDisclosureOpen, lastDisclosureCards, lastEventsGroupIndex, type PiWebPartDisclosureKind } from "../chatDisclosureModes";
@@ -1649,8 +1649,8 @@ diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/compo
  
    private renderPart(part: ChatPart, message: ChatLine | undefined, index: number, partIndex: number) {
 diff -ruN -x .git a/src/client/src/components/ExtensionDialogCard.ts b/src/client/src/components/ExtensionDialogCard.ts
---- a/src/client/src/components/ExtensionDialogCard.ts	2026-10-24 12:28:11.497313174 +0000
-+++ b/src/client/src/components/ExtensionDialogCard.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/components/ExtensionDialogCard.ts	2026-10-24 18:10:24.342446811 +0000
++++ b/src/client/src/components/ExtensionDialogCard.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -8,6 +8,10 @@
    type PendingExtensionDialog,
  } from "../../../shared/apiTypes";
@@ -1718,8 +1718,8 @@ diff -ruN -x .git a/src/client/src/components/ExtensionDialogCard.ts b/src/clien
      .header-status.timeout, .header-status.aborted, .header-status.session-ended { color: var(--pi-warning); }
      .dialog-message {
 diff -ruN -x .git a/src/client/src/components/StatusBar.ts b/src/client/src/components/StatusBar.ts
---- a/src/client/src/components/StatusBar.ts	2026-10-24 12:28:11.501311739 +0000
-+++ b/src/client/src/components/StatusBar.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/components/StatusBar.ts	2026-10-24 18:10:24.354447122 +0000
++++ b/src/client/src/components/StatusBar.ts	2026-10-24 18:12:41.037979846 +0000
 @@ -1,8 +1,11 @@
  import { LitElement, html } from "lit";
  import { customElement, property } from "lit/decorators.js";
@@ -1762,9 +1762,9 @@ diff -ruN -x .git a/src/client/src/components/StatusBar.ts b/src/client/src/comp
          <span>${formatCost(status.cost)}</span>
          ${status.pendingMessageCount > 0 ? html`<span>${String(status.pendingMessageCount)} queued</span>` : null}
 diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/src/components/ToolExecutionView.ts
---- a/src/client/src/components/ToolExecutionView.ts	2026-10-24 12:28:11.909165401 +0000
-+++ b/src/client/src/components/ToolExecutionView.ts	2026-10-24 12:28:12.041118005 +0000
-@@ -5,8 +5,10 @@
+--- a/src/client/src/components/ToolExecutionView.ts	2026-10-24 18:12:41.029979639 +0000
++++ b/src/client/src/components/ToolExecutionView.ts	2026-10-24 18:12:41.037979846 +0000
+@@ -6,8 +6,10 @@
  import type { CodeHighlightLine } from "../codeHighlight";
  import { languageForPath } from "../codeLanguage";
  import type { CodeLanguage } from "../codeLanguage";
@@ -1776,7 +1776,7 @@ diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/
  const MAX_COLLAPSED_DIFF_LINES = 180;
  let codeHighlightModulePromise: Promise<typeof import("../codeHighlight")> | undefined;
  
-@@ -339,6 +341,10 @@
+@@ -334,6 +336,10 @@
      const isLive = execution.status === "pending" || execution.status === "running";
      const previewError = isLive && preview?.error !== undefined && preview.error !== "" ? preview.error : undefined;
      const target = toolTarget(execution, path);
@@ -1787,7 +1787,7 @@ diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/
  
      return html`
        <section class=${`tool-card ${execution.status}`}>
-@@ -352,6 +358,7 @@
+@@ -347,6 +353,7 @@
              ${editCountLabel(execution) === undefined ? null : html`<span>${editCountLabel(execution)}</span>`}
              ${diffStats === undefined ? null : html`<span class="diff-stats"><b class="added">+${diffStats.added}</b><span>/</span><b class="removed">-${diffStats.removed}</b></span>`}
              <span class="status-label">${statusLabel(execution.status)}</span>
@@ -1795,7 +1795,7 @@ diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/
            </div>
          </div>
  
-@@ -605,6 +612,7 @@
+@@ -600,6 +607,7 @@
      .added, .diff .added { color: var(--pi-success); }
      .removed, .diff .removed { color: var(--pi-danger); }
      .status-label { text-transform: uppercase; letter-spacing: .04em; color: var(--pi-muted); }
@@ -1804,8 +1804,8 @@ diff -ruN -x .git a/src/client/src/components/ToolExecutionView.ts b/src/client/
      .muted { margin: 0; color: var(--pi-muted); }
      .text-body, .result-body { border-top: 1px solid var(--pi-border-muted); padding-top: 6px; }
 diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
---- a/src/client/src/components/shared.ts	2026-10-24 12:28:11.861182617 +0000
-+++ b/src/client/src/components/shared.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/components/shared.ts	2026-10-24 18:12:41.029979639 +0000
++++ b/src/client/src/components/shared.ts	2026-10-24 18:12:41.041979949 +0000
 @@ -1,6 +1,7 @@
 -import { css, svg, type TemplateResult } from "lit";
 +import { css, html, svg, type TemplateResult } from "lit";
@@ -1868,8 +1868,8 @@ diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/compone
    .chat-image { display: block; max-width: 100%; max-height: 320px; margin: 8px 0 0; border: 1px solid var(--pi-border-muted); border-radius: 8px; object-fit: contain; cursor: zoom-in; }
    .chat-image:focus-visible { outline: 2px solid var(--pi-accent, var(--pi-success-border)); outline-offset: 2px; }
 diff -ruN -x .git a/src/client/src/controllers/sessionController.extensionDialogs.test.ts b/src/client/src/controllers/sessionController.extensionDialogs.test.ts
---- a/src/client/src/controllers/sessionController.extensionDialogs.test.ts	2026-10-24 12:28:11.509308870 +0000
-+++ b/src/client/src/controllers/sessionController.extensionDialogs.test.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/controllers/sessionController.extensionDialogs.test.ts	2026-10-24 18:10:24.374447639 +0000
++++ b/src/client/src/controllers/sessionController.extensionDialogs.test.ts	2026-10-24 18:12:41.041979949 +0000
 @@ -194,7 +194,7 @@
      await controller.answerDialog("dialog-1", true);
  
@@ -1889,8 +1889,8 @@ diff -ruN -x .git a/src/client/src/controllers/sessionController.extensionDialog
    });
  
 diff -ruN -x .git a/src/client/src/controllers/sessionController.startupDialogs.test.ts b/src/client/src/controllers/sessionController.startupDialogs.test.ts
---- a/src/client/src/controllers/sessionController.startupDialogs.test.ts	2026-10-24 12:28:11.509308870 +0000
-+++ b/src/client/src/controllers/sessionController.startupDialogs.test.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/controllers/sessionController.startupDialogs.test.ts	2026-10-24 18:10:24.378447742 +0000
++++ b/src/client/src/controllers/sessionController.startupDialogs.test.ts	2026-10-24 18:12:41.041979949 +0000
 @@ -192,7 +192,7 @@
  
      expect(answerCalls).toEqual([{ sessionId: BACKEND_SESSION_ID, dialogId: "dialog-1", value: true, machineId: "local" }]);
@@ -1910,8 +1910,8 @@ diff -ruN -x .git a/src/client/src/controllers/sessionController.startupDialogs.
      await start;
    });
 diff -ruN -x .git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
---- a/src/client/src/controllers/sessionController.ts	2026-10-24 12:28:11.901168270 +0000
-+++ b/src/client/src/controllers/sessionController.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/controllers/sessionController.ts	2026-10-24 18:10:32.918668601 +0000
++++ b/src/client/src/controllers/sessionController.ts	2026-10-24 18:12:41.041979949 +0000
 @@ -1058,7 +1058,7 @@
        const outcome: ExtensionDialogOutcome | undefined = response.outcome;
        if (outcome !== undefined) {
@@ -1965,8 +1965,8 @@ diff -ruN -x .git a/src/client/src/controllers/sessionController.ts b/src/client
      }
      if (event.type === "status.update") this.applyPendingStartStatus(pending, event.status);
 diff -ruN -x .git a/src/client/src/shellMessages.ts b/src/client/src/shellMessages.ts
---- a/src/client/src/shellMessages.ts	2026-10-24 12:28:11.517306000 +0000
-+++ b/src/client/src/shellMessages.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/client/src/shellMessages.ts	2026-10-24 18:10:24.390448053 +0000
++++ b/src/client/src/shellMessages.ts	2026-10-24 18:12:41.045980053 +0000
 @@ -2,8 +2,9 @@
  import type { ChatLine } from "./components/shared";
  import type { SessionUiEvent } from "./sessionSocket";
@@ -1992,8 +1992,8 @@ diff -ruN -x .git a/src/client/src/shellMessages.ts b/src/client/src/shellMessag
  
  function hasShellOutput(text: string): boolean {
 diff -ruN -x .git a/src/server/sessions/piSessionService.extensionDialogs.test.ts b/src/server/sessions/piSessionService.extensionDialogs.test.ts
---- a/src/server/sessions/piSessionService.extensionDialogs.test.ts	2026-10-24 12:28:11.533300261 +0000
-+++ b/src/server/sessions/piSessionService.extensionDialogs.test.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/server/sessions/piSessionService.extensionDialogs.test.ts	2026-10-24 18:10:24.430449087 +0000
++++ b/src/server/sessions/piSessionService.extensionDialogs.test.ts	2026-10-24 18:12:41.045980053 +0000
 @@ -164,7 +164,7 @@
      expect(store.pendingDialogs(ACTIVE_SESSION_ID)).toEqual([]);
      expect(dialogEvents(events).map(({ event }) => event)).toEqual([
@@ -2058,8 +2058,8 @@ diff -ruN -x .git a/src/server/sessions/piSessionService.extensionDialogs.test.t
      await service.dispose();
    });
 diff -ruN -x .git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
---- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 12:28:11.901168270 +0000
-+++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 18:10:32.922668705 +0000
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-10-24 18:12:41.045980053 +0000
 @@ -9,6 +9,8 @@
  import { CapturingSessionEventHub, emptyArchiveStore, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime, type RuntimeCreator, type SessionGateway } from "./piSessionService.testSupport.js";
  
@@ -2172,8 +2172,8 @@ diff -ruN -x .git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src
        second.resolve({ output: "done\n", exitCode: 0,
          cancelled: false, truncated: false });
 diff -ruN -x .git a/src/server/sessions/piSessionService.messages.test.ts b/src/server/sessions/piSessionService.messages.test.ts
---- a/src/server/sessions/piSessionService.messages.test.ts	2026-10-24 12:28:11.533300261 +0000
-+++ b/src/server/sessions/piSessionService.messages.test.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/server/sessions/piSessionService.messages.test.ts	2026-10-24 18:10:24.430449087 +0000
++++ b/src/server/sessions/piSessionService.messages.test.ts	2026-10-24 18:12:41.045980053 +0000
 @@ -63,7 +63,8 @@
  
        const messageEnds = events.sessionEvents.map(({ event }) => event).filter((event) => event.type === "message.end");
@@ -2185,8 +2185,8 @@ diff -ruN -x .git a/src/server/sessions/piSessionService.messages.test.ts b/src/
        ]);
        await service.dispose();
 diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
---- a/src/server/sessions/piSessionService.ts	2026-10-24 12:28:11.901168270 +0000
-+++ b/src/server/sessions/piSessionService.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/server/sessions/piSessionService.ts	2026-10-24 18:10:32.926668808 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-10-24 18:12:41.049980156 +0000
 @@ -1991,6 +1991,7 @@
        dialogId: outcome.dialogId,
        reason: outcome.reason,
@@ -2405,8 +2405,8 @@ diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/session
  }
  function isRecord(value: unknown): value is Record<string, unknown> {
 diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
---- a/src/shared/apiTypes.ts	2026-10-24 12:28:11.901168270 +0000
-+++ b/src/shared/apiTypes.ts	2026-10-24 12:28:12.041118005 +0000
+--- a/src/shared/apiTypes.ts	2026-10-24 18:10:32.930668911 +0000
++++ b/src/shared/apiTypes.ts	2026-10-24 18:12:41.049980156 +0000
 @@ -1154,7 +1154,8 @@
    pendingMessageCount: number;
    queuedMessages: QueuedSessionMessage[];
