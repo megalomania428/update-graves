@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/client/src/appShell/navigationState.test.ts b/src/client/src/appShell/navigationState.test.ts
---- a/src/client/src/appShell/navigationState.test.ts	2026-10-24 12:26:09.344638155 +0000
-+++ b/src/client/src/appShell/navigationState.test.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/appShell/navigationState.test.ts	2026-10-25 11:02:12.368259764 +0000
++++ b/src/client/src/appShell/navigationState.test.ts	2026-10-25 11:04:30.043771390 +0000
 @@ -4,14 +4,14 @@
  describe("navigationState", () => {
    it("defaults to the first incomplete selection section", () => {
@@ -28,8 +28,8 @@ diff -ruN -x .git a/src/client/src/appShell/navigationState.test.ts b/src/client
  
    it("does not mutate expanded section on desktop layouts", () => {
 diff -ruN -x .git a/src/client/src/appShell/navigationState.ts b/src/client/src/appShell/navigationState.ts
---- a/src/client/src/appShell/navigationState.ts	2026-10-24 12:26:09.676547890 +0000
-+++ b/src/client/src/appShell/navigationState.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/appShell/navigationState.ts	2026-10-25 11:04:29.871767030 +0000
++++ b/src/client/src/appShell/navigationState.ts	2026-10-25 11:04:30.043771390 +0000
 @@ -1,7 +1,7 @@
  import type { ReactiveController, ReactiveControllerHost } from "lit";
  import { readStoredPanelCollapse, writeStoredPanelCollapse, type PanelCollapseStorage } from "./panelCollapseController";
@@ -48,8 +48,8 @@ diff -ruN -x .git a/src/client/src/appShell/navigationState.ts b/src/client/src/
  }
  
 diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/components/ChatView.test.ts
---- a/src/client/src/components/ChatView.test.ts	2026-10-24 12:26:09.348637067 +0000
-+++ b/src/client/src/components/ChatView.test.ts	2026-10-24 12:26:09.780519615 +0000
+--- a/src/client/src/components/ChatView.test.ts	2026-10-25 11:02:12.376259970 +0000
++++ b/src/client/src/components/ChatView.test.ts	2026-10-25 11:04:30.047771491 +0000
 @@ -17,6 +17,7 @@
    chatMessageMetadataLabel,
    chatQueuedMessageSections,
@@ -84,8 +84,8 @@ diff -ruN -x .git a/src/client/src/components/ChatView.test.ts b/src/client/src/
    const messages: ChatLine[] = [
      { role: "assistant", parts: [{ type: "toolCall", toolName: "read", summary: "inspect a file" }] },
 diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/components/ChatView.ts
---- a/src/client/src/components/ChatView.ts	2026-10-24 12:26:09.704540278 +0000
-+++ b/src/client/src/components/ChatView.ts	2026-10-24 12:26:09.780519615 +0000
+--- a/src/client/src/components/ChatView.ts	2026-10-25 11:04:29.927768449 +0000
++++ b/src/client/src/components/ChatView.ts	2026-10-25 11:04:30.047771491 +0000
 @@ -125,6 +125,19 @@
    return `g:${String(endIndex)}`;
  }
@@ -200,9 +200,9 @@ diff -ruN -x .git a/src/client/src/components/ChatView.ts b/src/client/src/compo
      if (this.scrollToBottomFrame !== undefined) return;
      this.scrollToBottomFrame = requestAnimationFrame(() => {
 diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
---- a/src/client/src/components/PiWebApp.ts	2026-10-24 12:26:09.664551153 +0000
-+++ b/src/client/src/components/PiWebApp.ts	2026-10-24 12:26:09.784518528 +0000
-@@ -50,10 +50,9 @@
+--- a/src/client/src/components/PiWebApp.ts	2026-10-25 11:04:29.883767334 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-10-25 11:04:30.051771593 +0000
+@@ -51,10 +51,9 @@
  import { readSettingsSection, writeSettingsSection, type SettingsSection } from "../settingsRoute";
  import { applyActiveShortcutPreferences } from "../shortcutPreferences";
  import { createTerminalCommandRunsRuntime } from "../runtime/terminalRuntime";
@@ -214,7 +214,7 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
  import { unreadSessionCount } from "./SessionList";
  import "./SessionCleanupDialog";
  import "./SessionTreeNavigator";
-@@ -1287,9 +1286,7 @@
+@@ -1288,9 +1287,7 @@
          .onRemoveMachine=${(machine: Machine) => { void this.removeMachine(machine); }}
          .projects=${this.state.projects}
          .selectedProject=${this.state.selectedProject}
@@ -224,7 +224,7 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
          .sessions=${this.state.sessions}
          .sessionStatuses=${this.state.sessionStatuses}
          .sessionActivities=${this.state.sessionActivities}
-@@ -1301,18 +1298,14 @@
+@@ -1302,18 +1299,14 @@
          .collapsible=${true}
          .compact=${this.appShell.isMobileNavigationLayout}
          .projectsCollapsed=${this.navigationSections.isCollapsed("projects")}
@@ -244,7 +244,7 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
          .onArchivedCollapsed=${() => { this.sessions.clearSelectionAfterArchivedCollapse(); }}
          .onStartSession=${() => this.startSessionFromNavigation()}
          .onSelectSession=${(session: SessionInfo) => this.selectNavigationItem("sessions", "chat", () => this.sessions.selectSession(session))}
-@@ -1460,11 +1453,11 @@
+@@ -1462,11 +1455,11 @@
        return this.state.projects.length === 0
          ? {
              title: "No projects yet",
@@ -258,7 +258,7 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
            };
      }
      if (this.state.isLoadingWorkspaces) {
-@@ -1480,17 +1473,17 @@
+@@ -1482,17 +1475,17 @@
        };
      }
      return {
@@ -280,7 +280,7 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
    }
  
    private mobilePanelBadge(panel: QualifiedWorkspacePanelContribution): unknown {
-@@ -1653,14 +1646,6 @@
+@@ -1655,14 +1648,6 @@
          run: () => this.focusNavigationSection("projects"),
        },
        {
@@ -295,7 +295,7 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
          id: "app.navigation.focus-sessions",
          title: "Focus Sessions",
          description: "Move keyboard focus to the sessions list",
-@@ -2275,7 +2260,6 @@
+@@ -2277,7 +2262,6 @@
          .machine=${this.state.selectedMachine}
          .locationIndicator=${this.appShell.isPwaDisplayMode}
          .project=${this.state.selectedProject}
@@ -304,8 +304,8 @@ diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/compo
          .refreshControl=${this.appShell.shouldShowAppRefreshInContextBar() ? this.renderAppRefresh() : undefined}
          .onOpenSection=${(section: NavigationSection) => { this.openNavigationSection(section); }}
 diff -ruN -x .git a/src/client/src/components/ProjectList.ts b/src/client/src/components/ProjectList.ts
---- a/src/client/src/components/ProjectList.ts	2026-10-24 12:26:09.356634892 +0000
-+++ b/src/client/src/components/ProjectList.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/components/ProjectList.ts	2026-10-25 11:02:12.388260278 +0000
++++ b/src/client/src/components/ProjectList.ts	2026-10-25 11:04:30.051771593 +0000
 @@ -1,17 +1,34 @@
 -import { LitElement, html, type PropertyValues } from "lit";
 +import { LitElement, css, html, noChange, type PropertyValues, type TemplateResult } from "lit";
@@ -571,8 +571,8 @@ diff -ruN -x .git a/src/client/src/components/ProjectList.ts b/src/client/src/co
 +  return `project-menu-${projectId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
  }
 diff -ruN -x .git a/src/client/src/components/appShell/AppContextBar.ts b/src/client/src/components/appShell/AppContextBar.ts
---- a/src/client/src/components/appShell/AppContextBar.ts	2026-10-24 12:26:09.360633804 +0000
-+++ b/src/client/src/components/appShell/AppContextBar.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/components/appShell/AppContextBar.ts	2026-10-25 11:02:12.396260483 +0000
++++ b/src/client/src/components/appShell/AppContextBar.ts	2026-10-25 11:04:30.051771593 +0000
 @@ -1,6 +1,6 @@
  import { LitElement, css, html } from "lit";
  import { customElement, property, query, state } from "lit/decorators.js";
@@ -626,8 +626,8 @@ diff -ruN -x .git a/src/client/src/components/appShell/AppContextBar.ts b/src/cl
    const name = session?.name?.trim();
    const firstMessage = session?.firstMessage.trim();
 diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.test.ts b/src/client/src/components/appShell/AppNavigationPanel.test.ts
---- a/src/client/src/components/appShell/AppNavigationPanel.test.ts	2026-10-24 12:26:09.360633804 +0000
-+++ b/src/client/src/components/appShell/AppNavigationPanel.test.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/components/appShell/AppNavigationPanel.test.ts	2026-10-25 11:02:12.396260483 +0000
++++ b/src/client/src/components/appShell/AppNavigationPanel.test.ts	2026-10-25 11:04:30.051771593 +0000
 @@ -1,13 +1,12 @@
  // @vitest-environment happy-dom
  
@@ -693,8 +693,8 @@ diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.test.t
 -  return { id, projectId, path: `/repo/${id}`, label: id, isMain: true, effectiveConfig: {} };
 -}
 diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.ts b/src/client/src/components/appShell/AppNavigationPanel.ts
---- a/src/client/src/components/appShell/AppNavigationPanel.ts	2026-10-24 12:26:09.360633804 +0000
-+++ b/src/client/src/components/appShell/AppNavigationPanel.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/components/appShell/AppNavigationPanel.ts	2026-10-25 11:02:12.396260483 +0000
++++ b/src/client/src/components/appShell/AppNavigationPanel.ts	2026-10-25 11:04:30.051771593 +0000
 @@ -10,7 +10,6 @@
  import "../MachineList";
  import "../MachineSwitcher";
@@ -800,8 +800,8 @@ diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.ts b/s
      button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
    `;
 diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
---- a/src/client/src/components/shared.ts	2026-10-24 12:26:09.704540278 +0000
-+++ b/src/client/src/components/shared.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/components/shared.ts	2026-10-25 11:04:29.923768348 +0000
++++ b/src/client/src/components/shared.ts	2026-10-25 11:04:30.055771694 +0000
 @@ -370,6 +370,11 @@
      .notification-header { gap: 4px; padding-inline: 8px; }
      .notification-list { padding-inline: 8px; }
@@ -815,8 +815,8 @@ diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/compone
    .scroll-marker { display: block; height: 0; overflow: hidden; pointer-events: none; }
    .activity-dock { position: absolute; left: 16px; right: 16px; bottom: 12px; z-index: 20; display: flex; align-items: center; gap: 8px; min-width: 0; box-sizing: border-box; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-bg-overlay); color: var(--pi-muted); padding: 8px 12px; font-size: 13px; pointer-events: none; box-shadow: 0 8px 28px var(--pi-shadow); backdrop-filter: blur(6px); }
 diff -ruN -x .git a/src/client/src/controllers/workspaceController.ts b/src/client/src/controllers/workspaceController.ts
---- a/src/client/src/controllers/workspaceController.ts	2026-10-24 12:26:09.372630542 +0000
-+++ b/src/client/src/controllers/workspaceController.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/controllers/workspaceController.ts	2026-10-25 11:02:12.416260997 +0000
++++ b/src/client/src/controllers/workspaceController.ts	2026-10-25 11:04:30.055771694 +0000
 @@ -61,7 +61,7 @@
        const workspaces = await this.api.workspaces(project.id, machineId);
        if (selectedMachineId(this.getState()) !== machineId || this.getState().selectedProject?.id !== project.id) return;
@@ -827,8 +827,8 @@ diff -ruN -x .git a/src/client/src/controllers/workspaceController.ts b/src/clie
        else if (target?.updateUrl !== false) this.updateUrl();
      } catch (error) {
 diff -ruN -x .git a/src/client/src/controllers/workspaceSelection.test.ts b/src/client/src/controllers/workspaceSelection.test.ts
---- a/src/client/src/controllers/workspaceSelection.test.ts	2026-10-24 12:26:09.372630542 +0000
-+++ b/src/client/src/controllers/workspaceSelection.test.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/controllers/workspaceSelection.test.ts	2026-10-25 11:02:12.416260997 +0000
++++ b/src/client/src/controllers/workspaceSelection.test.ts	2026-10-25 11:04:30.055771694 +0000
 @@ -4,28 +4,16 @@
  import { InMemoryWorkspaceSelectionMemory, selectPreferredWorkspace, SessionStorageWorkspaceSelectionMemory } from "./workspaceSelection";
  
@@ -865,8 +865,8 @@ diff -ruN -x .git a/src/client/src/controllers/workspaceSelection.test.ts b/src/
  });
  
 diff -ruN -x .git a/src/client/src/controllers/workspaceSelection.ts b/src/client/src/controllers/workspaceSelection.ts
---- a/src/client/src/controllers/workspaceSelection.ts	2026-10-24 12:26:09.372630542 +0000
-+++ b/src/client/src/controllers/workspaceSelection.ts	2026-10-24 12:26:09.784518528 +0000
+--- a/src/client/src/controllers/workspaceSelection.ts	2026-10-25 11:02:12.416260997 +0000
++++ b/src/client/src/controllers/workspaceSelection.ts	2026-10-25 11:04:30.055771694 +0000
 @@ -45,12 +45,7 @@
    }
  }

@@ -1,6 +1,6 @@
 diff -ruN -x .git a/docs/config.html b/docs/config.html
---- a/docs/config.html	2026-10-24 13:33:44.098966398 +0000
-+++ b/docs/config.html	2026-10-24 13:33:49.578917508 +0000
+--- a/docs/config.html	2026-10-25 11:02:33.028789737 +0000
++++ b/docs/config.html	2026-10-25 11:02:33.092791378 +0000
 @@ -1110,8 +1110,9 @@
                  <code>mod</code> accepts Ctrl or ⌘; browsers and operating systems may reserve some combinations.
                </p>
@@ -14,8 +14,8 @@ diff -ruN -x .git a/docs/config.html b/docs/config.html
                  bindings shadow longer sequences with the same prefix.
                </p>
 diff -ruN -x .git a/docs/config.md b/docs/config.md
---- a/docs/config.md	2026-10-24 13:33:44.106966327 +0000
-+++ b/docs/config.md	2026-10-24 13:33:49.578917508 +0000
+--- a/docs/config.md	2026-10-25 11:02:33.044790147 +0000
++++ b/docs/config.md	2026-10-25 11:02:33.092791378 +0000
 @@ -465,7 +465,7 @@
  
  ### Shortcut config
@@ -45,9 +45,69 @@ diff -ruN -x .git a/docs/config.md b/docs/config.md
  
  The two **Chat composer** send bindings accept one key combination each, not sequences. **Send message — desktop** defaults to Enter; **Send message — touch or narrow screen** defaults to Shift+Enter. The latter applies when the browser reports a coarse primary pointer (typically touch) or a viewport at most 760px wide; otherwise, desktop applies. Its config key remains `composer.send.mobile`. Enter and Shift+Enter insert newlines when not assigned to send. Composer send bindings take priority over app shortcuts only inside the message editor, even when the draft is empty or sending is unavailable. Plain Enter accepts a selected completion first. `null` disables keyboard submission for that context; the send button remains available.
  
+diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
+--- a/src/client/src/components/PiWebApp.ts	2026-10-25 11:02:33.048790250 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-10-25 11:03:06.457644876 +0000
+@@ -22,6 +22,7 @@
+ import { SessionStorageTerminalSelectionMemory } from "../controllers/terminalSelection";
+ import { SessionStorageWorkspaceSelectionMemory } from "../controllers/workspaceSelection";
+ import { KeyboardShortcutDispatcher } from "../keyboardShortcuts";
++import { shouldSkipProgrammaticPromptFocus } from "../promptEnterBehavior";
+ import { selectedMachineId } from "../controllers/types";
+ import { machineSessionKey } from "../machineKeys";
+ import { HttpRequestError } from "../api/http";
+@@ -800,7 +801,7 @@
+     await nextFrame();
+     if (!shouldComplete()) return;
+     this.chatView?.restoreScrollPosition();
+-    if (this.shouldAutoFocusPrompt()) this.promptEditor?.focusInput();
++    if (this.shouldAutoFocusPrompt() && !shouldSkipProgrammaticPromptFocus()) this.promptEditor?.focusInput();
+   }
+ 
+   private shouldAutoFocusPrompt(): boolean {
+@@ -1403,6 +1404,7 @@
+     // Recheck the rendered boundary at the final side-effect point so a newer
+     // or surviving modal keeps visual and keyboard focus ownership.
+     if (this.isRenderedModalOpen()) return;
++    if (shouldSkipProgrammaticPromptFocus()) return;
+     this.promptEditor?.focusInput();
+   }
+ 
+diff -ruN -x .git a/src/client/src/components/PromptEditor.ts b/src/client/src/components/PromptEditor.ts
+--- a/src/client/src/components/PromptEditor.ts	2026-10-25 11:02:33.036789942 +0000
++++ b/src/client/src/components/PromptEditor.ts	2026-10-25 11:03:06.457644876 +0000
+@@ -14,7 +14,7 @@
+ import { clearDraft, loadDraft, saveDraft } from "../promptDraftStorage";
+ import { clearStagedAttachments, loadStagedAttachments, saveStagedAttachments, type PendingAttachment } from "../promptAttachmentStaging";
+ import { loadAttachmentDelivery, saveAttachmentDelivery } from "../attachmentPreferences";
+-import { createMobilePromptEnterMedia, shouldUsePromptEnterShiftShortcut } from "../promptEnterBehavior";
++import { createMobilePromptEnterMedia, shouldUsePromptEnterShiftShortcut, supportsVirtualKeyboardPolicy } from "../promptEnterBehavior";
+ import { composerSendShortcut, matchesComposerSend } from "../composerShortcuts";
+ import type { ShortcutPreferenceConfig } from "../keyboardShortcuts";
+ import { promptEditorStyles, type CompletionItem } from "./shared";
+@@ -293,9 +293,19 @@
+           EditorView.lineWrapping,
+           drawSelection(),
+           EditorView.contentAttributes.of((view) => inputAssistanceContentAttributes(view.state.sliceDoc(0, view.state.selection.main.head))),
++          supportsVirtualKeyboardPolicy() ? EditorView.contentAttributes.of({ virtualkeyboardpolicy: "manual" }) : [],
+           EditorView.domEventHandlers({
+             keyup: (event) => this.handleEditorKeyUp(event),
+             blur: () => this.resetEditorModifierState(),
++            pointerup: (event, view) => {
++              // The manual policy keeps programmatic focus from opening the keyboard, so a touch or pen tap opens it.
++              // A tap focuses the editor only after pointerup, while show() needs the focus.
++              const keyboard = navigator.virtualKeyboard;
++              if (event.pointerType === "mouse" || keyboard === undefined) return false;
++              if (!view.hasFocus) view.focus();
++              keyboard.show();
++              return false;
++            },
+           }),
+           placeholder("Message pi... Use / for commands, @ for tracked files, @ space for all files, # for models"),
+           this.editableCompartment.of(EditorView.editable.of(!this.disabled)),
 diff -ruN -x .git a/src/client/src/components/settings/SettingsShortcutsPanel.ts b/src/client/src/components/settings/SettingsShortcutsPanel.ts
---- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-24 13:33:44.098966398 +0000
-+++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-24 13:33:49.578917508 +0000
+--- a/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-25 11:02:33.040790045 +0000
++++ b/src/client/src/components/settings/SettingsShortcutsPanel.ts	2026-10-25 11:02:33.092791378 +0000
 @@ -10,7 +10,7 @@
  const RECORD_SHORTCUT_LISTENER_OPTIONS = { capture: true } as const;
  
@@ -67,8 +127,8 @@ diff -ruN -x .git a/src/client/src/components/settings/SettingsShortcutsPanel.ts
    }
  
 diff -ruN -x .git a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboardShortcuts.ts
---- a/src/client/src/keyboardShortcuts.ts	2026-10-24 13:33:44.098966398 +0000
-+++ b/src/client/src/keyboardShortcuts.ts	2026-10-24 13:34:02.982796203 +0000
+--- a/src/client/src/keyboardShortcuts.ts	2026-10-25 11:02:33.040790045 +0000
++++ b/src/client/src/keyboardShortcuts.ts	2026-10-25 11:02:33.092791378 +0000
 @@ -4,6 +4,7 @@
  
  const modifierOrder = ["mod", "alt", "shift"] as const;
@@ -116,9 +176,35 @@ diff -ruN -x .git a/src/client/src/keyboardShortcuts.ts b/src/client/src/keyboar
    return part.length === 1 ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
  }
  
+diff -ruN -x .git a/src/client/src/promptEnterBehavior.ts b/src/client/src/promptEnterBehavior.ts
+--- a/src/client/src/promptEnterBehavior.ts	2026-10-25 11:02:11.804245281 +0000
++++ b/src/client/src/promptEnterBehavior.ts	2026-10-25 11:03:06.457644876 +0000
+@@ -9,6 +9,22 @@
+   return typeof window !== "undefined" && "matchMedia" in window ? window.matchMedia(MOBILE_PROMPT_ENTER_MEDIA_QUERY) : undefined;
+ }
+ 
++declare global {
++  interface Navigator {
++    // VirtualKeyboard API is Chromium-only and not yet part of the TypeScript DOM lib.
++    readonly virtualKeyboard?: { show(): void };
++  }
++}
++
++export function supportsVirtualKeyboardPolicy(): boolean {
++  return typeof navigator !== "undefined" && navigator.virtualKeyboard !== undefined;
++}
++
++export function shouldSkipProgrammaticPromptFocus(media = createMobilePromptEnterMedia()): boolean {
++  // Without the VirtualKeyboard API, a programmatic focus pops up the on-screen keyboard on mobile-like screens.
++  return media?.matches === true && !supportsVirtualKeyboardPolicy();
++}
++
+ export function parsePromptEnterPreference(value: string | null): PromptEnterPreference {
+   if (value === "send" || value === "newline") return value;
+   return "auto";
 diff -ruN -x .git a/src/server/dockerControlAssets.test.ts b/src/server/dockerControlAssets.test.ts
---- a/src/server/dockerControlAssets.test.ts	2026-10-24 13:33:25.119373683 +0000
-+++ b/src/server/dockerControlAssets.test.ts	2026-10-24 13:33:49.578917508 +0000
+--- a/src/server/dockerControlAssets.test.ts	2026-10-25 11:02:11.824245794 +0000
++++ b/src/server/dockerControlAssets.test.ts	2026-10-25 11:02:33.092791378 +0000
 @@ -34,6 +34,8 @@
    // The Docker control shell scripts intentionally support Linux and macOS hosts.
    // Keep Windows CI on static/syntax coverage instead of executing POSIX host-path and socket flows there.
