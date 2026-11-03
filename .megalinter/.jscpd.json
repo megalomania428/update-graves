@@ -3,8 +3,9 @@
   "reporters": ["html", "markdown"],
   "ignore": [
     "**/*_test.go",
-    "megalinter/configs/*",
-    ".megalinter/configs/*",
+    "**/*.test.ts",
+    "megalinter/**",
+    ".megalinter/**",
     "review-pi_dev/main.md",
     "sources/*/patches/**",
     "harness/pi-dev/**"

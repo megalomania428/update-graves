@@ -97,6 +97,4 @@ jobs:
           persist-credentials: false
       # jscpd:ignore-end
       - name: Run MegaLinter
-        env:
-          OVERRIDE_DIR: .megalinter/configs
         uses: megalomania428/github-actions/megalinter@master
