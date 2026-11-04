@@ -1,0 +1,26 @@
+---
+upstream:
+  release:
+    repo: megalomania428/update-bunker
+    tag: sources-happ
+    asset: happ-3_18_1.apk
+    sha256: e62c31b7561307a51ed07ae274e90b0cb5ead35848930f9e3809fad943f188be
+  version: 3.18.1
+  patch: 1
+  patch_width: 3
+release:
+  targets:
+    - type: repo
+      repo: update-bunker
+targets:
+  - name: android
+    runner: ubuntu-24.04
+    downloads:
+      - repo: iBotPeaches/Apktool
+        tag: v3.0.3
+        asset: apktool_3.0.3.jar
+        sha256: dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423
+    secrets: [APK_SIGNING_KEY]
+    vars: [APK_SIGNING_CERT]
+    steps:
+      - bash scripts/build.sh

@@ -3,6 +3,7 @@ package selector
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -221,6 +222,45 @@ func TestBuildMatrix(t *testing.T) {
 	}
 	if _, err := BuildMatrix(root, []string{"missing"}); err == nil {
 		t.Fatal("missing manifest")
+	}
+	for _, e := range matrix.Include {
+		data, err := json.Marshal(e)
+		if err != nil || e.Secrets != nil || e.Vars != nil {
+			t.Fatalf("%+v %v", e, err)
+		}
+		for _, key := range []string{"secrets", "vars", "release_id", "release_repo"} {
+			if strings.Contains(string(data), `"`+key+`"`) {
+				t.Fatalf("empty %s is not omitted: %s", key, data)
+			}
+		}
+	}
+	bunker := filepath.Join(root, "sources", "bunker")
+	if err := os.MkdirAll(bunker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data = []byte("upstream:\n  release:\n    repo: owner/sources\n    tag: sources-app\n" +
+		"    asset: app.apk\n    sha256: " + strings.Repeat("a", 64) + "\n" +
+		"  version: 1.2.3\n  patch: 0\ntargets:\n  - name: android\n" +
+		"    secrets: [SIGN_KEY]\n    vars: [SIGN_CERT]\n    cache:\n" +
+		"      paths: ['~/.cache/app']\n      key_files: ['scripts/**']\n" +
+		"    steps: [echo ok]\n")
+	if err := os.WriteFile(filepath.Join(bunker, "build.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	matrix, err = BuildMatrix(root, []string{"bunker"})
+	if err != nil || len(matrix.Include) != 1 {
+		t.Fatalf("%v %v", matrix, err)
+	}
+	e := matrix.Include[0]
+	if !strings.HasPrefix(e.CacheKey, "graves-bunker-android-sources-app-") ||
+		!reflect.DeepEqual(e.Secrets, []string{"SIGN_KEY"}) ||
+		!reflect.DeepEqual(e.Vars, []string{"SIGN_CERT"}) {
+		t.Fatalf("%+v", e)
+	}
+	data, err = json.Marshal(e)
+	if err != nil || !strings.Contains(string(data), `"secrets":["SIGN_KEY"]`) ||
+		!strings.Contains(string(data), `"vars":["SIGN_CERT"]`) {
+		t.Fatalf("%s %v", data, err)
 	}
 }
 func TestCacheDigest(t *testing.T) {

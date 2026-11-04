@@ -107,7 +107,10 @@ func execute(ctx context.Context, root, command string) error {
 	b := &builder.Builder{Root: root, Name: name, Mode: mode, Tag: tag,
 		Manifest: m, Target: target}
 	if command == "fetch" {
-		return b.Fetch(ctx)
+		if err := b.Fetch(ctx); err != nil {
+			return err
+		}
+		return outputs([]string{"sha=" + b.Pin})
 	}
 	return b.Build(ctx)
 }
@@ -156,14 +159,11 @@ func prepare(ctx context.Context, root string, dry bool) error {
 	if err != nil {
 		return err
 	}
-	var id int64
 	tele := false
 	if len(matrix.Include) != 0 {
-		p := &publish.Publisher{Root: root, Repo: os.Getenv("GITHUB_REPOSITORY"),
-			Mode: mode, Tag: tag, Dry: dry}
-		body := ""
 		if mode == "release" {
-			p.Name = selected[0]
+			p := &publish.Publisher{Root: root, Repo: os.Getenv("GITHUB_REPOSITORY"),
+				Mode: mode, Tag: tag, Name: selected[0], Dry: dry}
 			file := filepath.Join(root, "sources", p.Name, "build.yaml")
 			p.Manifest, err = manifest.Load(file)
 			if err != nil {
@@ -174,7 +174,7 @@ func prepare(ctx context.Context, root string, dry bool) error {
 				return err
 			}
 			g := &notes.Generator{Root: root, Name: p.Name, Tag: tag, Manifest: p.Manifest}
-			body, err = g.Generate(ctx, dry)
+			body, err := g.Generate(ctx, dry)
 			if err != nil {
 				return err
 			}
@@ -183,9 +183,10 @@ func prepare(ctx context.Context, root string, dry bool) error {
 					tele = true
 				}
 			}
-		}
-		id, err = p.Ensure(ctx, body)
-		if err != nil {
+			if _, err := p.Ensure(ctx, body); err != nil {
+				return err
+			}
+		} else if err := drafts(ctx, root, selected, matrix, dry); err != nil {
 			return err
 		}
 	}
@@ -195,9 +196,41 @@ func prepare(ctx context.Context, root string, dry bool) error {
 	}
 	return outputs([]string{
 		"matrix=" + string(data), "has_jobs=" + strconv.FormatBool(len(matrix.Include) > 0),
-		"mode=" + mode, "tag=" + tag, "release_id=" + strconv.FormatInt(id, 10),
-		"telegram=" + strconv.FormatBool(tele),
+		"mode=" + mode, "tag=" + tag, "telegram=" + strconv.FormatBool(tele),
 	})
+}
+
+// drafts ensures one v999 draft per destination repository of the selected recipes
+// and stores its ID and repository in every matrix entry of each recipe.
+func drafts(ctx context.Context, root string, selected []string, matrix *selector.Matrix,
+	dry bool) error {
+	ids := map[string]int64{}
+	for _, name := range selected {
+		m, err := manifest.Load(filepath.Join(root, "sources", name, "build.yaml"))
+		if err != nil {
+			return err
+		}
+		p := &publish.Publisher{Root: root, Repo: os.Getenv("GITHUB_REPOSITORY"),
+			Mode: "draft", Name: name, Dry: dry, Manifest: m}
+		dest, err := p.Destinations()
+		if err != nil {
+			return err
+		}
+		repo := dest[0].Repo
+		id, done := ids[repo]
+		if !done {
+			if id, err = p.Ensure(ctx, ""); err != nil {
+				return err
+			}
+			ids[repo] = id
+		}
+		for i := range matrix.Include {
+			if matrix.Include[i].Source == name {
+				matrix.Include[i].ReleaseID, matrix.Include[i].ReleaseRepo = id, repo
+			}
+		}
+	}
+	return nil
 }
 func outputs(lines []string) error {
 	var writer io.Writer = os.Stdout

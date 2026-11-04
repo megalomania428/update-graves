@@ -3,10 +3,13 @@
   "language": "en,ru",
   "words": [
     "aoauth",
+    "apksigner",
+    "apktool",
     "comsplit",
     "devskim",
     "duplicacy",
     "earendil",
+    "happ",
     "jmfederico",
     "lintignore",
     "lycheeignore",
@@ -16,12 +19,14 @@
     "pideview",
     "prpgcessing",
     "pylintrc",
+    "smali",
     "snomcy",
     "tstand",
     "typebox",
     "wripy",
     "xattr",
     "xhigh",
+    "zipalign",
     "zizmor"
   ],
   "dictionaryDefinitions": [

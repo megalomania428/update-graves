@@ -1,8 +1,10 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -14,6 +16,14 @@ const validYAML = "upstream:\n  url: https://example.test/upstream.git\n" +
 	"targets:\n  - name: linux\n    patches: [patches/common]\n    cache:\n" +
 	"      paths: ['~/.cache/app']\n      key_files: ['scripts/**']\n" +
 	"    steps: [bash scripts/build.sh]\n"
+
+// The block style keeps values with '?' and '#' intact, unlike the flow style.
+var validRelease = "upstream:\n  release:\n    repo: owner/sources\n" +
+	"    tag: sources-app\n    asset: app.apk\n    sha256: " + strings.Repeat("a", 64) +
+	"\n  version: 1.2.3\n  patch: 0\ntargets:\n  - name: android\n    downloads:\n" +
+	"      - repo: owner/tools\n        tag: v1.0.0\n        asset: tool.jar\n" +
+	"        sha256: " + strings.Repeat("b", 64) + "\n    secrets: [SIGN_KEY]\n" +
+	"    vars: [SIGN_CERT]\n    steps: [bash scripts/build.sh]\n"
 
 func TestDecode(t *testing.T) {
 	for _, tt := range []struct{ name, from, to, field string }{
@@ -113,6 +123,120 @@ func TestDecode(t *testing.T) {
 	}
 	if _, err := m.TargetByName("missing"); err == nil {
 		t.Fatal("missing target")
+	}
+}
+func TestDecodeRelease(t *testing.T) {
+	type decodeCase struct{ name, from, to, field string }
+	cases := []decodeCase{
+		{"url", "  version: 1.2.3\n", "  version: 1.2.3\n  url: u\n", "upstream.release"},
+		{"ref", "  version: 1.2.3\n", "  version: 1.2.3\n  ref: r\n", "upstream.release"},
+		{"version required", "  version: 1.2.3\n", "", "upstream.version"},
+		{"patches", "    steps:", "    patches: [patches]\n    steps:", "targets[0].patches"},
+		{"empty patches", "    steps:", "    patches: []\n    steps:", "targets[0].patches"},
+		{"null patches", "    steps:", "    patches: null\n    steps:", "targets[0].patches"},
+		{"tilde patches", "    steps:", "    patches: ~\n    steps:", "targets[0].patches"},
+		{"bare patches", "    steps:", "    patches:\n    steps:", "targets[0].patches"},
+		{
+			"download duplicate",
+			"    secrets:",
+			"      - repo: owner/tools\n        tag: v1.0.1\n        asset: tool.jar\n" +
+				"        sha256: " + strings.Repeat("b", 64) + "\n    secrets:",
+			".downloads[1].asset",
+		},
+		{
+			"download sha256",
+			"        sha256: " + strings.Repeat("b", 64),
+			"        sha256: " + strings.Repeat("B", 64),
+			"targets[0].downloads[0].sha256",
+		},
+		{"secret and var", "vars: [SIGN_CERT]", "vars: [SIGN_KEY]", "targets[0].vars[0]"},
+	}
+	sum := strings.Repeat("a", 64)
+	for _, list := range []struct {
+		field, from, key string
+		values           []string
+	}{
+		{".repo", "    repo: owner/sources\n", "repo", []string{
+			"owner", "owner/", "/name", "a/b/c", `a\b/c`, "./name", "../name", "owner/.",
+			"owner/..", "own#er/name", "owner/na?me", "owner/na me",
+		}},
+		{".tag", "    tag: sources-app\n", "tag", []string{
+			"", "a b", "release/1.2", "v1#fix", "v1?x", ".v1", "-v1",
+		}},
+		{".asset", "    asset: app.apk\n", "asset", []string{
+			"dir/app.apk", `dir\app.apk`, "..",
+		}},
+		{".sha256", "    sha256: " + sum + "\n", "sha256", []string{
+			strings.Repeat("A", 64), sum[:63],
+		}},
+	} {
+		for _, value := range list.values {
+			cases = append(cases, decodeCase{fmt.Sprintf("%s %q", list.field, value),
+				list.from, "    " + list.key + ": '" + value + "'\n", list.field})
+		}
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(
+				[]byte(strings.Replace(validRelease, tt.from, tt.to, 1)),
+				"recipe.yaml",
+			)
+			if err == nil || !strings.Contains(err.Error(), "recipe.yaml") ||
+				!strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("expected %s: %v", tt.field, err)
+			}
+		})
+	}
+	for _, field := range []string{"secrets", "vars"} {
+		for _, name := range []string{"lower", "1KEY", "GRAVES_X", "GITHUB_X"} {
+			t.Run(field+" "+name, func(t *testing.T) {
+				from := map[string]string{"secrets": "[SIGN_KEY]", "vars": "[SIGN_CERT]"}[field]
+				data := strings.Replace(validRelease, field+": "+from, field+": ["+name+"]", 1)
+				_, err := Decode([]byte(data), "recipe.yaml")
+				want := "targets[0]." + field + "[0]"
+				if err == nil || !strings.Contains(err.Error(), "recipe.yaml") ||
+					!strings.Contains(err.Error(), want) {
+					t.Fatalf("expected %s: %v", want, err)
+				}
+			})
+		}
+	}
+	nullTarget := strings.Replace(validRelease, "targets:\n", "targets:\n  - ~\n", 1)
+	head, _, ok := strings.Cut(validRelease, "targets:")
+	if !ok {
+		t.Fatal("validRelease has no targets section")
+	}
+	for _, tt := range []struct{ name, data, field string }{
+		{"null target", nullTarget, ""},
+		{"null target patches", strings.Replace(nullTarget, "    steps:",
+			"    patches: ~\n    steps:", 1), "targets[0].patches"},
+		{"only null target", head + "targets: [~]\n", "targets"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := Decode([]byte(tt.data), "recipe.yaml")
+			if tt.field == "" {
+				if err != nil || len(m.Targets) != 1 {
+					t.Fatalf("%+v %v", m, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "recipe.yaml: "+tt.field+":") {
+				t.Fatalf("expected %s: %v", tt.field, err)
+			}
+		})
+	}
+	m, err := Decode([]byte(validRelease), "release.yaml")
+	if err != nil || m.Upstream.PinnedRef() != "sources-app" ||
+		m.Upstream.Source() != "owner/sources release sources-app asset app.apk" ||
+		len(m.Targets[0].Downloads) != 1 || m.Targets[0].Downloads[0].Asset != "tool.jar" ||
+		!reflect.DeepEqual(m.Targets[0].Secrets, []string{"SIGN_KEY"}) ||
+		!reflect.DeepEqual(m.Targets[0].Vars, []string{"SIGN_CERT"}) {
+		t.Fatalf("%+v %v", m, err)
+	}
+	m, err = Decode([]byte(validYAML), "valid.yaml")
+	if err != nil || m.Upstream.PinnedRef() != "v1.2.3" ||
+		m.Upstream.Source() != "https://example.test/upstream.git v1.2.3" {
+		t.Fatalf("%+v %v", m, err)
 	}
 }
 func TestLoad(t *testing.T) {

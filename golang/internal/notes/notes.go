@@ -68,8 +68,8 @@ func (g *Generator) PatchFiles() ([]string, error) {
 // Fallback produces deterministic notes and shortens the patch list to the budget.
 func Fallback(name, version string, upstream manifest.Upstream, files []string,
 	budget int) string {
-	prefix := fmt.Sprintf("%s %s\n\nUpstream: %s %s\n\nPatches:\n",
-		name, version, upstream.URL, upstream.Ref)
+	prefix := fmt.Sprintf("%s %s\n\nUpstream: %s\n\nPatches:\n",
+		name, version, upstream.Source())
 	suffix := "\nGenerated without LLM release notes."
 	patches, seen := []string{}, map[string]bool{}
 	for _, file := range files {
@@ -229,8 +229,8 @@ func (g *Generator) makeContext(ctx context.Context, dir string, files []string,
 	if err != nil {
 		return err
 	}
-	app := fmt.Sprintf("Application: %s\nTag: %s\nUpstream: %s %s\n\n%s\n\n%s",
-		g.Name, g.Tag, g.Manifest.Upstream.URL, g.Manifest.Upstream.Ref, build, readme)
+	app := fmt.Sprintf("Application: %s\nTag: %s\nUpstream: %s\n\n%s\n\n%s",
+		g.Name, g.Tag, g.Manifest.Upstream.Source(), build, readme)
 	previous, err := ci.GitPreviousTag(ctx, ci.WithGitDir(g.Root), ci.WithGitRef(g.Tag),
 		ci.WithGitMatch(g.Name+"-*"))
 	if err != nil {
@@ -313,6 +313,10 @@ func (g *Generator) makeContext(ctx context.Context, dir string, files []string,
 	return nil
 }
 func (g *Generator) upstreamLog(ctx context.Context, previous, dir string) error {
+	// A release asset has no git history to compare.
+	if g.Manifest.Upstream.Release != nil {
+		return nil
+	}
 	old, err := ci.GitShow(ctx, ci.WithGitDir(g.Root), ci.WithGitRef(previous),
 		ci.WithGitPaths("sources/"+g.Name+"/build.yaml"))
 	if err != nil {
@@ -323,7 +327,8 @@ func (g *Generator) upstreamLog(ctx context.Context, previous, dir string) error
 		return err
 	}
 	current := g.Manifest.Upstream
-	if m.Upstream.URL != current.URL || m.Upstream.Ref == current.Ref {
+	if m.Upstream.Release != nil || m.Upstream.URL != current.URL ||
+		m.Upstream.Ref == current.Ref {
 		return nil
 	}
 	clone, err := os.MkdirTemp("", "graves-upstream-log-")

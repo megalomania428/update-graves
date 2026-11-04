@@ -52,6 +52,20 @@ func TestFallback(t *testing.T) {
 		!strings.HasSuffix(text, "Generated without LLM release notes.") {
 		t.Fatal(text)
 	}
+	text = Fallback("app", "1.2.3-p0", releaseUpstream(), nil, 4096)
+	if !strings.Contains(text,
+		"Upstream: owner/sources release sources-app asset app.apk") ||
+		!strings.HasSuffix(text, "Generated without LLM release notes.") {
+		t.Fatal(text)
+	}
+}
+func releaseUpstream() manifest.Upstream {
+	patch := 0
+	return manifest.Upstream{
+		Release: &manifest.ReleaseAsset{Repo: "owner/sources", Tag: "sources-app",
+			Asset: "app.apk"},
+		Version: "1.2.3", Patch: &patch,
+	}
 }
 func Test_attemptNotes(t *testing.T) {
 	original := pause
@@ -353,6 +367,32 @@ func TestGenerator_upstreamLog(t *testing.T) {
 	if err := g.upstreamLog(context.Background(), "app-v1", t.TempDir()); err != nil {
 		t.Fatal("different upstream repositories should not be compared")
 	}
+	g.Manifest.Upstream = releaseUpstream()
+	dir = t.TempDir()
+	for _, previous := range []string{"app-v1", "missing"} {
+		if err := g.upstreamLog(context.Background(), previous, dir); err != nil {
+			t.Fatalf("a release asset has no upstream history (%s): %v", previous, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "upstream.log")); !os.IsNotExist(err) {
+		t.Fatal("a release asset shouldn't produce upstream log")
+	}
+	release := "upstream:\n  release:\n    repo: owner/sources\n    tag: sources-app\n" +
+		"    asset: app.apk\n    sha256: " + strings.Repeat("a", 64) + "\n" +
+		"  version: 1.2.3\n  patch: 0\ntargets:\n  - name: linux\n    steps: [echo ok]\n"
+	if err := os.WriteFile(build, []byte(release), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, g.Root, "commit", "-aqm", "release asset")
+	gitRun(t, g.Root, "tag", "app-v2")
+	g.Manifest.Upstream = manifest.Upstream{URL: upstream, Ref: "v2"}
+	dir = t.TempDir()
+	if err := g.upstreamLog(context.Background(), "app-v2", dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "upstream.log")); !os.IsNotExist(err) {
+		t.Fatal("a previous release asset shouldn't produce upstream log")
+	}
 }
 func TestGenerator_makeContext(t *testing.T) {
 	g := fixtureGenerator(t)
@@ -428,5 +468,15 @@ func TestGenerator_makeContext(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "upstream.log")); !os.IsNotExist(err) {
 		t.Fatal("unchanged upstream shouldn't produce log")
+	}
+	g.Manifest.Upstream = releaseUpstream()
+	dir = t.TempDir()
+	if err := g.makeContext(ctx, dir, files, 4096); err != nil {
+		t.Fatal(err)
+	}
+	app, _ = os.ReadFile(filepath.Join(dir, "app.md"))
+	if !strings.Contains(string(app),
+		"\nUpstream: owner/sources release sources-app asset app.apk\n") {
+		t.Fatal(string(app))
 	}
 }

@@ -25,30 +25,31 @@ type Publisher struct {
 // Destination binds a repository to the token allowed to write it.
 type Destination struct{ Repo, Token string }
 
-// Destinations validates GitHub targets; drafts always stay in the current repo.
+// Destinations validates GitHub targets; a draft has the single DraftDestination.
 func (p *Publisher) Destinations() ([]Destination, error) {
 	parts := strings.Split(p.Repo, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("GITHUB_REPOSITORY must be owner/name")
 	}
-	if p.Mode == "draft" {
-		return []Destination{{p.Repo, os.Getenv("GH_TOKEN")}}, nil
-	}
 	var dest []Destination
-	seen := map[string]bool{}
-	for _, target := range p.Manifest.Release.Targets {
-		d := Destination{}
-		switch target.Type {
-		case "self":
-			d = Destination{p.Repo, os.Getenv("GH_TOKEN")}
-		case "repo":
-			d = Destination{parts[0] + "/" + target.Repo, os.Getenv("RELEASES_TOKEN")}
-		default:
-			continue
-		}
-		if !seen[d.Repo] {
-			dest = append(dest, d)
-			seen[d.Repo] = true
+	if p.Mode == "draft" {
+		dest = []Destination{p.DraftDestination()}
+	} else {
+		seen := map[string]bool{}
+		for _, target := range p.Manifest.Release.Targets {
+			d := Destination{}
+			switch target.Type {
+			case "self":
+				d = Destination{p.Repo, os.Getenv("GH_TOKEN")}
+			case "repo":
+				d = Destination{parts[0] + "/" + target.Repo, os.Getenv("RELEASES_TOKEN")}
+			default:
+				continue
+			}
+			if !seen[d.Repo] {
+				dest = append(dest, d)
+				seen[d.Repo] = true
+			}
 		}
 	}
 	for _, d := range dest {
@@ -58,11 +59,36 @@ func (p *Publisher) Destinations() ([]Destination, error) {
 	}
 	return dest, nil
 }
+
+// DraftDestination keeps the v999 draft in the current repository, unless the recipe
+// has no self destination and at least one repo destination: then the first of them
+// under the current owner holds the draft.
+func (p *Publisher) DraftDestination() Destination {
+	self := Destination{p.Repo, os.Getenv("GH_TOKEN")}
+	if p.Manifest == nil {
+		return self
+	}
+	var first *manifest.Destination
+	for i, target := range p.Manifest.Release.Targets {
+		if target.Type == "self" {
+			return self
+		}
+		if target.Type == "repo" && first == nil {
+			first = &p.Manifest.Release.Targets[i]
+		}
+	}
+	if first == nil {
+		return self
+	}
+	owner, _, _ := strings.Cut(p.Repo, "/")
+	return Destination{owner + "/" + first.Repo, os.Getenv("RELEASES_TOKEN")}
+}
 func client(d Destination) (*ci.GitHubClient, error) {
 	return newGitHubClient(ci.WithGitHubRepo(d.Repo), ci.WithGitHubToken(d.Token))
 }
 
-// Ensure creates destination releases before any matrix builds start.
+// Ensure creates destination releases before any matrix builds start and returns the
+// ID of the draft, or of the current repository release.
 func (p *Publisher) Ensure(ctx context.Context, body string) (int64, error) {
 	destinations, err := p.Destinations()
 	if err != nil {
@@ -91,7 +117,7 @@ func (p *Publisher) Ensure(ctx context.Context, body string) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		if d.Repo == p.Repo {
+		if p.Mode == "draft" || d.Repo == p.Repo {
 			id = rel.ID
 		}
 	}
@@ -118,7 +144,9 @@ func Files(root string) ([]string, error) {
 	return files, nil
 }
 
-// Upload replaces only names produced by this successful matrix job.
+// Upload replaces only names produced by this successful matrix job; a draft upload
+// takes the release ID and repository of its matrix entry and checks the repository
+// against the recipe.
 func (p *Publisher) Upload(ctx context.Context) error {
 	files, err := Files(p.Root)
 	if err != nil {
@@ -136,6 +164,10 @@ func (p *Publisher) Upload(ctx context.Context) error {
 		draftID, err = strconv.ParseInt(os.Getenv("GRAVES_RELEASE_ID"), 10, 64)
 		if err != nil || draftID <= 0 {
 			return fmt.Errorf("GRAVES_RELEASE_ID must be a positive integer")
+		}
+		if repo := os.Getenv("GRAVES_RELEASE_REPO"); repo != destinations[0].Repo {
+			return fmt.Errorf("GRAVES_RELEASE_REPO %q differs from draft destination %s",
+				repo, destinations[0].Repo)
 		}
 	}
 	for _, d := range destinations {

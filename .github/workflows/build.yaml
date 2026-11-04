@@ -31,7 +31,6 @@ jobs:
       has_jobs: ${{ steps.prepare.outputs.has_jobs }}
       mode: ${{ steps.prepare.outputs.mode }}
       tag: ${{ steps.prepare.outputs.tag }}
-      release_id: ${{ steps.prepare.outputs.release_id }}
       telegram: ${{ steps.prepare.outputs.telegram }}
     steps:
       # jscpd:ignore-start
@@ -50,7 +49,7 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASES_TOKEN: ${{ secrets.BUNKER_RELEASES_TOKEN }}
           GRAVES_SOURCES: ${{ inputs.sources }}
           LLM_URL: ${{ secrets.LLM_API_URL }} # gitleaks:allow
           LLM_NAME: ${{ secrets.LLM_API_MDL2PI }} # gitleaks:allow
@@ -85,7 +84,8 @@ jobs:
       GRAVES_TARGET: ${{ matrix.target }}
       GRAVES_MODE: ${{ needs.prepare.outputs.mode }}
       GRAVES_TAG: ${{ needs.prepare.outputs.tag }}
-      GRAVES_RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+      GRAVES_RELEASE_ID: ${{ matrix.release_id }}
+      GRAVES_RELEASE_REPO: ${{ matrix.release_repo }}
     steps:
       # jscpd:ignore-start
       - uses: actions/checkout@v7
@@ -101,11 +101,11 @@ jobs:
       # jscpd:ignore-end
       - name: build graves
         run: go -C golang build -o "${RUNNER_TEMP}/graves" ./cmd/graves
-      - name: clone and patch upstream
+      - name: fetch upstream and downloads
         id: fetch
-        run: |
-          "${RUNNER_TEMP}/graves" fetch
-          echo "sha=$(git -C .graves/upstream rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+        env:
+          RELEASES_TOKEN: ${{ secrets.BUNKER_RELEASES_TOKEN }}
+        run: '"${RUNNER_TEMP}/graves" fetch'
       - name: restore cache
         if: matrix.cache_key != ''
         id: cache
@@ -114,6 +114,11 @@ jobs:
           path: ${{ matrix.cache_paths }}
           key: ${{ matrix.cache_key }}-${{ steps.fetch.outputs.sha }}
       - name: build and package
+        env:
+          APK_SIGNING_KEY: ${{ contains(matrix.secrets, 'APK_SIGNING_KEY') &&
+            secrets.APK_SIGNING_KEY || '' }}
+          APK_SIGNING_CERT: ${{ contains(matrix.vars, 'APK_SIGNING_CERT') &&
+            vars.APK_SIGNING_CERT || '' }}
         run: '"${RUNNER_TEMP}/graves" build'
       - name: save cache
         if: matrix.cache_key != '' && steps.cache.outputs.cache-hit != 'true'
@@ -124,7 +129,7 @@ jobs:
       - name: upload assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASES_TOKEN: ${{ secrets.BUNKER_RELEASES_TOKEN }}
         run: '"${RUNNER_TEMP}/graves" upload'
       - name: keep assets for telegram
         if: needs.prepare.outputs.telegram == 'true'

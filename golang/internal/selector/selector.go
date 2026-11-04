@@ -17,11 +17,15 @@ import (
 
 // Entry is one application and target pair in the Actions matrix.
 type Entry struct {
-	Source     string `json:"source"`
-	Target     string `json:"target"`
-	Runner     string `json:"runner"`
-	CacheKey   string `json:"cache_key"`
-	CachePaths string `json:"cache_paths"`
+	Source      string   `json:"source"`
+	Target      string   `json:"target"`
+	Runner      string   `json:"runner"`
+	CacheKey    string   `json:"cache_key"`
+	CachePaths  string   `json:"cache_paths"`
+	ReleaseID   int64    `json:"release_id,omitempty"`
+	ReleaseRepo string   `json:"release_repo,omitempty"`
+	Secrets     []string `json:"secrets,omitempty"`
+	Vars        []string `json:"vars,omitempty"`
 }
 
 // Matrix is serialized directly as a GitHub Actions include matrix.
@@ -157,7 +161,8 @@ func BuildMatrix(root string, names []string) (*Matrix, error) {
 			return nil, err
 		}
 		for _, target := range m.Targets {
-			e := Entry{Source: name, Target: target.Name, Runner: target.Runner}
+			e := Entry{Source: name, Target: target.Name, Runner: target.Runner,
+				Secrets: target.Secrets, Vars: target.Vars}
 			if target.Cache != nil {
 				// Patches and steps come from the recipe, so it is always hashed.
 				globs := append([]string{"build.yaml"}, target.Cache.KeyFiles...)
@@ -166,7 +171,7 @@ func BuildMatrix(root string, names []string) (*Matrix, error) {
 					return nil, err
 				}
 				e.CacheKey = fmt.Sprintf("graves-%s-%s-%s-%s", name, target.Name,
-					m.Upstream.Ref, digest)
+					m.Upstream.PinnedRef(), digest)
 				e.CachePaths = strings.Join(target.Cache.Paths, "\n")
 			}
 			matrix.Include = append(matrix.Include, e)
