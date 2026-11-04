@@ -8,8 +8,8 @@ import type {
 } from '@earendil-works/pi-coding-agent'
 import compactContext, {
   ALREADY_COMPACTED, COMPACT_CONTEXT_MESSAGE_TYPE, COMPACTION_CANCELLED,
-  SINGLE_CALL_REASON, autoCompactedText, continuationText, notStartedText, skippedText,
-  type ContinuationUsage
+  EXTENSION_CANCELLED, SINGLE_CALL_REASON, autoCompactedText, continuationText,
+  notStartedText, skippedText, type ContinuationUsage
 } from '../extensions/compact-context'
 
 type Handler = (...args: unknown[]) => unknown
@@ -59,8 +59,8 @@ function assistantEntry (...ids: string[]): SessionEntry {
   return { type: 'message', id: 'entry-2', parentId: null, timestamp: '', message }
 }
 const HOOKS = [
-  'session_shutdown', 'tool_call', 'turn_start', 'message_start', 'session_compact',
-  'session_compact_failed', 'agent_settled'
+  'session_shutdown', 'tool_call', 'turn_start', 'message_start',
+  'session_before_compact', 'session_compact', 'session_compact_failed', 'agent_settled'
 ]
 const FOLLOW_UP = { triggerTurn: true, deliverAs: 'followUp' }
 const WINDOW = 200000
@@ -216,6 +216,8 @@ export async function runTests (): Promise<void> {
     assert.equal(COMPACT_CONTEXT_MESSAGE_TYPE, 'compact-context')
     assert.equal(COMPACTION_CANCELLED, 'Compaction cancelled')
     assert.equal(ALREADY_COMPACTED, 'Already compacted')
+    assert.equal(EXTENSION_CANCELLED, 'Compaction was cancelled by an extension, ' +
+      'for example after an OAuth summary failure.')
     assert.equal(SINGLE_CALL_REASON,
       'compact_context must be the only tool call in the message')
     const properties = (h.tool.parameters as { properties: Record<string, unknown> })
@@ -620,7 +622,7 @@ export async function runTests (): Promise<void> {
     await h.request()
     assert.equal(h.compacts.length, 1)
   })
-  await test('only notifies when compaction is cancelled or aborted', async () => {
+  await test('only notifies when the signal of its compaction was aborted', async () => {
     const abortError = new Error('This operation was aborted')
     abortError.name = 'AbortError'
     for (const hasUI of [true, false]) {
@@ -628,10 +630,55 @@ export async function runTests (): Promise<void> {
         const h = new Harness()
         h.hasUI = hasUI
         const options = await h.request()
+        const controller = new AbortController()
+        assert.deepEqual(h.emit('session_before_compact', {
+          reason: 'manual', signal: controller.signal
+        }), [undefined])
+        controller.abort()
         options.onError?.(error)
         assert.equal(h.sent.length, 0)
         assert.deepEqual(h.notices,
           hasUI ? [['Context compaction was cancelled', 'warning']] : [])
+        await h.request()
+        assert.equal(h.compacts.length, 2)
+      }
+    }
+  })
+  await test('resumes with an error when an extension cancels compaction', async () => {
+    const abortError = new Error('This operation was aborted')
+    abortError.name = 'AbortError'
+    const expected = continuationText('step 9', new Error(EXTENSION_CANCELLED))
+    assert.equal(expected.split('\n').slice(0, 2).join('\n'),
+      'Context compaction requested via compact_context failed: Compaction was ' +
+      'cancelled by an extension, for example after an OAuth summary failure.\n' +
+      'The context was not compacted.')
+    const sources = ['live', 'unknown', 'late', 'automatic', 'before'] as const
+    for (const source of sources) {
+      for (const error of [new Error(COMPACTION_CANCELLED), abortError]) {
+        const h = new Harness()
+        const aborted = new AbortController()
+        aborted.abort()
+        if (source === 'before') {
+          h.emit('session_before_compact', { reason: 'manual', signal: aborted.signal })
+        }
+        const options = await h.request({ next: 'step 9' })
+        if (source === 'live' || source === 'late') {
+          h.emit('session_before_compact', {
+            reason: 'manual', signal: new AbortController().signal
+          })
+        }
+        if (source === 'late' || source === 'automatic') {
+          h.emit('session_before_compact', {
+            reason: source === 'late' ? 'manual' : 'threshold', signal: aborted.signal
+          })
+        }
+        options.onError?.(error)
+        assert.equal(h.sent.length, 1)
+        const [message, sentOptions] = h.sent[0]
+        assert.equal(message.content, expected)
+        assert.deepEqual(message.details, { error: EXTENSION_CANCELLED, next: 'step 9' })
+        assert.deepEqual(sentOptions, FOLLOW_UP)
+        assert.deepEqual(h.notices, [])
         await h.request()
         assert.equal(h.compacts.length, 2)
       }
@@ -647,6 +694,9 @@ export async function runTests (): Promise<void> {
     assert.equal(h.sent.length, 0)
     assert.deepEqual(h.notices, [['Context compaction was cancelled', 'warning']])
     await h.execute({})
+    const automatic = new AbortController()
+    h.emit('session_before_compact', { reason: 'threshold', signal: automatic.signal })
+    automatic.abort()
     h.emit('session_compact_failed', { reason: 'threshold', aborted: true })
     h.emit('agent_settled')
     assert.equal(h.compacts.length, 0)
@@ -665,6 +715,35 @@ export async function runTests (): Promise<void> {
     assert.equal(headless.sent.length, 0)
     assert.equal(headless.notices.length, 0)
   })
+  await test('compacts after an automatic compaction was cancelled by an extension',
+    async () => {
+      for (const source of ['live', 'unknown', 'manual', 'replaced'] as const) {
+        const h = new Harness()
+        await h.execute({ next: 'step 10' })
+        const aborted = new AbortController()
+        aborted.abort()
+        if (source === 'manual' || source === 'replaced') {
+          h.emit('session_before_compact', {
+            reason: source === 'manual' ? 'manual' : 'threshold', signal: aborted.signal
+          })
+        }
+        if (source === 'live' || source === 'replaced') {
+          assert.deepEqual(h.emit('session_before_compact', {
+            reason: 'overflow', signal: new AbortController().signal
+          }), [undefined])
+        }
+        h.emit('session_compact_failed', { reason: 'overflow', aborted: true })
+        h.emit('agent_settled')
+        assert.equal(h.compacts.length, 1)
+        assert.deepEqual(h.notices, [])
+        assert.equal(h.sent.length, 0)
+        h.options().onComplete?.(compaction)
+        assert.equal(h.sent.length, 1)
+        const details = h.sent[0][0].details as { error?: string, next?: string }
+        assert.equal(details.next, 'step 10')
+        assert.equal(details.error, undefined)
+      }
+    })
   await test('does not start compaction while the session is busy', async () => {
     const reason = 'the session became busy before compaction could start'
     for (const busy of ['running', 'compacting', 'queued']) {

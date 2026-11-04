@@ -2,10 +2,11 @@
 /* eslint @typescript-eslint/promise-function-async: 0 */
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { setImmediate } from 'node:timers/promises'
+import { setImmediate, setTimeout as delay } from 'node:timers/promises'
 import { test, type TestContext } from 'node:test'
 import {
-  compact, generateBranchSummary, getAgentDir, prepareBranchEntries, SettingsManager
+  compact, generateBranchSummary, getAgentDir, ModelRuntime, prepareBranchEntries,
+  SettingsManager
 } from '@earendil-works/pi-coding-agent'
 import type {
   CompactionResult, ExtensionAPI, ExtensionContext, ModelRegistry,
@@ -33,6 +34,13 @@ type StreamFn = NonNullable<Parameters<typeof compact>[7]>
 type Auth = Awaited<ReturnType<ModelRegistry['getApiKeyAndHeaders']>>
 type BeforeEvent = SessionBeforeCompactEvent | SessionBeforeTreeEvent
 type Hook = (event: never, ctx: ExtensionContext) => unknown
+type Runtime = Pick<ModelRuntime, 'streamSimple'>
+type RuntimeOptions = NonNullable<Parameters<Runtime['streamSimple']>[2]>
+interface AuthOverrides {
+  apiKey?: string
+  env?: Record<string, string>
+  signal?: AbortSignal
+}
 interface HookResult {
   cancel?: boolean
   compaction?: CompactionResult
@@ -227,6 +235,62 @@ function textPayload (context: Context, requestModel: Model<Api>): {
     ]
   }
 }
+interface RetryHook {
+  readonly requests: RuntimeOptions[]
+  readonly settled: Array<Promise<void>>
+  attempts: number
+  sleeps: number
+  aborted: number
+  onSleep?: () => void
+}
+// Emulates the retry hook of review-pi_dev retry.ts: it replaces streamSimple of the
+// runtime instance, calls the original with the runtime as this, repeats every error
+// until success and stops on abort, also while waiting between attempts.
+function installRetryHook (runtime: Runtime, delayMs: number): RetryHook {
+  const hook: RetryHook = {
+    requests: [], settled: [], attempts: 0, sleeps: 0, aborted: 0
+  }
+  const original = runtime.streamSimple
+  runtime.streamSimple = (requestModel, context, options) => {
+    hook.requests.push(options ?? {})
+    const outer = createAssistantMessageEventStream()
+    const finish = (message: AssistantMessage): void => {
+      if (message.stopReason === 'error' || message.stopReason === 'aborted') {
+        outer.push({ type: 'error', reason: message.stopReason, error: message })
+      } else {
+        if (message.stopReason === 'pending') {
+          throw new Error('Non-terminal fake response')
+        }
+        outer.push({ type: 'done', reason: message.stopReason, message })
+      }
+      outer.end()
+    }
+    const run = async (): Promise<void> => {
+      for (;;) {
+        hook.attempts++
+        const message = await original.call(runtime, requestModel, context, options)
+          .result()
+        if (message.stopReason !== 'error') {
+          finish(message)
+          return
+        }
+        if (options?.signal?.aborted === true) break
+        hook.sleeps++
+        hook.onSleep?.()
+        try {
+          await delay(delayMs, undefined, { signal: options?.signal })
+        } catch {
+          break
+        }
+      }
+      hook.aborted++
+      finish({ ...terminal('error'), stopReason: 'aborted' })
+    }
+    hook.settled.push(run())
+    return outer
+  }
+  return hook
+}
 class Harness {
   readonly hooks = new Map<string, Hook[]>()
   readonly notices: string[] = []
@@ -238,7 +302,9 @@ class Harness {
   }> = []
 
   readonly bodies: Array<Record<string, unknown>> = []
+  // Streams returned by the runtime and the options it received.
   readonly streams: AssistantMessageEventStream[] = []
+  readonly runtimeCalls: RuntimeOptions[] = []
   readonly checkpoints: HookResult[] = []
   readonly settings = SettingsManager.inMemory({
     retry: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
@@ -250,6 +316,7 @@ class Harness {
   readonly pi: ExtensionAPI
   readonly ctx: ExtensionContext
   readonly provider: Provider
+  runtime: Runtime | undefined
   model: Model<Api> | undefined = model
   oauth: boolean | (() => boolean) = true
   auth: () => Promise<Auth> = async () => ({
@@ -260,6 +327,8 @@ class Harness {
   authCalls = 0
   oauthCalls = 0
   providerReads = 0
+  runtimeAuthCalls = 0
+  readonly runtimeAuthOverrides: AuthOverrides[] = []
   settingsReads = 0
   resultCalls = 0
   payloadCalls = 0
@@ -284,12 +353,6 @@ class Harness {
       this.calls.push({ model: requestModel, context, options })
       this.onProvider?.()
       const stream = createAssistantMessageEventStream()
-      this.streams.push(stream)
-      const result = stream.result.bind(stream)
-      stream.result = () => {
-        this.resultCalls++
-        return (this.failResult != null) ? Promise.reject(this.failResult) : result()
-      }
       const response = this.responses.shift() ?? terminal()
       this.complete(stream, requestModel, context, options, response).catch((error) => {
         stream.push({
@@ -304,15 +367,63 @@ class Harness {
       return stream
     }
     this.provider = strictFake<Provider>({ streamSimple })
-    const registry = strictFake<ModelRegistry>({
+    const getRuntime = (): Runtime | undefined => this.runtime
+    // The private runtime is not part of the ModelRegistry type.
+    const registryFake = {
       isUsingOAuth: () => {
         this.oauthCalls++
         return typeof this.oauth === 'function' ? this.oauth() : this.oauth
       },
       getProvider: () => { this.providerReads++; return this.provider },
       // Preserve synchronous throws and the identity of the auth promise.
-      getApiKeyAndHeaders: () => { this.authCalls++; return this.auth() }
+      getApiKeyAndHeaders: () => { this.authCalls++; return this.auth() },
+      get runtime () { return getRuntime() }
+    }
+    const registry = strictFake<ModelRegistry>(registryFake)
+    // Real request preparation of ModelRuntime over the fake provider and auth: auth,
+    // baseUrl and headers are resolved again on every runtime call.
+    const internals = strictFake<object>({
+      models: strictFake<object>({
+        getProvider: (id: string) => registry.getProvider(id)
+      }),
+      getAuth: async (_model: Model<Api>, overrides: AuthOverrides) => {
+        this.runtimeAuthCalls++
+        this.runtimeAuthOverrides.push(overrides)
+        // An explicit key takes the API key path without stored auth, as in pi-ai.
+        if (overrides.apiKey !== undefined) {
+          return { auth: { apiKey: overrides.apiKey }, env: overrides.env }
+        }
+        const auth = await this.auth()
+        if (!auth.ok) return undefined
+        return {
+          auth: { apiKey: auth.apiKey, headers: auth.headers, baseUrl: auth.baseUrl },
+          env: auth.env
+        }
+      },
+      prepareRequest: Reflect.get(ModelRuntime.prototype, 'prepareRequest')
     })
+    const track = (
+      stream: AssistantMessageEventStream, options: RuntimeOptions
+    ): AssistantMessageEventStream => {
+      this.runtimeCalls.push(options)
+      this.streams.push(stream)
+      const result = stream.result.bind(stream)
+      stream.result = () => {
+        this.resultCalls++
+        return (this.failResult != null) ? Promise.reject(this.failResult) : result()
+      }
+      return stream
+    }
+    const runtime: Runtime = strictFake<Runtime>({
+      streamSimple (requestModel, context, options) {
+        // The retry hook calls the replaced streamSimple with the runtime as this.
+        assert.equal(this, runtime)
+        return track(ModelRuntime.prototype.streamSimple.call(
+          internals as ModelRuntime, requestModel, context, options
+        ), options ?? {})
+      }
+    })
+    this.runtime = runtime
     const getModel = (): Model<Api> | undefined => this.model
     this.ctx = strictFake<ExtensionContext>({
       cwd: '/offline/project',
@@ -586,7 +697,8 @@ export async function runTests (
       assert.deepEqual(event.preparation, original)
       const call = h.calls.at(-1)
       assert.ok(call)
-      assert.equal(call.options.signal, event.signal)
+      assert.notEqual(call.options.signal, event.signal)
+      assert.equal(call.options.signal?.aborted, false)
       assert.equal(call.options.reasoning, 'high')
       assert.equal(call.options.maxTokens, 1638)
       assert.equal(call.options.cacheRetention, 'none')
@@ -605,6 +717,8 @@ export async function runTests (
     assert.equal(routing.size, 3)
     assert.equal(globalHooks, 0)
     assert.equal(h.authCalls, 3)
+    assert.equal(h.runtimeAuthCalls, 3)
+    assert.equal(h.runtimeCalls.length, 3)
     assert.equal(h.settingsReads, 3)
     assert.equal(h.resultCalls, 6)
     assert.equal(h.checkpoints.length, 3)
@@ -624,7 +738,8 @@ export async function runTests (
     assert.equal(h.calls[0].options.maxTokens, 1638)
     assert.equal(h.calls[1].options.maxTokens, 1024)
     for (const call of h.calls) {
-      assert.equal(call.options.signal, event.signal)
+      assert.notEqual(call.options.signal, event.signal)
+      assert.equal(call.options.signal?.aborted, false)
       assert.equal(call.options.cacheRetention, 'none')
     }
     const history = JSON.stringify(h.calls[0].context)
@@ -674,7 +789,8 @@ export async function runTests (
       assert.equal(result?.label, undefined)
       assert.equal(h.calls.length, 1)
       const call = h.calls[0]
-      assert.equal(call.options.signal, event.signal)
+      assert.notEqual(call.options.signal, event.signal)
+      assert.equal(call.options.signal?.aborted, false)
       assert.equal(call.options.maxTokens, 4096)
       assert.equal(call.options.cacheRetention, 'none')
       assert.match(JSON.stringify(call.context), /Keep the branch decision/u)
@@ -892,7 +1008,6 @@ export async function runTests (
       signal: h.controller.signal,
       maxTokens: 777,
       reasoning: 'medium',
-      apiKey: 'explicit-key',
       headers: {
         'X-Case': 'options',
         'X-Null': null,
@@ -930,7 +1045,7 @@ export async function runTests (
     assert.notEqual(call.model, model)
     assert.deepEqual(call.model, { ...model, baseUrl: 'https://auth.offline.invalid' })
     assert.equal(model.baseUrl, 'https://offline.invalid')
-    assert.equal(call.options.apiKey, 'explicit-key')
+    assert.equal(call.options.apiKey, 'fresh-auth')
     assert.deepEqual(call.options.env, {
       authOnly: 'a', same: 'options', optionsOnly: 'b'
     })
@@ -963,6 +1078,47 @@ export async function runTests (
     assert.equal(h.calls[1].options.timeoutMs, 2147483647)
     assert.equal(h.calls[1].options.env, undefined)
     assert.equal(h.authCalls, 2)
+    assert.equal(h.runtimeAuthCalls, 2)
+    assert.equal(h.runtimeCalls.length, 2)
+    assert.equal(h.runtimeCalls[0].apiKey, undefined)
+    assert.deepEqual(h.runtimeCalls[0].env, { same: 'options', optionsOnly: 'b' })
+    assert.equal(h.runtimeCalls[0].headers?.['X-Case'], 'options')
+    assert.equal(h.runtimeCalls[0].headers?.['user-agent'], 'options-agent')
+    assert.equal(h.runtimeCalls[0].headers?.['User-Agent'], undefined)
+    assert.equal(typeof h.runtimeCalls[0].transformHeaders, 'function')
+    assert.equal(h.runtimeCalls[1].apiKey, undefined)
+    assert.equal(h.runtimeCalls[1].env, undefined)
+    assert.equal(h.runtimeAuthOverrides.length, 2)
+    assert.equal(h.runtimeAuthOverrides[0].apiKey, undefined)
+    assert.deepEqual(h.runtimeAuthOverrides[0].env, { same: 'options', optionsOnly: 'b' })
+    assert.equal(h.runtimeAuthOverrides[0].signal, h.runtimeCalls[0].signal)
+    assert.equal(h.runtimeAuthOverrides[1].apiKey, undefined)
+    assert.equal(h.runtimeAuthOverrides[1].env, undefined)
+    h.auth = async () => ({
+      ok: true,
+      apiKey: 'fresh-third',
+      baseUrl: 'https://third.offline.invalid',
+      headers: { 'X-Auth': 'third' },
+      env: { authOnly: 'third' }
+    })
+    await h.stream()(model, context, {
+      maxTokens: 512,
+      apiKey: 'explicit-key',
+      env: { optionsOnly: 'c' },
+      onPayload: () => undefined,
+      signal: h.controller.signal
+    })
+    // The runtime takes the API key path: stored auth fields do not reach the request.
+    assert.equal(h.authCalls, 3)
+    assert.equal(h.runtimeAuthCalls, 3)
+    assert.equal(h.runtimeAuthOverrides[2].apiKey, 'explicit-key')
+    assert.equal(h.calls[2].model, model)
+    assert.equal(h.calls[2].options.apiKey, 'explicit-key')
+    assert.deepEqual(h.calls[2].options.env, { optionsOnly: 'c' })
+    assert.equal(h.calls[2].options.headers?.['X-Auth'], undefined)
+    assert.equal(
+      h.calls[2].options.headers?.['User-Agent'], 'claude-cli/2.1.281 (external, cli)'
+    )
     assert.deepEqual(mergeHeaders({ 'X-Drop': 'old', 'x-drop': 'duplicate' },
       { 'X-DROP': null }), { 'X-DROP': null })
   })
@@ -1133,8 +1289,8 @@ export async function runTests (
       delete overrides.compact
     }
   })
-  await test('counted native StreamFn and effective provider ' +
-    'receive the identical event signal',
+  await test('counted native StreamFn receives the event signal ' +
+    'and the provider a joined signal that follows it',
   async () => {
     let expected: AbortSignal
     let counted = 0
@@ -1158,10 +1314,23 @@ export async function runTests (
         expected = event.signal
         const h = new Harness()
         await h.dispatch(event)
-        assert.equal(h.calls[0].options.signal, event.signal)
+        const joined = h.calls[0].options.signal
+        assert.ok(joined !== undefined)
+        assert.notEqual(joined, event.signal)
+        assert.equal(joined.aborted, false)
+        assert.equal(h.runtimeCalls[0].signal, joined)
         assert.equal(h.checkpoints.length, 1)
       }
-      assert.equal(counted, 2)
+      const aborting = new Harness()
+      const abortEvent = compactEvent()
+      abortEvent.signal = aborting.controller.signal
+      expected = abortEvent.signal
+      aborting.onProvider = () => { aborting.controller.abort() }
+      assertCancelled(aborting, await aborting.dispatch(abortEvent), 'aborted')
+      const abortJoined = aborting.calls[0].options.signal
+      assert.equal(abortJoined?.aborted, true)
+      assert.equal(abortJoined?.reason, aborting.controller.signal.reason)
+      assert.equal(counted, 3)
     } finally {
       delete overrides.compact
       delete overrides.generateBranchSummary
@@ -1172,7 +1341,8 @@ export async function runTests (
   async (t) => {
     for (const event of [compactEvent(), treeEvent()]) {
       for (const failure of ['guard', 'auth-reject', 'auth-false', 'provider-missing',
-        'provider-invalid', 'settings', 'provider-throw', 'result-reject'] as const) {
+        'provider-invalid', 'runtime-missing', 'runtime-invalid', 'settings',
+        'provider-throw', 'result-reject'] as const) {
         const h = new Harness()
         if (failure === 'guard') h.oauth = () => { throw new Error('fake-secret-guard') }
         if (failure === 'auth-reject') {
@@ -1192,6 +1362,10 @@ export async function runTests (
           t.mock.method(h.ctx.modelRegistry, 'getProvider', () =>
             strictFake<Provider>({ streamSimple: undefined }))
         }
+        if (failure === 'runtime-missing') h.runtime = undefined
+        if (failure === 'runtime-invalid') {
+          h.runtime = strictFake<Runtime>({ streamSimple: undefined })
+        }
         if (failure === 'settings') {
           h.onSettings = () => {
             throw new Error('fake-secret-settings')
@@ -1206,8 +1380,14 @@ export async function runTests (
           ? 'auth'
           : failure.startsWith('provider-') && failure !== 'provider-throw'
             ? 'provider'
-            : failure === 'settings' ? 'settings' : 'summary'
+            : failure.startsWith('runtime-')
+              ? 'provider'
+              : failure === 'settings' ? 'settings' : 'summary'
         assertCancelled(h, await h.dispatch(event), category)
+        if (failure.startsWith('runtime-')) {
+          assert.equal(h.authCalls, 0)
+          assert.equal(h.calls.length, 0)
+        }
       }
     }
     for (const event of [compactEvent(), treeEvent()]) {
@@ -1323,6 +1503,102 @@ export async function runTests (
           await h.dispatch(kind === 'compact' ? compactEvent() : treeEvent()),
           reason === 'aborted' ? 'aborted' : 'summary')
         assert.equal(h.calls.length, 1)
+      }
+    }
+  })
+  await test('runtime retry hook sees compact and tree summaries ' +
+    'and turns a transient error into a summary',
+  async () => {
+    for (const kind of ['compact', 'tree']) {
+      const h = new Harness()
+      h.settings.getRetrySettings = () => ({
+        enabled: false, maxRetries: 2, baseDelayMs: 0
+      })
+      assert.ok(h.runtime !== undefined)
+      const hook = installRetryHook(h.runtime, 0)
+      h.auth = async () => ({
+        ok: true,
+        apiKey: 'sk-ant-oat-FAKE-OFFLINE',
+        headers: { 'x-client-request-id': 'auth-request', 'X-Auth': 'yes' }
+      })
+      h.responses = [
+        { ...terminal('error'), errorMessage: 'terminated fake-secret' }, terminal()
+      ]
+      const result = await h.dispatch(kind === 'compact' ? compactEvent() : treeEvent())
+      await Promise.all(hook.settled)
+      assert.equal(h.checkpoints.length, 1)
+      assert.match(result?.compaction?.summary ?? result?.summary?.summary ?? '',
+        /Offline summary/u)
+      assert.equal(hook.requests.length, 1)
+      assert.equal(hook.attempts, 2)
+      assert.equal(hook.sleeps, 1)
+      assert.equal(hook.aborted, 0)
+      assert.equal(h.runtimeCalls.length, 2)
+      assert.equal(h.calls.length, 2)
+      assert.equal(h.authCalls, 1)
+      assert.equal(h.runtimeAuthCalls, 2)
+      assert.equal(hook.requests[0].signal, h.calls[1].options.signal)
+      for (const call of h.calls) {
+        const headers = call.options.headers ?? {}
+        assert.equal(call.options.apiKey, 'sk-ant-oat-FAKE-OFFLINE')
+        assert.equal(headers['X-Auth'], 'yes')
+        assert.ok(Object.keys(headers).every((name) =>
+          name.toLowerCase() !== 'x-client-request-id'))
+        assert.equal(headers['X-Claude-Code-Session-Id'], fingerprint.sessionId)
+        assert.equal(headers['User-Agent'], 'claude-cli/2.1.281 (external, cli)')
+      }
+      assert.deepEqual(h.calls[0].options.headers, h.calls[1].options.headers)
+      assert.equal(h.bodies.length, 2)
+      assert.deepEqual(h.bodies[0], h.bodies[1])
+      assert.match(JSON.stringify(h.bodies[1]), /x-anthropic-billing-header/u)
+    }
+  })
+  await test('abort and payload failures stop waiting and retries ' +
+    'of the runtime retry hook',
+  async () => {
+    for (const kind of ['compact', 'tree']) {
+      const h = new Harness()
+      assert.ok(h.runtime !== undefined)
+      const hook = installRetryHook(h.runtime, 600000)
+      hook.onSleep = () => { h.controller.abort() }
+      h.responses = [terminal('error'), terminal()]
+      const event = kind === 'compact' ? compactEvent() : treeEvent()
+      event.signal = h.controller.signal
+      assertCancelled(h, await h.dispatch(event), 'aborted')
+      await Promise.all(hook.settled)
+      assert.equal(hook.attempts, 1)
+      assert.equal(hook.sleeps, 1)
+      assert.equal(hook.aborted, 1)
+      assert.equal(h.calls.length, 1)
+    }
+    for (const mode of ['guard', 'callback'] as const) {
+      try {
+        overrides.compact = (...args) => {
+          const stream = args[7]
+          assert.ok(stream)
+          args[7] = (model, context, options) => stream(model, context, {
+            ...options,
+            onPayload: mode === 'guard'
+              ? () => ({})
+              : async () => { throw new Error('fake-secret-payload') }
+          })
+          return native.compact(...args)
+        }
+        const h = new Harness()
+        assert.ok(h.runtime !== undefined)
+        const hook = installRetryHook(h.runtime, 600000)
+        const event = compactEvent()
+        assertCancelled(h, await h.dispatch(event), 'summary')
+        await Promise.all(hook.settled)
+        assert.equal(event.signal.aborted, false)
+        assert.equal(hook.attempts, 1)
+        assert.equal(hook.sleeps, 0)
+        assert.equal(hook.aborted, 1)
+        assert.equal(h.calls.length, 1)
+        assert.equal(h.bodies.length, 0)
+        assert.equal(h.calls[0].options.signal?.aborted, true)
+      } finally {
+        delete overrides.compact
       }
     }
   })

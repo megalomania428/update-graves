@@ -8,6 +8,8 @@ import {
 export const COMPACT_CONTEXT_MESSAGE_TYPE = 'compact-context'
 export const COMPACTION_CANCELLED = 'Compaction cancelled'
 export const ALREADY_COMPACTED = 'Already compacted'
+export const EXTENSION_CANCELLED = 'Compaction was cancelled by an extension, for ' +
+  'example after an OAuth summary failure.'
 export const SINGLE_CALL_REASON =
   'compact_context must be the only tool call in the message'
 
@@ -59,6 +61,10 @@ interface CompactRequest {
   compacted: boolean
   autoCompacted: boolean
   aborted: boolean
+  // Signal of the first manual session_before_compact after ctx.compact.
+  compactSignal: AbortSignal | undefined
+  // Signal of the latest automatic compaction started while the request waits.
+  autoSignal: AbortSignal | undefined
 }
 
 export function isCancellation (error: Error): boolean {
@@ -260,6 +266,16 @@ export default function compactContext (pi: ExtensionAPI): void {
     if (details?.notice === queuedNotice) queuedNotice = undefined
   })
 
+  // Only remembers signals: a returned result would change the compaction.
+  pi.on('session_before_compact', (event) => {
+    if (request === undefined) return
+    if (state === 'compacting' && event.reason === 'manual') {
+      request.compactSignal ??= event.signal
+    } else if (state === 'requested' && event.reason !== 'manual') {
+      request.autoSignal = event.signal
+    }
+  })
+
   pi.on('session_compact', (event) => {
     if (request === undefined) return
     request.compacted = true
@@ -271,7 +287,8 @@ export default function compactContext (pi: ExtensionAPI): void {
 
   pi.on('session_compact_failed', (event) => {
     if (state !== 'requested' || request === undefined) return
-    if (event.aborted) request.aborted = true
+    // A cancel by an extension or an unknown signal leaves the request to agent_settled.
+    if (event.aborted && request.autoSignal?.aborted === true) request.aborted = true
   })
 
   pi.on('agent_settled', (_event, ctx) => {
@@ -317,7 +334,9 @@ export default function compactContext (pi: ExtensionAPI): void {
         onError: (error) => {
           if (!settle(current)) return
           if (isCancellation(error)) {
-            cancelled(ctx)
+            // Pi reports a cancel by an extension hook as a cancellation too.
+            if (current.compactSignal?.aborted === true) cancelled(ctx)
+            else resume(current, new Error(EXTENSION_CANCELLED))
             return
           }
           if (error.message === ALREADY_COMPACTED && current.compacted) {
@@ -390,7 +409,9 @@ export default function compactContext (pi: ExtensionAPI): void {
         tokensBefore: null,
         compacted: false,
         autoCompacted: false,
-        aborted: false
+        aborted: false,
+        compactSignal: undefined,
+        autoSignal: undefined
       }
       state = 'requested'
       const result = {

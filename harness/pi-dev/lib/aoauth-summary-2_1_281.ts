@@ -3,8 +3,8 @@ import {
   compact, generateBranchSummary, getAgentDir, prepareBranchEntries, SettingsManager
 } from '@earendil-works/pi-coding-agent'
 import type {
-  ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeTreeEvent,
-  SessionEntry
+  ExtensionAPI, ExtensionContext, ModelRuntime, SessionBeforeCompactEvent,
+  SessionBeforeTreeEvent, SessionEntry
 } from '@earendil-works/pi-coding-agent'
 import type { Api, Model } from '@earendil-works/pi-ai'
 type StreamFn = NonNullable<Parameters<typeof compact>[7]>
@@ -26,6 +26,17 @@ class SummaryFailure extends Error {
     super('Summary operation failed')
     this.name = 'SummaryFailure'
   }
+}
+type SummaryRuntime = Pick<ModelRuntime, 'streamSimple'>
+// The registry runtime is private to TypeScript only; review-pi_dev retry.ts intercepts
+// its streamSimple, so summaries reach the retries only through it.
+function summaryRuntime (ctx: ExtensionContext): SummaryRuntime {
+  const runtime: unknown = Reflect.get(ctx.modelRegistry, 'runtime')
+  if (typeof runtime !== 'object' || runtime === null ||
+    typeof Reflect.get(runtime, 'streamSimple') !== 'function') {
+    throw new SummaryFailure('provider')
+  }
+  return runtime as SummaryRuntime
 }
 export function fileDetails (value: unknown): FileDetails | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return
@@ -198,6 +209,7 @@ export function createSummaryStream (
     if (provider === undefined || typeof provider.streamSimple !== 'function') {
       throw new SummaryFailure('provider')
     }
+    const runtime = summaryRuntime(ctx)
     const auth = await waitOrAbort(
       ctx.modelRegistry.getApiKeyAndHeaders(model), signal
     ).catch(() => { throw new SummaryFailure('auth') })
@@ -205,39 +217,46 @@ export function createSummaryStream (
     if (!auth.ok || !ctx.modelRegistry.isUsingOAuth(model)) {
       throw new SummaryFailure('auth')
     }
-    const requestModel = auth.baseUrl !== undefined && auth.baseUrl !== ''
-      ? { ...model, baseUrl: auth.baseUrl }
-      : model
+    // The runtime resolves auth, baseUrl, headers and env again on every attempt.
     const source = options ?? {}
-    const headers = mergeHeaders(auth.headers, source.headers)
-    fingerprint.applyHeaders(headers, fingerprint.sessionId)
-    const env = auth.env !== undefined || source.env !== undefined
-      ? { ...auth.env, ...source.env }
-      : undefined
     const providerRetry = settings.getProviderRetrySettings()
     const idleTimeout = settings.getHttpIdleTimeoutMs()
     const effectiveTimeout = idleTimeout === 0 ? 2147483647 : idleTimeout
     signal.throwIfAborted()
-    const stream = provider.streamSimple(requestModel, context, {
+    // A local abort stops the runtime retries after a payload failure.
+    const local = new AbortController()
+    const requestSignal = AbortSignal.any([signal, local.signal])
+    const failure: { payload?: SummaryFailure } = {}
+    const stream = runtime.streamSimple(model, context, {
       ...source,
-      signal,
-      apiKey: source.apiKey ?? auth.apiKey,
-      headers,
-      env,
+      signal: requestSignal,
+      transformHeaders: (headers) => {
+        fingerprint.applyHeaders(headers, fingerprint.sessionId)
+        return headers
+      },
       timeoutMs: source.timeoutMs ?? providerRetry.timeoutMs ?? effectiveTimeout,
       websocketConnectTimeoutMs: source.websocketConnectTimeoutMs ??
         settings.getWebSocketConnectTimeoutMs(),
       maxRetries: source.maxRetries ?? providerRetry.maxRetries,
       maxRetryDelayMs: source.maxRetryDelayMs ?? providerRetry.maxRetryDelayMs,
       onPayload: async (payload, actualModel) => {
-        const replacement = await source.onPayload?.(payload, actualModel)
-        const prepared = replacement === undefined ? payload : replacement
-        if (!isSummaryPayload(prepared, actualModel)) throw new SummaryFailure('summary')
-        return fingerprint.applyPayload(prepared, actualModel.id)
+        try {
+          const replacement = await source.onPayload?.(payload, actualModel)
+          const prepared = replacement === undefined ? payload : replacement
+          if (!isSummaryPayload(prepared, actualModel)) {
+            throw new SummaryFailure('summary')
+          }
+          return fingerprint.applyPayload(prepared, actualModel.id)
+        } catch {
+          failure.payload = new SummaryFailure('summary')
+          local.abort(failure.payload)
+          throw failure.payload
+        }
       },
       onResponse: source.onResponse
     })
-    const response = await waitOrAbort(stream.result(), signal)
+    const response = await waitOrAbort(stream.result(), requestSignal)
+      .catch((error: unknown) => { throw failure.payload ?? error })
     signal.throwIfAborted()
     if (response.stopReason === 'aborted') throw new SummaryFailure('aborted')
     if (response.stopReason === 'stop' && !response.content.some((block) =>
