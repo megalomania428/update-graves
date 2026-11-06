@@ -1,0 +1,1493 @@
+diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
+--- a/src/duplicacy_backupmanager.go	2026-11-05 13:13:53.493917354 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-06 04:52:52.077128525 +0000
+@@ -227,6 +227,9 @@
+ 	var totalModifiedFileSize int64    // total size of modified files
+ 	var uploadedModifiedFileSize int64 // portions that have been uploaded (including cache hits)
+ 	var preservedFileSize int64 // total size of unmodified files
++	// total size of the modified entries to be split into chunks, only for ProgressFunction;
++	// the entries that EntryList.AddEntry puts into ModifiedEntries: no directories, links
++	var modifiedChunkedFileSize int64
+ 
+ 	localSnapshot := CreateEmptySnapshot(manager.snapshotID)
+ 	localSnapshot.Revision = remoteSnapshot.Revision + 1
+@@ -403,6 +406,9 @@
+ 				}
+ 			} else {
+ 				totalModifiedFileSize += localEntry.Size
++				if ProgressFunction != nil && !localEntry.IsDir() && !localEntry.IsLink() {
++					modifiedChunkedFileSize += localEntry.Size
++				}
+ 				if localEntry.Size > 0 {
+ 					localEntry.Size = -1
+ 				}
+@@ -411,6 +417,9 @@
+ 		} else {
+ 			// compareResult must be < 0; the local file is new
+ 			totalModifiedFileSize += localEntry.Size
++			if ProgressFunction != nil && !localEntry.IsDir() && !localEntry.IsLink() {
++				modifiedChunkedFileSize += localEntry.Size
++			}
+ 			if localEntry.Size > 0 {
+ 					// A size of -1 indicates this is a modified file that will be uploaded
+ 					localEntry.Size = -1
+@@ -433,6 +442,10 @@
+ 		return false
+ 	}
+ 
++	if ProgressFunction != nil {
++		ProgressFunction(ProgressEvent{Operation: ProgressOperationBackup,
++			Kind: ProgressKindStart, TotalBytes: modifiedChunkedFileSize, TotalChunks: -1})
++	}
+ 	fileChunkMaker := CreateFileChunkMaker(manager.config, false)
+ 
+ 	keepUploadAlive := int64(1800)
+@@ -494,6 +507,11 @@
+ 		}
+ 
+ 		uploadedModifiedFileSize := atomic.AddInt64(&uploadedModifiedFileSize, int64(chunkSize))
++		if ProgressFunction != nil {
++			ProgressFunction(ProgressEvent{Operation: ProgressOperationBackup,
++				Kind: ProgressKindStep, Bytes: int64(chunkSize), UploadedBytes: int64(uploadSize),
++				Skipped: inCache || uploadSize == 0, ChunkID: chunk.GetID()})
++		}
+ 
+ 		if (IsTracing() || showStatistics) && totalModifiedFileSize > 0 {
+ 			now := time.Now().Unix()
+@@ -641,6 +659,16 @@
+ 
+ 	RunAtError = func() {}
+ 	deleteIncompleteSnapshot(manager.cachePath)
++	// The end comes after the incomplete snapshot can no longer be saved or left behind by
++	// a panic of the hook
++	if ProgressFunction != nil {
++		ProgressFunction(ProgressEvent{Operation: ProgressOperationBackup,
++			Kind:          ProgressKindEnd,
++			TotalChunks:   numberOfNewFileChunks + int64(numberOfNewMetadataChunks),
++			TotalBytes:    totalUploadedFileChunkLength + totalUploadedMetadataChunkLength,
++			UploadedBytes: totalUploadedFileChunkBytes + totalUploadedMetadataChunkBytes,
++			Failed:        int64(len(skippedDirectories) + len(skippedFiles))})
++	}
+ 
+ 	totalMetadataChunks := len(localSnapshot.FileSequence) + len(localSnapshot.ChunkSequence) +
+ 		len(localSnapshot.LengthSequence)
+@@ -1184,14 +1212,19 @@
+ 	// Cleared only after the snapshot file has been uploaded, so every error return below fails the backup
+ 	manager.snapshotUploadFailed = true
+ 
++	// The worker goroutines report the metadata chunks concurrently; a missing lock is
++	// caught by the race detector only, as a lost update doesn't happen reliably
++	var metadataCountersLock sync.Mutex
+ 	uploadCompletionFunc := func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int) {
+ 		if inCache {
+ 			LOG_DEBUG("CHUNK_CACHE", "Skipped metadata chunk %s in cache", chunk.GetID())
+ 		} else {
+ 			if uploadSize > 0 {
++				metadataCountersLock.Lock()
+ 				numberOfNewMetadataChunks++
+ 				totalUploadedMetadataChunkSize += int64(chunkSize)
+ 				totalUploadedMetadataChunkBytes += int64(uploadSize)
++				metadataCountersLock.Unlock()
+ 			} else {
+ 				LOG_DEBUG("CHUNK_EXIST", "Skipped metadata chunk %s in the storage", chunk.GetID())
+ 			}
+@@ -1913,10 +1946,17 @@
+ 
+ 	LOG_INFO("SNAPSHOT_COPY", "Chunks to copy: %d, to skip: %d, total: %d", len(chunksToCopy), len(chunks) - len(chunksToCopy), len(chunks))
+ 
++	if ProgressFunction != nil {
++		ProgressFunction(ProgressEvent{Operation: ProgressOperationCopy,
++			Kind: ProgressKindStart, TotalBytes: -1, TotalChunks: int64(len(chunksToCopy))})
++	}
+ 	chunkDownloader := CreateChunkOperator(manager.config, manager.storage, nil, false, false, downloadingThreads, false)
+ 	chunkDownloader.catchDownloadFailures = true
+ 
+ 	var uploadedBytes int64
++	// The bytes written to the destination by the uploading goroutines, only for
++	// ProgressFunction
++	var storedBytes int64
+ 	startTime := time.Now()
+ 
+ 	// Increased by the uploading goroutines
+@@ -1941,6 +1981,14 @@
+ 		}
+ 
+ 		atomic.AddInt64(&uploadedBytes, int64(chunkSize))
++		// skipped is always false here, so a chunk found at the destination is told by the
++		// size of its upload; it is found there only when otherChunks lacks it
++		if ProgressFunction != nil {
++			atomic.AddInt64(&storedBytes, int64(uploadSize))
++			ProgressFunction(ProgressEvent{Operation: ProgressOperationCopy,
++				Kind: ProgressKindStep, Bytes: int64(chunkSize), UploadedBytes: int64(uploadSize),
++				Skipped: uploadSize == 0, Metadata: chunk.isMetadata, ChunkID: chunk.GetID()})
++		}
+ 
+ 		elapsedTime := time.Now().Sub(startTime).Seconds()
+ 		speed := int64(float64(atomic.LoadInt64(&uploadedBytes)) / elapsedTime)
+@@ -1992,5 +2040,11 @@
+ 		LOG_INFO("SNAPSHOT_COPY", "Copied snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
+ 	}
+ 
++	if ProgressFunction != nil {
++		ProgressFunction(ProgressEvent{Operation: ProgressOperationCopy,
++			Kind: ProgressKindEnd, TotalChunks: atomic.LoadInt64(&copiedChunks),
++			TotalBytes:    atomic.LoadInt64(&uploadedBytes),
++			UploadedBytes: atomic.LoadInt64(&storedBytes)})
++	}
+ 	return true
+ }
+diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
+--- a/src/duplicacy_progress.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_progress.go	2026-11-06 05:19:50.947678897 +0000
+@@ -0,0 +1,81 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++// ProgressOperation is the operation that reports a progress event.
++type ProgressOperation string
++
++const (
++	ProgressOperationBackup  ProgressOperation = "backup"
++	ProgressOperationCopy    ProgressOperation = "copy"
++	ProgressOperationRestore ProgressOperation = "restore"
++	ProgressOperationCheck   ProgressOperation = "check"
++	ProgressOperationPrune   ProgressOperation = "prune"
++)
++
++// ProgressKind tells whether a progress event starts an operation, reports one of its
++// steps or ends it.
++type ProgressKind string
++
++const (
++	ProgressKindStart ProgressKind = "start"
++	ProgressKindStep  ProgressKind = "step"
++	ProgressKindEnd   ProgressKind = "end"
++)
++
++// ProgressAction is what a step of a prune does to its chunk; steps of other operations
++// have no action.
++type ProgressAction string
++
++const (
++	ProgressActionDelete    ProgressAction = "delete"
++	ProgressActionFossilize ProgressAction = "fossilize"
++	ProgressActionResurrect ProgressAction = "resurrect"
++)
++
++// ProgressEvent is an event passed to ProgressFunction.  A step reports one chunk; the
++// consumer sums the steps itself.  The steps of a backup report its file chunks only,
++// while its metadata chunks are counted in the totals of the end; the steps of a copy
++// report the chunks that it copies: those it doesn't count as stored at the destination.
++type ProgressEvent struct {
++	Operation ProgressOperation
++	Kind      ProgressKind
++	Action    ProgressAction // The action of a prune step; empty otherwise
++	// The totals known at the start, or -1 if unknown.  TotalBytes of a backup start is
++	// the size of the modified files to be split into chunks, as listed; the steps don't
++	// add up to it if a file changes before its chunks are made or, with a LogFunction
++	// that doesn't panic, can't be read to the end, and a file that can't be opened has
++	// no steps.  At the end of a backup the totals are the number and the length of the
++	// new file and metadata chunks; at the end of a copy, the number of copied chunks and
++	// their length.
++	TotalBytes  int64
++	TotalChunks int64
++	// The length of the chunk of a step before compression and encryption
++	Bytes int64
++	// The bytes of a step written to the storage, 0 if skipped; at the end, those of the
++	// chunks of the totals.  A dry run reports the bytes that it would write.
++	UploadedBytes int64
++	Skipped       bool   // The chunk of a step is already in the cache or in the storage
++	Metadata      bool   // The chunk of a step is a metadata chunk
++	ChunkID       string // The id of the chunk of a step; empty for the start and the end
++	// At the end, the number of failures in the final log message of the operation: for
++	// a backup, the skipped files and directories of BACKUP_SKIPPED, other failures not
++	// included
++	Failed int64
++}
++
++// ProgressFunction, unless nil, receives the progress events of backup and copy.  It is
++// called regardless of showStatistics, RunInBackground and the logging level, and may be
++// called concurrently by the worker goroutines and the goroutine that runs the
++// operation.  Set it before an operation and don't change it while the operation runs.
++// It must return without waiting for the operation, which waits for its worker
++// goroutines to finish their calls.  An operation that ends with an error, by a panic or
++// by returning false, doesn't report its end, so a start without an end means a failure;
++// an error before the start, such as an empty repository of a backup, reports no events
++// at all, and so does a copy with no revisions to copy.  A panic of ProgressFunction is
++// raised by the operation in the goroutine that called it, like any other panic of the
++// operation; the worker goroutines may still call ProgressFunction after the panic until
++// the operation returns, but not after that.
++var ProgressFunction func(event ProgressEvent)
+diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test.go
+--- a/src/duplicacy_progress_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_progress_test.go	2026-11-06 07:17:34.412989242 +0000
+@@ -0,0 +1,1266 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"math/rand"
++	"os"
++	"path/filepath"
++	"runtime"
++	"sort"
++	"sync"
++	"testing"
++)
++
++// progressHookPanic is the value that the panicking hooks of the tests panic with.
++const progressHookPanic = "progress hook panic"
++
++// setProgressFunction installs the hook for the test and restores the previous one
++// after it.
++func setProgressFunction(t *testing.T, hook func(event ProgressEvent)) {
++	saved := ProgressFunction
++	t.Cleanup(func() { ProgressFunction = saved })
++	ProgressFunction = hook
++}
++
++// progressRecorder collects the events passed to the hook, which may be called
++// concurrently.
++type progressRecorder struct {
++	lock   sync.Mutex
++	events []ProgressEvent
++}
++
++func recordProgress(t *testing.T) *progressRecorder {
++	recorder := &progressRecorder{}
++	setProgressFunction(t, func(event ProgressEvent) {
++		recorder.lock.Lock()
++		defer recorder.lock.Unlock()
++		recorder.events = append(recorder.events, event)
++	})
++	return recorder
++}
++
++// take returns the events collected so far and forgets them.
++func (recorder *progressRecorder) take() []ProgressEvent {
++	recorder.lock.Lock()
++	defer recorder.lock.Unlock()
++	events := recorder.events
++	recorder.events = nil
++	return events
++}
++
++// progressSummary is the start, the steps and the end of one operation.
++type progressSummary struct {
++	start ProgressEvent
++	steps []ProgressEvent
++	end   ProgressEvent
++	bytes int64 // The sum of Bytes of the steps
++}
++
++// summarizeProgress checks that the events are those of one operation, the start first
++// and the end last, and that each of them has only the fields of its kind.
++func summarizeProgress(t *testing.T, events []ProgressEvent,
++	operation ProgressOperation) progressSummary {
++	t.Helper()
++	if len(events) < 2 {
++		t.Fatalf("Expected the start and the end, got %+v", events)
++	}
++	summary := progressSummary{start: events[0], end: events[len(events)-1]}
++	start := ProgressEvent{Operation: operation, Kind: ProgressKindStart,
++		TotalBytes: summary.start.TotalBytes, TotalChunks: summary.start.TotalChunks}
++	if summary.start != start {
++		t.Fatalf("The first event is not a %s start: %+v", operation, summary.start)
++	}
++	end := ProgressEvent{Operation: operation, Kind: ProgressKindEnd,
++		TotalBytes: summary.end.TotalBytes, TotalChunks: summary.end.TotalChunks,
++		UploadedBytes: summary.end.UploadedBytes, Failed: summary.end.Failed}
++	if summary.end != end {
++		t.Fatalf("The last event is not a %s end: %+v", operation, summary.end)
++	}
++	for i, event := range events[1 : len(events)-1] {
++		if event.Operation != operation || event.Kind != ProgressKindStep ||
++			event.Action != "" || event.TotalBytes != 0 || event.TotalChunks != 0 ||
++			event.Failed != 0 || event.ChunkID == "" {
++			t.Fatalf("The event %d is not a %s step: %+v", i+1, operation, event)
++		}
++		summary.steps = append(summary.steps, event)
++		summary.bytes += event.Bytes
++	}
++	return summary
++}
++
++// storedChunkSize returns the size of the chunk file in the storage.
++func storedChunkSize(t *testing.T, storage *FileStorage, chunkID string,
++	isMetadata bool) int64 {
++	t.Helper()
++	chunkPath, exist, _, err := storage.FindChunk(0, chunkID, false, isMetadata)
++	if err != nil || !exist {
++		t.Fatalf("Failed to find the chunk %s: %v (exist %t)", chunkID, err, exist)
++	}
++	info, err := os.Stat(filepath.Join(storage.storageDir, chunkPath))
++	if err != nil {
++		t.Fatalf("Failed to stat the chunk %s: %v", chunkID, err)
++	}
++	return info.Size()
++}
++
++// storedChunks returns the number and the total size of the chunk files in the storage.
++func storedChunks(t *testing.T, storage *FileStorage) (count int64, size int64) {
++	t.Helper()
++	walk := func(path string, info os.FileInfo, err error) error {
++		if err == nil && info.Mode().IsRegular() {
++			count++
++			size += info.Size()
++		}
++		return err
++	}
++	if err := filepath.Walk(filepath.Join(storage.storageDir, "chunks"), walk); err != nil {
++		t.Fatalf("Failed to list the chunks: %v", err)
++	}
++	return count, size
++}
++
++// repositorySize returns the total size of the files of the repository.
++func repositorySize(t *testing.T, repository string, files ...string) int64 {
++	t.Helper()
++	size := int64(0)
++	for _, file := range files {
++		info, err := os.Stat(filepath.Join(repository, file))
++		if err != nil {
++			t.Fatalf("Failed to stat %s: %v", file, err)
++		}
++		size += info.Size()
++	}
++	return size
++}
++
++// newMetadataChunks returns the number and the total length of the distinct metadata
++// chunks of the revision that no earlier revision has, downloaded through a temporary
++// operator.
++func (fixture *workerErrorsFixture) newMetadataChunks(snapshot *Snapshot,
++	earlier ...*Snapshot) (int64, int64) {
++	fixture.t.Helper()
++	manager := fixture.manager.SnapshotManager
++	defer fixture.stopSnapshotOperator()
++	seen := map[string]bool{}
++	for _, previous := range earlier {
++		for _, sequence := range [][]string{previous.FileSequence, previous.ChunkSequence,
++			previous.LengthSequence, previous.ChunkHashes} {
++			for _, chunkHash := range sequence {
++				seen[chunkHash] = true
++			}
++		}
++	}
++	count, length := int64(0), int64(0)
++	for _, sequence := range [][]string{snapshot.FileSequence, snapshot.ChunkSequence,
++		snapshot.LengthSequence} {
++		for _, chunkHash := range sequence {
++			if !seen[chunkHash] {
++				seen[chunkHash] = true
++				count++
++				length += int64(len(manager.DownloadSequence([]string{chunkHash})))
++			}
++		}
++	}
++	return count, length
++}
++
++// expectChunkSteps checks that the steps are of distinct chunks of the copied revision,
++// that a step is of a metadata chunk exactly if its chunk is one and that each chunk of
++// the revision has a step.
++func (fixture *workerErrorsCopyFixture) expectChunkSteps(t *testing.T,
++	steps []ProgressEvent) {
++	t.Helper()
++	metadataChunks := map[string]bool{}
++	for _, sequence := range [][]string{fixture.snapshot.FileSequence,
++		fixture.snapshot.ChunkSequence, fixture.snapshot.LengthSequence} {
++		for _, chunkHash := range sequence {
++			metadataChunks[fixture.destination.config.GetChunkIDFromHash(chunkHash)] = true
++		}
++	}
++	for _, chunkHash := range fixture.snapshot.ChunkHashes {
++		chunkID := fixture.destination.config.GetChunkIDFromHash(chunkHash)
++		if _, found := metadataChunks[chunkID]; !found {
++			metadataChunks[chunkID] = false
++		}
++	}
++	seen := map[string]bool{}
++	for _, step := range steps {
++		isMetadata, found := metadataChunks[step.ChunkID]
++		if !found || seen[step.ChunkID] || step.Metadata != isMetadata {
++			t.Fatalf("Unexpected step %+v", step)
++		}
++		seen[step.ChunkID] = true
++	}
++	for chunkID := range metadataChunks {
++		if !seen[chunkID] {
++			t.Fatalf("No step of the chunk %s", chunkID)
++		}
++	}
++}
++
++// newProgressBackupManager creates an empty storage named name for the repository and a
++// backup manager for it.
++func newProgressBackupManager(t *testing.T, repository string,
++	name string) (*FileStorage, *BackupManager) {
++	t.Helper()
++	storage, err := CreateFileStorage(filepath.Join(t.TempDir(), name), false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the storage: %v", err)
++	}
++	if !ConfigStorage(storage, 16384, 100, 64*1024, 256*1024, 16*1024, "", nil, false, "",
++		0, 0) {
++		t.Fatalf("Failed to initialize the storage")
++	}
++	manager := CreateBackupManager("host1", storage, repository, "", "", "", false)
++	if manager == nil || !manager.SetupSnapshotCache(name) {
++		t.Fatalf("Failed to create the backup manager")
++	}
++	return storage, manager
++}
++
++// progressRun is the state of one case of the table tests: the fixture, the manager
++// whose fields the case uses and the values that the preparation passes to the check.
++type progressRun struct {
++	fixture     *workerErrorsFixture
++	copyFixture *workerErrorsCopyFixture
++	manager     *BackupManager
++	recorder    *progressRecorder
++	baseline    int             // The number of goroutines before the preparation
++	earlier     progressSummary // The events of an operation run by the preparation
++	storedCount int64           // The number of chunks in the storage before the call
++	storedSize  int64           // The size of the chunks in the storage before the call
++	flag        bool            // Set by the hook of the case
++	revision    int             // The revision that the backup of the case uploads
++}
++
++// prepareProgressBackup creates the backup fixture, runs a backup for each of earlier,
++// which is its quick mode, and then records the events.
++func prepareProgressBackup(t *testing.T, earlier ...bool) *progressRun {
++	run := &progressRun{fixture: newWorkerErrorsFixture(t, false), revision: 1}
++	for _, quickMode := range earlier {
++		run.fixture.expectSuccess(run.fixture.backup(run.fixture.repository, quickMode),
++			run.revision)
++		run.revision++
++	}
++	run.storedCount, run.storedSize = storedChunks(t, run.fixture.raw)
++	run.recorder = recordProgress(t)
++	return run
++}
++
++// prepareProgressCopy creates the copy fixture, whose revision 1 is backed up, copies it
++// if firstCopy is set and then records the events.
++func prepareProgressCopy(t *testing.T, firstCopy bool) *progressRun {
++	fixture := newWorkerErrorsCopyFixture(t)
++	if firstCopy {
++		fixture.expectCopied(fixture.copy())
++	}
++	return &progressRun{fixture: fixture.workerErrorsFixture, copyFixture: fixture,
++		recorder: recordProgress(t)}
++}
++
++// expectNoEnd checks that the events are the start and the steps of the operation.
++func expectNoEnd(t *testing.T, events []ProgressEvent, operation ProgressOperation) {
++	t.Helper()
++	if len(events) < 2 || events[0].Kind != ProgressKindStart ||
++		events[0].Operation != operation {
++		t.Fatalf("Expected the start of a %s first, got %+v", operation, events)
++	}
++	for i, event := range events[1:] {
++		if event.Kind != ProgressKindStep || event.Operation != operation {
++			t.Fatalf("The event %d is not a %s step: %+v", i+1, operation, event)
++		}
++	}
++}
++
++// expectNoEvents checks that the hook has not been called.
++func (run *progressRun) expectNoEvents(t *testing.T) {
++	t.Helper()
++	if events := run.recorder.take(); len(events) != 0 {
++		t.Fatalf("Unexpected events %+v", events)
++	}
++}
++
++// expectNewMetadataEnd checks the end of the revision of the case, where only metadata
++// chunks may be new, against the chunks that the earlier revisions don't have and the
++// chunks added to the storage.
++func (run *progressRun) expectNewMetadataEnd(t *testing.T, summary progressSummary) {
++	t.Helper()
++	fixture := run.fixture
++	var earlier []*Snapshot
++	for revision := 1; revision < run.revision; revision++ {
++		earlier = append(earlier, fixture.revisionSnapshot(revision))
++	}
++	count, length := fixture.newMetadataChunks(fixture.revisionSnapshot(run.revision),
++		earlier...)
++	newCount, newSize := storedChunks(t, fixture.raw)
++	if summary.end.TotalChunks != count || summary.end.TotalBytes != length ||
++		summary.end.UploadedBytes != newSize-run.storedSize || summary.end.Failed != 0 ||
++		newCount-run.storedCount != count {
++		t.Fatalf("The end is %+v instead of %d chunks, %d bytes and %d bytes stored",
++			summary.end, count, length, newSize-run.storedSize)
++	}
++}
++
++// skipWithoutPermissions skips the test where chmod doesn't take the permissions away.
++func skipWithoutPermissions(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("chmod doesn't remove the read permission on Windows")
++	}
++	if os.Geteuid() == 0 {
++		t.Skip("root can read a file or list a directory without permissions")
++	}
++}
++
++// panicOnProgress installs a hook that panics on the events for which panics returns
++// true.
++func panicOnProgress(t *testing.T, panics func(event ProgressEvent) bool) {
++	setProgressFunction(t, func(event ProgressEvent) {
++		if panics(event) {
++			panic(progressHookPanic)
++		}
++	})
++}
++
++// newProgressCacheFixture creates a repository with two files of the same content of one
++// chunk, so that the chunk of the second file is found in the chunk cache by the
++// goroutine that runs the backup.
++func newProgressCacheFixture(t *testing.T) *workerErrorsFixture {
++	saveWorkerErrorsGlobals(t)
++	dir := t.TempDir()
++	repository := filepath.Join(dir, "repository")
++	if err := os.MkdirAll(filepath.Join(repository, ".duplicacy"), 0700); err != nil {
++		t.Fatalf("Failed to create the repository: %v", err)
++	}
++	const chunkSize = 64 * 1024
++	content := make([]byte, chunkSize)
++	rand.New(rand.NewSource(1)).Read(content)
++	for _, file := range []string{"file1", "file2"} {
++		if err := os.WriteFile(filepath.Join(repository, file), content, 0600); err != nil {
++			t.Fatalf("Failed to write %s: %v", file, err)
++		}
++	}
++	raw, err := CreateFileStorage(filepath.Join(dir, "storage"), false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the storage: %v", err)
++	}
++	// An average size of 2^30 keeps the rolling hash from cutting the chunks, so they are
++	// cut at the maximum size
++	if !ConfigStorage(raw, 16384, 100, 1<<30, chunkSize, chunkSize/4, "", nil, false, "", 0,
++		0) {
++		t.Fatalf("Failed to initialize the storage")
++	}
++	fixture := &workerErrorsFixture{t: t, repository: repository, raw: raw,
++		storage: newFaultStorage(raw)}
++	SetDuplicacyPreferencePath(filepath.Join(repository, ".duplicacy"))
++	fixture.manager = CreateBackupManager("host1", fixture.storage, repository, "", "", "",
++		false)
++	if fixture.manager == nil || !fixture.manager.SetupSnapshotCache("default") {
++		t.Fatalf("Failed to create the backup manager")
++	}
++	return fixture
++}
++
++// TestBackupManager_Backup checks the progress events of Backup.  The cases are added to
++// the skeleton generated by gotests: the fields come from the manager of the case, the
++// top directory from its repository.
++func TestBackupManager_Backup(t *testing.T) {
++	type fields struct {
++		snapshotID           string
++		storage              Storage
++		SnapshotManager      *SnapshotManager
++		snapshotCache        *FileStorage
++		config               *Config
++		nobackupFile         string
++		filtersFile          string
++		excludeByAttribute   bool
++		cachePath            string
++		snapshotUploadFailed bool
++	}
++	type args struct {
++		top                    string
++		quickMode              bool
++		threads                int
++		tag                    string
++		showStatistics         bool
++		shadowCopy             bool
++		shadowCopyTimeout      int
++		enumOnly               bool
++		metadataChunkSize      int
++		maximumInMemoryEntries int
++	}
++	// The arguments of fixture.backup: a hash backup with 2 threads
++	hash := args{threads: 2, tag: "test", metadataChunkSize: 65536,
++		maximumInMemoryEntries: 1024}
++	quick := hash
++	quick.quickMode = true
++	enumOnly := hash
++	enumOnly.enumOnly = true
++	// With more entries than maximumInMemoryEntries a hash backup keeps them in
++	// incomplete_files, which RunAtError would turn into an incomplete snapshot
++	inFile := hash
++	inFile.maximumInMemoryEntries = 1
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		want      bool
++		wantPanic interface{}
++		prepare   func(t *testing.T) *progressRun
++		check     func(t *testing.T, run *progressRun)
++	}{
++		{
++			// The first backup of files without repeated content
++			name: "First", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun { return prepareProgressBackup(t) },
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.fixture
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				size := repositorySize(t, fixture.repository, "file1", "file2", "dir1/file3")
++				if summary.start.TotalBytes != size || summary.start.TotalChunks != -1 {
++					t.Fatalf("The start is %+v instead of %d bytes and -1 chunks", summary.start,
++						size)
++				}
++				if summary.bytes != size {
++					t.Fatalf("The steps have %d bytes instead of %d", summary.bytes, size)
++				}
++				snapshot := fixture.revisionSnapshot(1)
++				if len(summary.steps) != len(snapshot.ChunkHashes) {
++					t.Fatalf("%d steps instead of %d file chunks", len(summary.steps),
++						len(snapshot.ChunkHashes))
++				}
++				for _, step := range summary.steps {
++					if step.Skipped || step.Metadata {
++						t.Fatalf("Unexpected step %+v", step)
++					}
++					stored := storedChunkSize(t, fixture.raw, step.ChunkID, false)
++					if step.UploadedBytes != stored {
++						t.Fatalf("The step %+v has uploaded %d bytes instead of %d", step,
++							step.UploadedBytes, stored)
++					}
++				}
++				// All chunks in the storage are new: the file chunks of the steps and the
++				// metadata chunks
++				metadataCount, metadataLength := fixture.newMetadataChunks(snapshot)
++				count, stored := storedChunks(t, fixture.raw)
++				if count != int64(len(summary.steps))+metadataCount {
++					t.Fatalf("%d chunks in the storage instead of %d file and %d metadata chunks",
++						count, len(summary.steps), metadataCount)
++				}
++				if summary.end.TotalChunks != count || summary.end.UploadedBytes != stored ||
++					summary.end.TotalBytes != summary.bytes+metadataLength ||
++					summary.end.Failed != 0 {
++					t.Fatalf("The end is %+v instead of %d chunks, %d bytes and %d bytes stored",
++						summary.end, count, summary.bytes+metadataLength, stored)
++				}
++			},
++		},
++		{
++			// The size of a symbolic link is not counted at the start, as the link is not
++			// split into chunks
++			name: "Symlink", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t)
++				link := filepath.Join(run.fixture.repository, "link1")
++				if err := os.Symlink("file1", link); err != nil {
++					t.Skipf("Failed to create a symbolic link: %v", err)
++				}
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				size := repositorySize(t, run.fixture.repository, "file1", "file2",
++					"dir1/file3")
++				if summary.start.TotalBytes != size || summary.bytes != size {
++					t.Fatalf("The start is %+v with %d bytes of steps instead of %d",
++						summary.start, summary.bytes, size)
++				}
++			},
++		},
++		{
++			// A quick backup of an unchanged repository has no steps
++			name: "QuickNoChanges", args: quick, want: true,
++			prepare: func(t *testing.T) *progressRun { return prepareProgressBackup(t, false) },
++			check: func(t *testing.T, run *progressRun) {
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				if summary.start.TotalBytes != 0 || len(summary.steps) != 0 {
++					t.Fatalf("The start is %+v with %d steps", summary.start,
++						len(summary.steps))
++				}
++				run.expectNewMetadataEnd(t, summary)
++			},
++		},
++		{
++			// A hash backup of an unchanged repository after a hash and a quick backup
++			// skips every file chunk
++			name: "HashNoChanges", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				return prepareProgressBackup(t, false, true)
++			},
++			check: func(t *testing.T, run *progressRun) {
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				fileChunks := len(run.fixture.revisionSnapshot(1).ChunkHashes)
++				if len(summary.steps) != fileChunks {
++					t.Fatalf("%d steps instead of %d", len(summary.steps), fileChunks)
++				}
++				for _, step := range summary.steps {
++					if !step.Skipped || step.UploadedBytes != 0 {
++						t.Fatalf("The step %+v is not skipped", step)
++					}
++				}
++				run.expectNewMetadataEnd(t, summary)
++			},
++		},
++		{
++			// After a hash, a quick and a hash backup, a quick backup keeps the chunks of a
++			// file with the same size and time, but the new permissions change the
++			// metadata
++			name: "QuickAfterChmod", args: quick, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t, false, true, false)
++				file := filepath.Join(run.fixture.repository, "file1")
++				if err := os.Chmod(file, 0400); err != nil {
++					t.Fatalf("Failed to change the permissions of file1: %v", err)
++				}
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				if summary.start.TotalBytes != 0 || len(summary.steps) != 0 ||
++					summary.end.TotalChunks == 0 {
++					t.Fatalf("The start is %+v with %d steps and the end %+v", summary.start,
++						len(summary.steps), summary.end)
++				}
++				run.expectNewMetadataEnd(t, summary)
++			},
++		},
++		{
++			// A quick backup splits into chunks only the file that has changed since the
++			// hash backup
++			name: "QuickModifiedFile", args: quick, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t, false)
++				file := filepath.Join(run.fixture.repository, "file1")
++				content, err := os.ReadFile(file)
++				if err != nil {
++					t.Fatalf("Failed to read file1: %v", err)
++				}
++				content = append(content, []byte("modified")...)
++				if err := os.WriteFile(file, content, 0600); err != nil {
++					t.Fatalf("Failed to write file1: %v", err)
++				}
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				size := repositorySize(t, run.fixture.repository, "file1")
++				if summary.start.TotalBytes != size || summary.bytes != size {
++					t.Fatalf("The start is %+v with %d bytes of steps instead of %d",
++						summary.start, summary.bytes, size)
++				}
++				for _, step := range summary.steps {
++					if step.Metadata {
++						t.Fatalf("Unexpected step %+v", step)
++					}
++				}
++				count, stored := storedChunks(t, run.fixture.raw)
++				if summary.end.TotalChunks != count-run.storedCount ||
++					summary.end.UploadedBytes != stored-run.storedSize ||
++					summary.end.Failed != 0 {
++					t.Fatalf("The end is %+v instead of %d chunks and %d bytes stored",
++						summary.end, count-run.storedCount, stored-run.storedSize)
++				}
++			},
++		},
++		{
++			// A backup in the background without statistics has the events of a backup of
++			// the same files that shows statistics in the foreground
++			name: "Background", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t)
++				savedRunInBackground := RunInBackground
++				t.Cleanup(func() { RunInBackground = savedRunInBackground })
++				_, foreground := newProgressBackupManager(t, run.fixture.repository,
++					"foreground")
++				outcome := runWorkerErrorsOperation(t, func() bool {
++					return foreground.Backup(run.fixture.repository, false, 2, "test", true,
++						false, 0, false, 65536, 1024)
++				})
++				if outcome.recovered != nil || !outcome.result {
++					t.Fatalf("The foreground backup failed: %#v (result %t)",
++						outcome.recovered, outcome.result)
++				}
++				run.earlier = summarizeProgress(t, run.recorder.take(),
++					ProgressOperationBackup)
++				_, run.manager = newProgressBackupManager(t, run.fixture.repository,
++					"background")
++				RunInBackground = true
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				foreground := run.earlier
++				background := summarizeProgress(t, run.recorder.take(),
++					ProgressOperationBackup)
++				if len(foreground.steps) == 0 || background.start != foreground.start ||
++					background.end != foreground.end ||
++					len(background.steps) != len(foreground.steps) {
++					t.Fatalf("The start is %+v with %d steps and the end %+v instead of %+v, "+
++						"%d and %+v", background.start, len(background.steps), background.end,
++						foreground.start, len(foreground.steps), foreground.end)
++				}
++				// The steps are compared as sets, the workers may complete them in any order
++				for _, summary := range []progressSummary{foreground, background} {
++					sort.Slice(summary.steps, func(i, j int) bool {
++						return summary.steps[i].ChunkID < summary.steps[j].ChunkID
++					})
++				}
++				for i := range foreground.steps {
++					if background.steps[i] != foreground.steps[i] {
++						t.Fatalf("Other steps than in the foreground: %+v instead of %+v",
++							background.steps, foreground.steps)
++					}
++				}
++			},
++		},
++		{
++			// The same files backed up under another snapshot id to the same storage, so
++			// that every file chunk is found in the storage by a worker rather than in the
++			// cache
++			name: "StorageDuplicates", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t, false)
++				run.manager = CreateBackupManager("host2", run.fixture.storage,
++					run.fixture.repository, "", "", "", false)
++				if run.manager == nil || !run.manager.SetupSnapshotCache("default") {
++					t.Fatalf("Failed to create the backup manager")
++				}
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				exist, _, _, err := run.fixture.raw.GetFileInfo(0, "snapshots/host2/1")
++				if err != nil || !exist {
++					t.Fatalf("The revision 1 of host2 has not been uploaded: %v", err)
++				}
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				fileChunks := len(run.fixture.revisionSnapshot(1).ChunkHashes)
++				if len(summary.steps) != fileChunks {
++					t.Fatalf("%d steps instead of %d file chunks", len(summary.steps),
++						fileChunks)
++				}
++				for _, step := range summary.steps {
++					if !step.Skipped || step.UploadedBytes != 0 {
++						t.Fatalf("The step %+v of a chunk in the storage is not skipped", step)
++					}
++				}
++			},
++		},
++		{
++			// The steps of a dry run report the bytes that would be uploaded, while nothing
++			// is written to the storage; they and the end are compared with those of a
++			// backup of the same files that follows
++			name: "DryRun", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t)
++				run.fixture.manager.SetDryRun(true)
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.fixture
++				if fixture.revisionExists(1) {
++					t.Fatalf("The dry run has uploaded the revision 1")
++				}
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				size := repositorySize(t, fixture.repository, "file1", "file2", "dir1/file3")
++				if len(summary.steps) == 0 || summary.bytes != size {
++					t.Fatalf("%d steps with %d bytes instead of %d", len(summary.steps),
++						summary.bytes, size)
++				}
++				for _, step := range summary.steps {
++					if step.Skipped {
++						t.Fatalf("The step %+v is skipped", step)
++					}
++				}
++				if count, _ := storedChunks(t, fixture.raw); count != 0 {
++					t.Fatalf("The dry run has stored %d chunks", count)
++				}
++				fixture.manager.SetDryRun(false)
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				for _, step := range summary.steps {
++					stored := storedChunkSize(t, fixture.raw, step.ChunkID, false)
++					if step.UploadedBytes != stored {
++						t.Fatalf("The step %+v has %d bytes instead of %d", step,
++							step.UploadedBytes, stored)
++					}
++				}
++				backup := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				if summary.end != backup.end || summary.end.UploadedBytes == 0 {
++					t.Fatalf("The end is %+v instead of %+v", summary.end, backup.end)
++				}
++			},
++		},
++		{
++			// A backup that fails before the start, as that of an empty repository does,
++			// reports no events
++			name: "EmptyRepository", args: hash, want: false,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t)
++				for _, file := range []string{"file1", "file2", "dir1"} {
++					err := os.RemoveAll(filepath.Join(run.fixture.repository, file))
++					if err != nil {
++						t.Fatalf("Failed to remove %s: %v", file, err)
++					}
++				}
++				setWorkerErrorsLogFunction()
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if run.fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has been uploaded")
++				}
++				run.expectNoEvents(t)
++			},
++		},
++		{
++			// A backup that only lists the files reports no events
++			name: "EnumOnly", args: enumOnly, want: true,
++			prepare: func(t *testing.T) *progressRun { return prepareProgressBackup(t) },
++			check:   func(t *testing.T, run *progressRun) { run.expectNoEvents(t) },
++		},
++		{
++			// A file that is listed and counted at the start, but can't be opened when its
++			// chunks are made, is counted at the end, as BACKUP_SKIPPED does
++			name: "SkippedFile", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				skipWithoutPermissions(t)
++				run := prepareProgressBackup(t)
++				file := filepath.Join(run.fixture.repository, "file2")
++				if err := os.Chmod(file, 0); err != nil {
++					t.Fatalf("Failed to change the permissions of file2: %v", err)
++				}
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.fixture
++				if !fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has not been uploaded")
++				}
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				listed := repositorySize(t, fixture.repository, "file1", "file2", "dir1/file3")
++				packed := repositorySize(t, fixture.repository, "file1", "dir1/file3")
++				if summary.start.TotalBytes != listed || summary.end.Failed != 1 ||
++					summary.bytes != packed {
++					t.Fatalf("The start is %+v and the end is %+v with %d bytes of steps "+
++						"instead of %d bytes, 1 failure and %d bytes", summary.start, summary.end,
++						summary.bytes, listed, packed)
++				}
++			},
++		},
++		{
++			// A directory that can't be listed is counted at the end, as BACKUP_SKIPPED does
++			name: "SkippedDirectory", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				skipWithoutPermissions(t)
++				run := prepareProgressBackup(t)
++				unlistable := filepath.Join(run.fixture.repository, "dir1")
++				if err := os.Chmod(unlistable, 0); err != nil {
++					t.Fatalf("Failed to change the permissions of dir1: %v", err)
++				}
++				// The directory must be listable again for t.TempDir to remove it
++				t.Cleanup(func() {
++					if err := os.Chmod(unlistable, 0700); err != nil {
++						t.Errorf("Failed to restore the permissions of dir1: %v", err)
++					}
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if !run.fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has not been uploaded")
++				}
++				summary := summarizeProgress(t, run.recorder.take(), ProgressOperationBackup)
++				size := repositorySize(t, run.fixture.repository, "file1", "file2")
++				if summary.start.TotalBytes != size || summary.end.Failed != 1 ||
++					summary.bytes != size {
++					t.Fatalf("The start is %+v and the end is %+v with %d bytes of steps "+
++						"instead of %d bytes and 1 failure", summary.start, summary.end,
++						summary.bytes, size)
++				}
++			},
++		},
++		{
++			// The upload of the snapshot file fails with a log function that doesn't
++			// panic, so that the backup returns false: there is a start and there are
++			// steps, but no end
++			name: "FailedSnapshotFile", args: hash, want: false,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressBackup(t)
++				run.fixture.storage.fail("UploadFile", "snapshots/host1/1")
++				setWorkerErrorsLogFunction()
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if run.fixture.storage.injectedCount() == 0 || run.fixture.revisionExists(1) {
++					t.Fatalf("The upload of the snapshot file has not failed")
++				}
++				expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			},
++		},
++		{
++			name: "NilHook", args: hash, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				setProgressFunction(t, nil)
++				return &progressRun{fixture: newWorkerErrorsFixture(t, false)}
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if !run.fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has not been uploaded")
++				}
++			},
++		},
++		{
++			// A panic of the hook on the start is raised before the files are packed
++			name: "HookPanicStart", args: hash, want: false, wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := &progressRun{fixture: newWorkerErrorsFixture(t, false)}
++				panicOnProgress(t, func(event ProgressEvent) bool {
++					return event.Kind == ProgressKindStart
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.fixture
++				if fixture.storage.uploadCount() != 0 || fixture.revisionExists(1) {
++					t.Fatalf("The backup has uploaded %d files after the start",
++						fixture.storage.uploadCount())
++				}
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			},
++		},
++		{
++			// A panic of the hook on the step of an uploaded chunk, in a worker
++			name: "HookPanicUploadStep", args: hash, want: false,
++			wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := &progressRun{fixture: newWorkerErrorsFixture(t, false)}
++				panicOnProgress(t, func(event ProgressEvent) bool {
++					return event.Kind == ProgressKindStep && event.UploadedBytes > 0
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if run.fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has been uploaded despite the panic")
++				}
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			},
++		},
++		{
++			// A panic of the hook on the step of a chunk found in the chunk cache, in the
++			// goroutine that runs the backup
++			name: "HookPanicCacheStep", args: hash, want: false,
++			wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := &progressRun{fixture: newProgressCacheFixture(t)}
++				run.recorder = recordProgress(t)
++				record := ProgressFunction
++				setProgressFunction(t, func(event ProgressEvent) {
++					record(event)
++					if event.Kind == ProgressKindStep && event.Skipped {
++						panic(progressHookPanic)
++					}
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				// Only the chunk of the first file is uploaded, by a worker in any order with
++				// the panic; the same chunk of the second file is found in the cache
++				var steps []ProgressEvent
++				for _, event := range run.recorder.take() {
++					if event.Kind == ProgressKindStep {
++						steps = append(steps, event)
++					}
++				}
++				if len(steps) != 2 || steps[0].Skipped == steps[1].Skipped ||
++					steps[0].ChunkID != steps[1].ChunkID || run.fixture.revisionExists(1) {
++					t.Fatalf("Unexpected steps %+v", steps)
++				}
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			},
++		},
++		{
++			// A panic of the hook on the end leaves the uploaded revision and no
++			// incomplete snapshot behind
++			name: "HookPanicEnd", args: inFile, want: false, wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := &progressRun{fixture: newWorkerErrorsFixture(t, false)}
++				incompleteFiles := filepath.Join(run.fixture.manager.cachePath,
++					"incomplete_files")
++				setProgressFunction(t, func(event ProgressEvent) {
++					switch event.Kind {
++					case ProgressKindStart:
++						_, err := os.Stat(incompleteFiles)
++						run.flag = err == nil
++					case ProgressKindEnd:
++						panic(progressHookPanic)
++					}
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.fixture
++				if !run.flag {
++					t.Fatalf("The backup has not kept its entries in incomplete_files")
++				}
++				// The command line calls RunAtError on a panic, as CatchLogException does
++				RunAtError()
++				for _, file := range []string{"incomplete_snapshot", "incomplete_chunks",
++					"incomplete_files"} {
++					_, err := os.Stat(filepath.Join(fixture.manager.cachePath, file))
++					if !os.IsNotExist(err) {
++						t.Fatalf("The backup has left %s behind: %v", file, err)
++					}
++				}
++				if !fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has not been uploaded before the end")
++				}
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			run := tt.prepare(t)
++			run.baseline = baseline
++			if run.manager == nil {
++				run.manager = run.fixture.manager
++			}
++			tt.fields = fields{
++				snapshotID:           run.manager.snapshotID,
++				storage:              run.manager.storage,
++				SnapshotManager:      run.manager.SnapshotManager,
++				snapshotCache:        run.manager.snapshotCache,
++				config:               run.manager.config,
++				nobackupFile:         run.manager.nobackupFile,
++				filtersFile:          run.manager.filtersFile,
++				excludeByAttribute:   run.manager.excludeByAttribute,
++				cachePath:            run.manager.cachePath,
++				snapshotUploadFailed: run.manager.snapshotUploadFailed,
++			}
++			tt.args.top = run.fixture.repository
++			manager := &BackupManager{
++				snapshotID:           tt.fields.snapshotID,
++				storage:              tt.fields.storage,
++				SnapshotManager:      tt.fields.SnapshotManager,
++				snapshotCache:        tt.fields.snapshotCache,
++				config:               tt.fields.config,
++				nobackupFile:         tt.fields.nobackupFile,
++				filtersFile:          tt.fields.filtersFile,
++				excludeByAttribute:   tt.fields.excludeByAttribute,
++				cachePath:            tt.fields.cachePath,
++				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++			}
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				return manager.Backup(tt.args.top, tt.args.quickMode, tt.args.threads,
++					tt.args.tag, tt.args.showStatistics, tt.args.shadowCopy,
++					tt.args.shadowCopyTimeout, tt.args.enumOnly, tt.args.metadataChunkSize,
++					tt.args.maximumInMemoryEntries)
++			})
++			if outcome.recovered != tt.wantPanic {
++				t.Fatalf("BackupManager.Backup() panicked with %#v, want %#v",
++					outcome.recovered, tt.wantPanic)
++			}
++			if got := outcome.result; got != tt.want {
++				t.Errorf("BackupManager.Backup() = %v, want %v", got, tt.want)
++			}
++			tt.check(t, run)
++		})
++	}
++}
++
++// TestBackupManager_CopySnapshots checks the progress events of CopySnapshots, which
++// copies the revision 1 of the source to the destination of the copy fixture.  The
++// cases are added to the skeleton generated by gotests: the fields come from the source
++// manager, the other manager is the destination.
++func TestBackupManager_CopySnapshots(t *testing.T) {
++	type fields struct {
++		snapshotID           string
++		storage              Storage
++		SnapshotManager      *SnapshotManager
++		snapshotCache        *FileStorage
++		config               *Config
++		nobackupFile         string
++		filtersFile          string
++		excludeByAttribute   bool
++		cachePath            string
++		snapshotUploadFailed bool
++	}
++	type args struct {
++		otherManager        *BackupManager
++		snapshotID          string
++		revisionsToBeCopied []int
++		uploadingThreads    int
++		downloadingThreads  int
++	}
++	// The arguments of fixture.copy: 2 uploading and 2 downloading threads
++	revision1 := args{snapshotID: "host1", revisionsToBeCopied: []int{1},
++		uploadingThreads: 2, downloadingThreads: 2}
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		want      bool
++		wantPanic interface{}
++		prepare   func(t *testing.T) *progressRun
++		check     func(t *testing.T, run *progressRun)
++	}{
++		{
++			// A copy to the empty destination
++			name: "EmptyDestination", args: revision1, want: true,
++			prepare: func(t *testing.T) *progressRun { return prepareProgressCopy(t, false) },
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.copyFixture
++				events := run.recorder.take()
++				fixture.expectCopied(workerErrorsOutcome{result: true})
++				summary := summarizeProgress(t, events, ProgressOperationCopy)
++				chunkCount := int64(fixture.chunkCount())
++				if summary.start.TotalChunks != chunkCount || summary.start.TotalBytes != -1 ||
++					int64(len(summary.steps)) != chunkCount {
++					t.Fatalf("The start is %+v and there are %d steps instead of %d chunks",
++						summary.start, len(summary.steps), chunkCount)
++				}
++				fixture.expectChunkSteps(t, summary.steps)
++				uploaded := int64(0)
++				for _, step := range summary.steps {
++					if step.Skipped {
++						t.Fatalf("Unexpected step %+v", step)
++					}
++					stored := storedChunkSize(t, fixture.destinationRaw, step.ChunkID,
++						step.Metadata)
++					if step.UploadedBytes != stored {
++						t.Fatalf("The step %+v has uploaded %d bytes instead of %d", step,
++							step.UploadedBytes, stored)
++					}
++					uploaded += step.UploadedBytes
++				}
++				if summary.end.TotalChunks != chunkCount ||
++					summary.end.TotalBytes != summary.bytes ||
++					summary.end.UploadedBytes != uploaded || summary.end.Failed != 0 {
++					t.Fatalf("The end is %+v instead of %d chunks, %d bytes and %d bytes "+
++						"uploaded", summary.end, chunkCount, summary.bytes, uploaded)
++				}
++			},
++		},
++		{
++			// Without the snapshot file the revision is copied again, but all of its
++			// chunks are at the destination
++			name: "ChunksAtDestination", args: revision1, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, true)
++				err := run.copyFixture.destinationRaw.DeleteFile(0, "snapshots/host1/1")
++				if err != nil {
++					t.Fatalf("Failed to delete the copied revision: %v", err)
++				}
++				run.recorder.take()
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				events := run.recorder.take()
++				run.copyFixture.expectCopied(workerErrorsOutcome{result: true})
++				summary := summarizeProgress(t, events, ProgressOperationCopy)
++				if summary.start.TotalChunks != 0 || summary.start.TotalBytes != -1 ||
++					len(summary.steps) != 0 ||
++					summary.end != (ProgressEvent{Operation: ProgressOperationCopy,
++						Kind: ProgressKindEnd}) {
++					t.Fatalf("The start is %+v with %d steps and the end %+v", summary.start,
++						len(summary.steps), summary.end)
++				}
++			},
++		},
++		{
++			// The chunks of the destination are missing from its listing, which fails
++			// with a log function that doesn't panic, so the copy uploads every chunk of
++			// the revision again and finds each of them at the destination
++			name: "DestinationDuplicates", args: revision1, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, true)
++				fixture := run.copyFixture
++				if err := fixture.destinationRaw.DeleteFile(0, "snapshots/host1/1"); err != nil {
++					t.Fatalf("Failed to delete the copied revision: %v", err)
++				}
++				run.storedCount, run.storedSize = storedChunks(t, fixture.destinationRaw)
++				fixture.destinationStorage.fail("ListFiles", "chunks/")
++				setWorkerErrorsLogFunction()
++				run.recorder.take()
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				fixture := run.copyFixture
++				events := run.recorder.take()
++				if fixture.destinationStorage.injectedCount() == 0 {
++					t.Fatalf("The listing of the destination chunks has not failed")
++				}
++				fixture.expectCopied(workerErrorsOutcome{result: true})
++				summary := summarizeProgress(t, events, ProgressOperationCopy)
++				chunkCount := int64(fixture.chunkCount())
++				if summary.start.TotalChunks != chunkCount || summary.start.TotalBytes != -1 ||
++					int64(len(summary.steps)) != chunkCount {
++					t.Fatalf("The start is %+v and there are %d steps instead of %d chunks",
++						summary.start, len(summary.steps), chunkCount)
++				}
++				fixture.expectChunkSteps(t, summary.steps)
++				for _, step := range summary.steps {
++					if !step.Skipped || step.UploadedBytes != 0 || step.Bytes == 0 {
++						t.Fatalf("The step %+v is not skipped", step)
++					}
++				}
++				if summary.end != (ProgressEvent{Operation: ProgressOperationCopy,
++					Kind: ProgressKindEnd, TotalChunks: chunkCount,
++					TotalBytes: summary.bytes}) {
++					t.Fatalf("The end is %+v instead of %d chunks and %d bytes", summary.end,
++						chunkCount, summary.bytes)
++				}
++				count, stored := storedChunks(t, fixture.destinationRaw)
++				if count != run.storedCount || stored != run.storedSize {
++					t.Fatalf("%d chunks of %d bytes at the destination instead of %d and %d",
++						count, stored, run.storedCount, run.storedSize)
++				}
++			},
++		},
++		{
++			// A copy with nothing to copy reports no events
++			name: "NothingToCopy", args: revision1, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, true)
++				run.recorder.take()
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) { run.expectNoEvents(t) },
++		},
++		{
++			// The upload of the snapshot file fails with a log function that doesn't
++			// panic, so that the copy returns false: there is a start and there are steps,
++			// but no end
++			name: "FailedSnapshotFile", args: revision1, want: false,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, false)
++				run.copyFixture.destinationStorage.fail("UploadFile", "snapshots/host1/1")
++				setWorkerErrorsLogFunction()
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if run.copyFixture.destinationStorage.injectedCount() == 0 {
++					t.Fatalf("The upload of the snapshot file has not failed")
++				}
++				expectNoEnd(t, run.recorder.take(), ProgressOperationCopy)
++				run.copyFixture.expectNotCopied(run.baseline)
++			},
++		},
++		{
++			name: "NilHook", args: revision1, want: true,
++			prepare: func(t *testing.T) *progressRun {
++				setProgressFunction(t, nil)
++				fixture := newWorkerErrorsCopyFixture(t)
++				return &progressRun{fixture: fixture.workerErrorsFixture, copyFixture: fixture}
++			},
++			check: func(t *testing.T, run *progressRun) {
++				run.copyFixture.expectCopied(workerErrorsOutcome{result: true})
++			},
++		},
++		{
++			// A panic of the hook on the start is raised before the chunks are copied
++			name: "HookPanicStart", args: revision1, want: false, wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, false)
++				panicOnProgress(t, func(event ProgressEvent) bool {
++					return event.Kind == ProgressKindStart
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if count, _ := storedChunks(t, run.copyFixture.destinationRaw); count != 0 {
++					t.Fatalf("The copy has copied %d chunks after the start", count)
++				}
++				run.copyFixture.expectNotCopied(run.baseline)
++			},
++		},
++		{
++			name: "HookPanicStep", args: revision1, want: false, wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, false)
++				panicOnProgress(t, func(event ProgressEvent) bool {
++					return event.Kind == ProgressKindStep
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				run.copyFixture.expectNotCopied(run.baseline)
++			},
++		},
++		{
++			name: "HookPanicEnd", args: revision1, want: false, wantPanic: progressHookPanic,
++			prepare: func(t *testing.T) *progressRun {
++				run := prepareProgressCopy(t, false)
++				panicOnProgress(t, func(event ProgressEvent) bool {
++					return event.Kind == ProgressKindEnd
++				})
++				return run
++			},
++			check: func(t *testing.T, run *progressRun) {
++				if !run.copyFixture.copiedRevisionExists() {
++					t.Fatalf("The revision 1 has not been copied before the end")
++				}
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			run := tt.prepare(t)
++			run.baseline = baseline
++			source := run.copyFixture.manager
++			tt.fields = fields{
++				snapshotID:           source.snapshotID,
++				storage:              source.storage,
++				SnapshotManager:      source.SnapshotManager,
++				snapshotCache:        source.snapshotCache,
++				config:               source.config,
++				nobackupFile:         source.nobackupFile,
++				filtersFile:          source.filtersFile,
++				excludeByAttribute:   source.excludeByAttribute,
++				cachePath:            source.cachePath,
++				snapshotUploadFailed: source.snapshotUploadFailed,
++			}
++			tt.args.otherManager = run.copyFixture.destination
++			manager := &BackupManager{
++				snapshotID:           tt.fields.snapshotID,
++				storage:              tt.fields.storage,
++				SnapshotManager:      tt.fields.SnapshotManager,
++				snapshotCache:        tt.fields.snapshotCache,
++				config:               tt.fields.config,
++				nobackupFile:         tt.fields.nobackupFile,
++				filtersFile:          tt.fields.filtersFile,
++				excludeByAttribute:   tt.fields.excludeByAttribute,
++				cachePath:            tt.fields.cachePath,
++				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++			}
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				return manager.CopySnapshots(tt.args.otherManager, tt.args.snapshotID,
++					tt.args.revisionsToBeCopied, tt.args.uploadingThreads,
++					tt.args.downloadingThreads)
++			})
++			if outcome.recovered != tt.wantPanic {
++				t.Fatalf("BackupManager.CopySnapshots() panicked with %#v, want %#v",
++					outcome.recovered, tt.wantPanic)
++			}
++			if got := outcome.result; got != tt.want {
++				t.Errorf("BackupManager.CopySnapshots() = %v, want %v", got, tt.want)
++			}
++			tt.check(t, run)
++		})
++	}
++}
