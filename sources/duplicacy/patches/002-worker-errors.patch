@@ -1,0 +1,3820 @@
+diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
+--- a/src/duplicacy_backupmanager.go	2026-11-05 05:49:43.859238239 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-05 11:55:56.377446966 +0000
+@@ -41,6 +41,7 @@
+ 	excludeByAttribute bool // don't backup file based on file attribute
+ 
+ 	cachePath string
++	snapshotUploadFailed bool // Set by UploadSnapshot unless the snapshot file has been uploaded
+ }
+ 
+ func (manager *BackupManager) SetDryRun(dryRun bool) {
+@@ -131,6 +132,9 @@
+ func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
+ 	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
+ 
++	// The sequences of the previous snapshot are downloaded through the operator of the snapshot manager
++	defer manager.SnapshotManager.catchOperatorDownloads(false, false, 1, false)()
++
+ 	var err error
+ 	top, err = filepath.Abs(top)
+ 	if err != nil {
+@@ -230,6 +234,17 @@
+ 	localListingChannel := make(chan *Entry)
+ 	remoteListingChannel := make(chan *Entry)
+ 	chunkOperator := CreateChunkOperator(manager.config, manager.storage, manager.snapshotCache, showStatistics, false, threads, false)
++	chunkOperator.catchUploadFailures = true
++	chunkOperator.catchDownloadFailures = true
++	// The operator is stopped without raising its error so that a panic being propagated is not replaced
++	defer chunkOperator.stopWorkers()
++
++	// A panic of a listing goroutine is recorded by the chunk operator and raised again in this goroutine.  Closing
++	// 'listingStop' makes the remote listing stop sending entries; the done channels are closed when the listing
++	// goroutines exit.
++	listingStop := make(chan struct{})
++	localListingDone := make(chan struct{})
++	remoteListingDone := make(chan struct{})
+ 
+ 	var skippedDirectories []string
+ 	var skippedFiles []string
+@@ -237,32 +252,90 @@
+ 	LOG_INFO("BACKUP_INDEXING", "Indexing %s", top)
+ 	go func() {
+ 		// List local files
+-		defer CatchLogException()
++		defer close(localListingDone)
++		defer chunkOperator.failures.catch()
+ 		localSnapshot.ListLocalFiles(shadowTop, manager.nobackupFile, manager.filtersFile, manager.excludeByAttribute, localListingChannel, &skippedDirectories, &skippedFiles)
+ 	} ()
+ 
+ 	go func() {
+ 		// List remote files
+-		defer CatchLogException()
++		defer close(remoteListingDone)
++		defer chunkOperator.failures.catch()
+ 
+ 		if incompleteSnapshot != nil {
+ 			// If there is an incomplete snapshot, always use it
+ 			incompleteSnapshot.ReadEntries(func(entry *Entry) error {
+-				remoteListingChannel <- entry
+-				return nil
++				select {
++				case remoteListingChannel <- entry:
++					return nil
++				case <-listingStop:
++					return fmt.Errorf("the listing of the incomplete snapshot has been stopped")
++				}
+ 			})
+ 		} else if hashMode {
+ 			// No need to list remote files for a hash mode backup
+ 		} else {
+ 			// List remote files in the previous snapshot
+ 			remoteSnapshot.ListRemoteFiles(manager.config, chunkOperator, func(entry *Entry) bool {
+-				remoteListingChannel <- entry
+-				return true
++				select {
++				case remoteListingChannel <- entry:
++					return true
++				case <-listingStop:
++					return false
++				}
+ 			})
+ 		}
+ 		close(remoteListingChannel)
+ 	} ()
+ 
++	// stopListing stops the remote listing, drains the local one and waits until both listing goroutines exit.
++	var stopListingOnce sync.Once
++	stopListing := func() {
++		stopListingOnce.Do(func() {
++			close(listingStop)
++			for draining := true; draining; {
++				select {
++				case _, ok := <-localListingChannel:
++					draining = ok
++				case <-localListingDone:
++					draining = false
++				}
++			}
++			<-localListingDone
++			<-remoteListingDone
++		})
++	}
++
++	// Deferred after stopWorkers, so the listing is stopped first: the remote listing downloads chunks through
++	// the operator
++	defer stopListing()
++
++	// readLocalEntry returns the next local entry, or nil at the end of the listing; a panic of a listing goroutine
++	// is raised here
++	readLocalEntry := func() *Entry {
++		select {
++		case entry := <-localListingChannel:
++			return entry
++		case <-localListingDone:
++		case <-chunkOperator.failures.failed:
++		}
++		chunkOperator.failures.raise()
++		return nil
++	}
++
++	// readRemoteEntry returns the next remote entry and false at the end of the listing; a panic of a listing
++	// goroutine is raised here
++	readRemoteEntry := func() (*Entry, bool) {
++		select {
++		case entry, ok := <-remoteListingChannel:
++			return entry, ok
++		case <-remoteListingDone:
++		case <-chunkOperator.failures.failed:
++		}
++		chunkOperator.failures.raise()
++		return nil, false
++	}
++
+ 	// Create the local file list
+ 	localEntryList, err := CreateEntryList(manager.snapshotID, manager.cachePath, maximumInMemoryEntries)
+ 	if err != nil {
+@@ -275,7 +348,7 @@
+ 	var remoteEntry *Entry
+ 	remoteListingOK := true
+ 	for {
+-		localEntry := <- localListingChannel
++		localEntry := readLocalEntry()
+ 		if localEntry == nil {
+ 			break
+ 		}
+@@ -289,7 +362,7 @@
+ 				compareResult = localEntry.Compare(remoteEntry)
+ 			} else {
+ 				if remoteListingOK {
+-					remoteEntry, remoteListingOK = <- remoteListingChannel
++					remoteEntry, remoteListingOK = readRemoteEntry()
+ 				}
+ 				if !remoteListingOK {
+ 					compareResult = -1
+@@ -347,6 +420,10 @@
+ 		localEntryList.AddEntry(localEntry)
+ 	}
+ 
++	// All local entries have been compared; stop the listing and raise a panic of a listing goroutine, if any
++	stopListing()
++	chunkOperator.failures.raise()
++
+ 	if enumOnly {
+ 		return true
+ 	}
+@@ -479,11 +556,14 @@
+ 			skippedFiles = append(skippedFiles, entry.Path)
+ 			continue
+ 		}
+-		entry.Size, entry.Hash = fileChunkMaker.AddData(file, uploadChunkFunc)
++		func() {
++			// Close the file even if a failed upload is raised while the file is being packed
++			defer file.Close()
++			entry.Size, entry.Hash = fileChunkMaker.AddData(file, uploadChunkFunc)
++		}()
+ 		if !showStatistics || IsTracing() || RunInBackground {
+ 			LOG_INFO("PACK_END", "Packed %s (%d)", entry.Path, entry.Size)
+ 		}
+-		file.Close()
+ 
+ 	}
+ 
+@@ -528,6 +608,15 @@
+ 		totalUploadedMetadataChunkLength, totalUploadedMetadataChunkBytes :=
+ 		manager.UploadSnapshot(chunkOperator, top, localSnapshot, localEntryList, chunkCache, metadataChunkSize)
+ 
++	if manager.snapshotUploadFailed {
++		// UploadSnapshot has logged the error through a log function that doesn't panic; a failed upload of the
++		// metadata chunks still in flight takes precedence
++		chunkOperator.WaitForCompletion()
++		// The backup is over, so an error of a later operation must not save its incomplete snapshot
++		RunAtError = func() {}
++		return false
++	}
++
+ 	if showStatistics && !RunInBackground {
+ 		for _, entry := range localEntryList.ModifiedEntries {
+ 			if entry.Size < 0 {
+@@ -680,30 +769,108 @@
+ 	localListingChannel := make(chan *Entry)
+ 	remoteListingChannel := make(chan *Entry)
+ 	chunkOperator := CreateChunkOperator(manager.config, manager.storage, manager.snapshotCache, showStatistics, false, threads, allowFailures)
++	chunkOperator.catchDownloadFailures = true
++	// The operator is stopped without raising its error so that a panic being propagated is not replaced
++	defer chunkOperator.stopWorkers()
++	// The sequences of the snapshot are downloaded through the operator of the snapshot manager
++	defer manager.SnapshotManager.catchOperatorDownloads(false, false, 1, false)()
+ 
++	// Logged before stopListing is deferred: a panic of LogFunction must not leave it waiting for a listing that
++	// has not been started
+ 	LOG_INFO("RESTORE_INDEXING", "Indexing %s", top)
++
++	// A panic of a listing goroutine is recorded by the chunk operator and raised again in this goroutine.  Closing
++	// 'listingStop' makes the remote listing stop sending entries; the done channels are closed when the listing
++	// goroutines exit.
++	listingStop := make(chan struct{})
++	localListingDone := make(chan struct{})
++	remoteListingDone := make(chan struct{})
++	remoteListingStarted := false
++
++	// stopListing stops the remote listing, drains both listings and waits until the listing goroutines exit
++	var stopListingOnce sync.Once
++	stopListing := func() {
++		stopListingOnce.Do(func() {
++			close(listingStop)
++			for range localListingChannel {
++			}
++			<-localListingDone
++			if remoteListingStarted {
++				for range remoteListingChannel {
++				}
++				<-remoteListingDone
++			}
++		})
++	}
++
++	// Deferred after stopWorkers, so the listing is stopped first: the remote listing downloads chunks through
++	// the operator
++	defer stopListing()
++
+ 	go func() {
+ 		// List local files
+-		defer CatchLogException()
++		defer close(localListingDone)
++		defer chunkOperator.failures.catch()
+ 		localSnapshot.ListLocalFiles(top, manager.nobackupFile, manager.filtersFile, manager.excludeByAttribute, localListingChannel, nil, nil)
+ 	} ()
+ 
+ 	remoteSnapshot := manager.SnapshotManager.DownloadSnapshot(manager.snapshotID, revision)
+ 	manager.SnapshotManager.DownloadSnapshotSequences(remoteSnapshot)
++	remoteListingStarted = true
+ 	go func() {
+ 		// List remote files
+-		defer CatchLogException()
++		defer close(remoteListingDone)
++		// Deferred calls run in reverse order: the panic is recorded before the channel is closed
++		defer close(remoteListingChannel)
++		defer chunkOperator.failures.catch()
+ 		remoteSnapshot.ListRemoteFiles(manager.config, chunkOperator, func(entry *Entry) bool {
+-			remoteListingChannel <- entry
+-			return true
++			select {
++			case remoteListingChannel <- entry:
++				return true
++			case <-listingStop:
++				return false
++			}
+ 		})
+-		close(remoteListingChannel)
+ 	} ()
+ 
++	// readLocalEntry returns the next local entry and false at the end of the listing; a panic of a listing
++	// goroutine is raised here
++	readLocalEntry := func() (*Entry, bool) {
++		select {
++		case entry, ok := <-localListingChannel:
++			if ok {
++				return entry, true
++			}
++			// ListLocalFiles closes the channel before the panic is recorded
++			<-localListingDone
++		case <-chunkOperator.failures.failed:
++		}
++		chunkOperator.failures.raise()
++		return nil, false
++	}
++
++	// readRemoteEntry returns the next remote entry and false at the end of the listing; a panic of a listing
++	// goroutine is raised here
++	readRemoteEntry := func() (*Entry, bool) {
++		select {
++		case entry, ok := <-remoteListingChannel:
++			if ok {
++				return entry, true
++			}
++		case <-chunkOperator.failures.failed:
++		}
++		chunkOperator.failures.raise()
++		return nil, false
++	}
++
+ 	var localEntry *Entry
+ 	localListingOK := true
+ 
+-	for remoteEntry := range remoteListingChannel {
++	for {
++		remoteEntry, remoteListingOK := readRemoteEntry()
++		if !remoteListingOK {
++			break
++		}
+ 
+ 		if len(patterns) > 0 && !MatchPath(remoteEntry.Path, patterns) {
+ 			continue
+@@ -714,7 +881,7 @@
+ 
+ 		for {
+ 			if localEntry == nil && localListingOK {
+-				localEntry, localListingOK = <- localListingChannel
++				localEntry, localListingOK = readLocalEntry()
+ 			}
+ 			if localEntry == nil {
+ 				compareResult = 1
+@@ -793,12 +960,16 @@
+ 	}
+ 
+ 	for localListingOK {
+-		localEntry, localListingOK = <- localListingChannel
++		localEntry, localListingOK = readLocalEntry()
+ 		if localEntry != nil {
+ 			extraFiles = append(extraFiles, localEntry.Path)
+ 		}
+ 	}
+ 
++	// Both listings have ended; raise a panic of a listing goroutine, if any
++	stopListing()
++	chunkOperator.failures.raise()
++
+ 	LOG_INFO("RESTORE_START", "Restoring %s to revision %d", top, revision)
+ 
+ 	// The same chunk may appear in the chunk list multiple times.  This is to find the first
+@@ -823,6 +994,8 @@
+ 	sort.Sort(ByChunk(fileEntries))
+ 
+ 	chunkDownloader := CreateChunkDownloader(chunkOperator)
++	// Deferred last, so the download tasks still running stop waiting for the downloader before anything else stops
++	defer chunkDownloader.Stop()
+ 
+ 	chunkDownloader.AddFiles(remoteSnapshot, fileEntries)
+ 
+@@ -923,6 +1096,10 @@
+ 	}
+ 
+ 	if failedFileCount > 0 {
++		// A failed download recorded by the operator, such as of a chunk prefetched for a
++		// file that is not restored, is raised instead of the result
++		chunkDownloader.Stop()
++		chunkOperator.Stop()
+ 		return failedFileCount
+ 	}
+ 
+@@ -941,6 +1118,8 @@
+ 
+ 	LOG_INFO("RESTORE_STATS", "Total running time: %s", PrettyTime(runningTime))
+ 
++	// The chunks prefetched for files that have been skipped must not keep the workers from stopping
++	chunkDownloader.Stop()
+ 	chunkOperator.Stop()
+ 
+ 	return 0
+@@ -1002,6 +1181,9 @@
+ 	numberOfNewMetadataChunks int, totalUploadedMetadataChunkSize int64,
+ 	totalUploadedMetadataChunkBytes int64) {
+ 
++	// Cleared only after the snapshot file has been uploaded, so every error return below fails the backup
++	manager.snapshotUploadFailed = true
++
+ 	uploadCompletionFunc := func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int) {
+ 		if inCache {
+ 			LOG_DEBUG("CHUNK_CACHE", "Skipped metadata chunk %s in cache", chunk.GetID())
+@@ -1135,8 +1317,11 @@
+ 
+ 	path := fmt.Sprintf("snapshots/%s/%d", manager.snapshotID, snapshot.Revision)
+ 	if !manager.config.dryRun {
+-		manager.SnapshotManager.UploadFile(path, path, description)
++		if !manager.SnapshotManager.UploadFile(path, path, description) {
++			return totalMetadataChunkSize, numberOfNewMetadataChunks, totalUploadedMetadataChunkSize, totalUploadedMetadataChunkBytes
++		}
+ 	}
++	manager.snapshotUploadFailed = false
+ 	return totalMetadataChunkSize, numberOfNewMetadataChunks, totalUploadedMetadataChunkSize, totalUploadedMetadataChunkBytes
+ }
+ 
+@@ -1558,6 +1743,9 @@
+ func (manager *BackupManager) CopySnapshots(otherManager *BackupManager, snapshotID string,
+ 	revisionsToBeCopied []int, uploadingThreads int, downloadingThreads int) bool {
+ 
++	// The snapshot sequences are downloaded through the operator of the snapshot manager
++	defer manager.SnapshotManager.useOperator(1, false)()
++
+ 	if !manager.config.IsCompatibleWith(otherManager.config) {
+ 		LOG_ERROR("CONFIG_INCOMPATIBLE", "Two storages are not compatible for the copy operation")
+ 		return false
+@@ -1726,16 +1914,29 @@
+ 	LOG_INFO("SNAPSHOT_COPY", "Chunks to copy: %d, to skip: %d, total: %d", len(chunksToCopy), len(chunks) - len(chunksToCopy), len(chunks))
+ 
+ 	chunkDownloader := CreateChunkOperator(manager.config, manager.storage, nil, false, false, downloadingThreads, false)
++	chunkDownloader.catchDownloadFailures = true
+ 
+ 	var uploadedBytes int64
+ 	startTime := time.Now()
+ 
+-	copiedChunks := 0
++	// Increased by the uploading goroutines
++	var copiedChunks int64
+ 	chunkUploader := CreateChunkOperator(otherManager.config, otherManager.storage, nil, false, false, uploadingThreads, false)
++	chunkUploader.catchUploadFailures = true
++	// The operators keep the first failure of either, so that it is raised whichever operator raises first, and
++	// neither runs its queued tasks after a task of the other has failed
++	chunkUploader.failures = chunkDownloader.failures
++	// The operators are stopped without raising their errors so that a panic being propagated is not replaced.  The
++	// downloading operator is stopped first: its completion function adds uploading tasks, which would block forever
++	// once the uploading operator has been stopped
++	defer func() {
++		chunkDownloader.stopWorkers()
++		chunkUploader.stopWorkers()
++	}()
+ 	chunkUploader.UploadCompletionFunc =  func(chunk *Chunk, chunkIndex int, skipped bool, chunkSize int, uploadSize int) {
+ 		action := "Skipped"
+ 		if !skipped {
+-			copiedChunks++
++			atomic.AddInt64(&copiedChunks, 1)
+ 			action = "Copied"
+ 		}
+ 
+@@ -1752,6 +1953,10 @@
+ 	}
+ 
+ 	for i, chunkHash := range chunksToCopy {
++		// Stop adding tasks as soon as a task of either operator has failed: the operators share the first failure, so
++		// one check covers both.  This check has no test of its own: the operators skip the queued tasks after a
++		// failure, so without it the copy only adds the skipped tasks
++		chunkDownloader.failures.raise()
+ 		chunkID := manager.config.GetChunkIDFromHash(chunkHash)
+ 		newChunkID := otherManager.config.GetChunkIDFromHash(chunkHash)
+ 
+@@ -1770,7 +1975,9 @@
+ 	chunkDownloader.Stop()
+ 	chunkUploader.Stop()
+ 
+-	LOG_INFO("SNAPSHOT_COPY", "Copied %d new chunks and skipped %d existing chunks", copiedChunks, len(chunks) - copiedChunks)
++	numberOfCopiedChunks := int(atomic.LoadInt64(&copiedChunks))
++	LOG_INFO("SNAPSHOT_COPY", "Copied %d new chunks and skipped %d existing chunks", numberOfCopiedChunks,
++		len(chunks) - numberOfCopiedChunks)
+ 
+ 	for _, snapshot := range snapshots {
+ 		if revisionMap[snapshot.ID][snapshot.Revision] == false {
+@@ -1779,7 +1986,9 @@
+ 		otherManager.storage.CreateDirectory(0, fmt.Sprintf("snapshots/%s", snapshot.ID))
+ 		description, _ := snapshot.MarshalJSON()
+ 		path := fmt.Sprintf("snapshots/%s/%d", snapshot.ID, snapshot.Revision)
+-		otherManager.SnapshotManager.UploadFile(path, path, description)
++		if !otherManager.SnapshotManager.UploadFile(path, path, description) {
++			return false
++		}
+ 		LOG_INFO("SNAPSHOT_COPY", "Copied snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
+ 	}
+ 
+diff -ruN -x .git a/src/duplicacy_benchmark.go b/src/duplicacy_benchmark.go
+--- a/src/duplicacy_benchmark.go	2026-11-05 05:49:43.859238239 +0000
++++ b/src/duplicacy_benchmark.go	2026-11-05 11:55:56.377446966 +0000
+@@ -14,6 +14,7 @@
+ 	"math/rand"
+ 	"os"
+ 	"path/filepath"
++	"sync"
+ 	"time"
+ )
+ 
+@@ -61,22 +62,43 @@
+ 	return
+ }
+ 
++// benchmarkRun runs the job for each chunk index in the given number of goroutines.  The first panic of a job is
++// raised again in the calling goroutine after all the goroutines have returned.
+ func benchmarkRun(threads int, chunkCount int, job func(threadIndex int, chunkIndex int)) {
+ 	indexChannel := make(chan int, chunkCount)
+ 	stopChannel := make(chan int, threads)
+ 	finishChannel := make(chan int, threads)
++	failures := newWorkerErrors()
++	var workers sync.WaitGroup
+ 
+ 	// Start the uploading goroutines
+ 	for i := 0; i < threads; i++ {
++		workers.Add(1)
+ 		go func(threadIndex int) {
+-			defer CatchLogException()
++			defer workers.Done()
++			// The panic of a job is recorded and ends this goroutine; the other goroutines stop on the failure
++			defer failures.catch()
+ 			for {
+ 				select {
+ 				case chunkIndex := <-indexChannel:
++					// No job starts after a failure.  This check has no test of its own: the select picks one of
++					// the ready cases at random, so a job started after the failure shows up only in some runs
++					if failures.hasFailed() {
++						return
++					}
+ 					job(threadIndex, chunkIndex)
+-					finishChannel <- 0
++					// After a failure the caller stops waiting for the results, or never starts.  A plain send would
++					// then hang if more results are left unreceived than the buffer holds, a narrow scheduler window
++					// that only many runs or a test point in this code produce, so this protection has no test
++					select {
++					case finishChannel <- 0:
++					case <-failures.failed:
++						return
++					}
+ 				case <-stopChannel:
+ 					return
++				case <-failures.failed:
++					return
+ 				}
+ 			}
+ 		}(i)
+@@ -86,13 +108,18 @@
+ 		indexChannel <- i
+ 	}
+ 
+-	for i := 0; i < chunkCount; i++ {
+-		<-finishChannel
++	for i := 0; i < chunkCount && !failures.hasFailed(); i++ {
++		select {
++		case <-finishChannel:
++		case <-failures.failed:
++		}
+ 	}
+ 
+ 	for i := 0; i < threads; i++ {
+ 		stopChannel <- 0
+ 	}
++	workers.Wait()
++	failures.raise()
+ }
+ 
+ func Benchmark(localDirectory string, storage Storage, fileSize int64, chunkSize int, chunkCount int, uploadThreads int, downloadThreads int) bool {
+@@ -188,8 +215,7 @@
+ 	benchmarkRun(uploadThreads, chunkCount, func(threadIndex int, chunkIndex int) {
+ 		err := storage.UploadFile(threadIndex, fmt.Sprintf("benchmark/chunk%d", chunkIndex), chunks[chunkIndex])
+ 		if err != nil {
+-			LOG_ERROR("BENCHMARK_UPLOAD", "Failed to upload the chunk: %v", err)
+-			return
++			logErrorAndPanic("BENCHMARK_UPLOAD", "Failed to upload the chunk: %v", err)
+ 		}
+ 	})
+ 
+@@ -206,8 +232,7 @@
+ 		chunk.Reset(false)
+ 		err := storage.DownloadFile(threadIndex, fmt.Sprintf("benchmark/chunk%d", chunkIndex), chunk)
+ 		if err != nil {
+-			LOG_ERROR("BENCHMARK_DOWNLOAD", "Failed to download the chunk: %v", err)
+-			return
++			logErrorAndPanic("BENCHMARK_DOWNLOAD", "Failed to download the chunk: %v", err)
+ 		}
+ 
+ 		hashInBytes := sha256.Sum256(chunk.GetBytes())
+diff -ruN -x .git a/src/duplicacy_chunkdownloader.go b/src/duplicacy_chunkdownloader.go
+--- a/src/duplicacy_chunkdownloader.go	2026-11-05 05:49:43.863238338 +0000
++++ b/src/duplicacy_chunkdownloader.go	2026-11-05 05:49:44.055243037 +0000
+@@ -5,6 +5,7 @@
+ package duplicacy
+ 
+ import (
++	"sync"
+ 	"sync/atomic"
+ 	"time"
+ )
+@@ -40,6 +41,8 @@
+ 	lastChunkIndex int                 // a monotonically increasing number indicating the last chunk to be downloaded
+ 
+ 	completionChannel chan ChunkDownloadCompletion // A downloading goroutine sends back the chunk via this channel after downloading
++	stopped  chan struct{} // Closed by Stop: the download tasks then drop their chunks instead of blocking
++	stopOnce sync.Once
+ 
+ 	startTime                 int64 // The time it starts downloading
+ 	numberOfDownloadedChunks  int   // The number of chunks that have been downloaded
+@@ -56,6 +59,7 @@
+ 		lastChunkIndex: 0,
+ 
+ 		completionChannel: make(chan ChunkDownloadCompletion),
++		stopped: make(chan struct{}),
+ 
+ 		startTime: time.Now().Unix(),
+ 	}
+@@ -63,6 +67,38 @@
+ 	return downloader
+ }
+ 
++// complete is the completion function of the download tasks.  The worker doesn't block on the channel once nobody
++// can be waiting for the chunk: after Stop or after a failure recorded by the operator.
++// A chunk dropped that way is returned to the chunk pool, as the receiver would do.
++func (downloader *ChunkDownloader) complete(chunk *Chunk, chunkIndex int) {
++	select {
++	case downloader.completionChannel <- ChunkDownloadCompletion{chunk: chunk, chunkIndex: chunkIndex}:
++	case <-downloader.stopped:
++		downloader.operator.config.PutChunk(chunk)
++	case <-downloader.operator.failures.failed:
++		downloader.operator.config.PutChunk(chunk)
++	}
++}
++
++// receive waits for the next downloaded chunk; a failure recorded by the operator is raised instead.
++func (downloader *ChunkDownloader) receive() ChunkDownloadCompletion {
++	select {
++	case completion := <-downloader.completionChannel:
++		return completion
++	case <-downloader.operator.failures.failed:
++	}
++	downloader.operator.failures.raise()
++	return ChunkDownloadCompletion{}
++}
++
++// Stop makes the download tasks still running drop their chunks instead of waiting for a receiver, so that the
++// operator can be stopped; it can be called more than once.
++func (downloader *ChunkDownloader) Stop() {
++	downloader.stopOnce.Do(func() {
++		close(downloader.stopped)
++	})
++}
++
+ // AddFiles adds chunks needed by the specified files to the download list.
+ func (downloader *ChunkDownloader) AddFiles(snapshot *Snapshot, files []*Entry) {
+ 
+@@ -114,9 +150,7 @@
+ 
+ 				LOG_DEBUG("DOWNLOAD_PREFETCH", "Prefetching %s chunk %s", file.Path,
+ 					downloader.operator.config.GetChunkIDFromHash(task.chunkHash))
+-				downloader.operator.DownloadAsync(task.chunkHash, i, false, func (chunk *Chunk, chunkIndex int) {
+-					downloader.completionChannel <- ChunkDownloadCompletion { chunk: chunk, chunkIndex: chunkIndex }
+-				})
++				downloader.operator.DownloadAsync(task.chunkHash, i, false, downloader.complete)
+ 				task.isDownloading = true
+ 				downloader.numberOfDownloadingChunks++
+ 				downloader.numberOfActiveChunks++
+@@ -174,9 +208,7 @@
+ 	if !downloader.taskList[chunkIndex].isDownloading {
+ 		LOG_DEBUG("DOWNLOAD_FETCH", "Fetching chunk %s",
+ 			downloader.operator.config.GetChunkIDFromHash(downloader.taskList[chunkIndex].chunkHash))
+-		downloader.operator.DownloadAsync(downloader.taskList[chunkIndex].chunkHash, chunkIndex, false, func (chunk *Chunk, chunkIndex int) {
+-			downloader.completionChannel <- ChunkDownloadCompletion { chunk: chunk, chunkIndex: chunkIndex }
+-		})
++		downloader.operator.DownloadAsync(downloader.taskList[chunkIndex].chunkHash, chunkIndex, false, downloader.complete)
+ 		downloader.taskList[chunkIndex].isDownloading = true
+ 		downloader.numberOfDownloadingChunks++
+ 		downloader.numberOfActiveChunks++
+@@ -194,9 +226,7 @@
+ 
+ 		if !task.isDownloading {
+ 			LOG_DEBUG("DOWNLOAD_PREFETCH", "Prefetching chunk %s", downloader.operator.config.GetChunkIDFromHash(task.chunkHash))
+-			downloader.operator.DownloadAsync(task.chunkHash, task.chunkIndex, false, func (chunk *Chunk, chunkIndex int) {
+-				downloader.completionChannel <- ChunkDownloadCompletion { chunk: chunk, chunkIndex: chunkIndex }
+-			})
++			downloader.operator.DownloadAsync(task.chunkHash, task.chunkIndex, false, downloader.complete)
+ 			task.isDownloading = true
+ 			downloader.numberOfDownloadingChunks++
+ 			downloader.numberOfActiveChunks++
+@@ -205,7 +235,7 @@
+ 
+ 	// Now wait until the chunk to be downloaded appears in the completed tasks
+ 	for _, found := downloader.completedTasks[chunkIndex]; !found; _, found = downloader.completedTasks[chunkIndex] {
+-		completion := <-downloader.completionChannel
++		completion := downloader.receive()
+ 		downloader.completedTasks[completion.chunkIndex] = true
+ 		downloader.taskList[completion.chunkIndex].chunk = completion.chunk
+ 		downloader.numberOfDownloadedChunks++
+@@ -232,7 +262,7 @@
+ 
+ 		// Wait for a completion event first
+ 		if downloader.numberOfActiveChunks > 0 {
+-			completion := <-downloader.completionChannel
++			completion := downloader.receive()
+ 			downloader.operator.config.PutChunk(completion.chunk)
+ 			downloader.numberOfActiveChunks--
+ 			downloader.numberOfDownloadedChunks++
+@@ -246,9 +276,7 @@
+ 				downloader.lastChunkIndex++
+ 				continue
+ 			}
+-			downloader.operator.DownloadAsync(task.chunkHash, task.chunkIndex, false, func (chunk *Chunk, chunkIndex int) {
+-				downloader.completionChannel <- ChunkDownloadCompletion { chunk: chunk, chunkIndex: chunkIndex }
+-			})
++			downloader.operator.DownloadAsync(task.chunkHash, task.chunkIndex, false, downloader.complete)
+ 			task.isDownloading = true
+ 			downloader.numberOfDownloadingChunks++
+ 			downloader.numberOfActiveChunks++
+diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator.go
+--- a/src/duplicacy_chunkoperator.go	2026-11-05 05:49:43.863238338 +0000
++++ b/src/duplicacy_chunkoperator.go	2026-11-05 05:49:44.055243037 +0000
+@@ -61,6 +61,9 @@
+ 	rewriteChunks bool           // Whether to rewrite corrupted chunks when erasure coding is enabled
+ 
+ 	UploadCompletionFunc func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int)
++	failures *workerErrors        // The first panic of the tasks, raised again in the calling goroutine
++	catchUploadFailures bool      // Raise upload errors even if LogFunction doesn't panic; set by Backup
++	catchDownloadFailures bool    // Raise download errors even if LogFunction doesn't panic; set by the operations waiting for them
+ }
+ 
+ // CreateChunkOperator creates a new ChunkOperator.
+@@ -81,16 +84,16 @@
+ 		startTime: time.Now().Unix(),
+ 		allowFailures: allowFailures,
+ 		rewriteChunks: rewriteChunks,
++		failures: newWorkerErrors(),
+ 	}
+ 
+ 	// Start the operator goroutines
+ 	for i := 0; i < operator.threads; i++ {
+ 		go func(threadIndex int) {
+-			defer CatchLogException()
+ 			for {
+ 				select {
+ 				case task := <-operator.taskQueue:
+-					operator.Run(threadIndex, task)
++					operator.runTask(threadIndex, task)
+ 				case <-operator.stopChannel:
+ 					return
+ 				}
+@@ -101,7 +104,14 @@
+ 	return operator
+ }
+ 
++// Stop stops the operator goroutines and then raises the first panic of the caught tasks, if any.
+ func (operator *ChunkOperator) Stop() {
++	operator.stopWorkers()
++	operator.failures.raise()
++}
++
++// stopWorkers stops the goroutines without raising a recorded panic, so it can be deferred during a panic.
++func (operator *ChunkOperator) stopWorkers() {
+ 	if atomic.LoadInt64(&operator.numberOfActiveTasks) < 0 {
+ 		return
+ 	}
+@@ -117,13 +127,36 @@
+ 	atomic.AddInt64(&operator.numberOfActiveTasks, int64(-1))
+ }
+ 
+-func (operator *ChunkOperator) WaitForCompletion() {
++// resetFailures waits for the running tasks and forgets the recorded panic and the failed chunks, so that an operator
++// outliving an operation doesn't report the failures of that operation again.
++func (operator *ChunkOperator) resetFailures() {
++	for atomic.LoadInt64(&operator.numberOfActiveTasks) > 0 {
++		time.Sleep(100 * time.Millisecond)
++	}
++	operator.failures = newWorkerErrors()
++	atomic.StoreInt64(&operator.NumberOfFailedChunks, 0)
++}
+ 
++// waitForTasks waits until no task is running; it returns at once for a stopped operator.
++func (operator *ChunkOperator) waitForTasks() {
+ 	for atomic.LoadInt64(&operator.numberOfActiveTasks) > 0 {
+ 		time.Sleep(100 * time.Millisecond)
+ 	}
+ }
+ 
++// isStopped reports whether the goroutines of the operator have been stopped, so that its tasks would never run.
++func (operator *ChunkOperator) isStopped() bool {
++	return atomic.LoadInt64(&operator.numberOfActiveTasks) < 0
++}
++
++func (operator *ChunkOperator) WaitForCompletion() {
++
++	for atomic.LoadInt64(&operator.numberOfActiveTasks) > 0 && !operator.failures.hasFailed() {
++		time.Sleep(100 * time.Millisecond)
++	}
++	operator.failures.raise()
++}
++
+ func (operator *ChunkOperator) AddTask(operation int, chunkID string, chunkHash string, filePath string, chunkIndex int, chunk *Chunk, isMetadata bool, skipCache bool, completionFunc func(*Chunk, int))  {
+ 
+ 	task := ChunkTask {
+@@ -138,8 +171,9 @@
+ 		completionFunc: completionFunc,
+ 	}
+ 
+-	operator.taskQueue <- task
++	// Count the task before a worker can pick it up and decrease the counter
+ 	atomic.AddInt64(&operator.numberOfActiveTasks, int64(1))
++	operator.taskQueue <- task
+ 
+ 	return
+ }
+@@ -156,12 +190,20 @@
+ 
+ func (operator *ChunkOperator) download(chunkHash string, chunkIndex int, isMetadata bool, skipCache bool) *Chunk {
+ 	chunkID := operator.config.GetChunkIDFromHash(chunkHash)
+-	completionChannel := make(chan *Chunk)
++	// Buffered, so that the worker doesn't block if this goroutine has stopped waiting after a failure
++	completionChannel := make(chan *Chunk, 1)
+ 	completionFunc := func(chunk *Chunk, chunkIndex int) {
+ 		completionChannel <- chunk
+ 	}
+ 	operator.AddTask(ChunkOperationDownload, chunkID, chunkHash, "", chunkIndex, nil, isMetadata, skipCache, completionFunc)
+-	return <- completionChannel
++	select {
++	case chunk := <-completionChannel:
++		return chunk
++	case <-operator.failures.failed:
++	}
++	// The failed download, or another caught failure of the operation, is raised in this goroutine
++	operator.failures.raise()
++	return nil
+ }
+ 
+ func (operator *ChunkOperator) DownloadAsync(chunkHash string, chunkIndex int, isMetadata bool, completionFunc func(*Chunk, int)) {
+@@ -170,6 +212,8 @@
+ }
+ 
+ func (operator *ChunkOperator) Upload(chunk *Chunk, chunkIndex int, isMetadata bool) {
++	// Stop producing uploads as soon as one has failed
++	operator.failures.raise()
+ 	chunkHash := chunk.GetHash()
+ 	chunkID := operator.config.GetChunkIDFromHash(chunkHash)
+ 	operator.AddTask(ChunkOperationUpload, chunkID, chunkHash, "", chunkIndex, chunk, isMetadata, false, nil)
+@@ -193,11 +237,43 @@
+ 	operator.AddTask(ChunkOperationResurrect, chunkID, "", filePath, 0, nil, IsMetadataChunkPath(filePath), false, nil)
+ }
+ 
+-func (operator *ChunkOperator) Run(threadIndex int, task ChunkTask) {
+-	defer func() {
+-		atomic.AddInt64(&operator.numberOfActiveTasks, int64(-1))
+-	}()
++// runTask runs a task in a worker goroutine.  A panic of the task is recorded instead of exiting the process and
++// raised again by Upload, a download, WaitForCompletion or Stop in the calling goroutine.
++func (operator *ChunkOperator) runTask(threadIndex int, task ChunkTask) {
++	// Deferred calls run in reverse order: the panic is recorded before the task stops being counted, so
++	// WaitForCompletion can't see no active tasks without seeing the failure
++	defer atomic.AddInt64(&operator.numberOfActiveTasks, int64(-1))
++	defer operator.failures.catch()
++
++	if operator.failures.hasFailed() {
++		// Skip the remaining tasks once one has failed; the goroutines waiting for them are woken up by the failure
++		return
++	}
++	operator.Run(threadIndex, task)
++}
++
++// logUploadError logs an upload error; if the operator catches upload failures, the error is raised as an Exception
++// even when LogFunction doesn't panic.
++func (operator *ChunkOperator) logUploadError(logID string, format string, v ...interface{}) {
++	if operator.catchUploadFailures {
++		logErrorAndPanic(logID, format, v...)
++	} else {
++		LOG_ERROR(logID, format, v...)
++	}
++}
++
++// logDownloadError logs a failed download as a warning if failures are allowed and as an error otherwise; if the
++// operator catches download failures, the error is raised as an Exception even when LogFunction doesn't panic.
++func (operator *ChunkOperator) logDownloadError(logID string, format string, v ...interface{}) {
++	if !operator.allowFailures && operator.catchDownloadFailures {
++		logErrorAndPanic(logID, format, v...)
++	} else {
++		LOG_WERROR(operator.allowFailures, logID, format, v...)
++	}
++}
+ 
++// Run runs the task; the task is counted as active and its panic is recorded by runTask.
++func (operator *ChunkOperator) Run(threadIndex int, task ChunkTask) {
+ 	if task.operation == ChunkOperationDownload {
+ 		operator.DownloadChunk(threadIndex, task)
+ 		return
+@@ -211,7 +287,7 @@
+ 		if task.filePath == "" {
+ 			filePath, exist, _, err := operator.storage.FindChunk(threadIndex, task.chunkID, false, task.isMetadata)
+ 			if err != nil {
+-				LOG_ERROR("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
++				logErrorAndPanic("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
+ 				return
+ 			} else if !exist {
+ 				if task.operation == ChunkOperationDelete {
+@@ -226,7 +302,7 @@
+ 					operator.fossils = append(operator.fossils, fossilPath)
+ 					operator.collectionLock.Unlock()
+ 				} else {
+-					LOG_ERROR("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
++					logErrorAndPanic("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
+ 				}
+ 				return
+ 			}
+@@ -237,9 +313,9 @@
+ 	if task.operation == ChunkOperationFind {
+ 		_, exist, _, err := operator.storage.FindChunk(threadIndex, task.chunkID, false, task.isMetadata)
+ 		if err != nil {
+-			LOG_ERROR("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
++			logErrorAndPanic("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
+ 		} else if !exist {
+-			LOG_ERROR("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
++			logErrorAndPanic("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
+ 		} else {
+ 			LOG_DEBUG("CHUNK_FIND", "Chunk %s exists in the storage", task.chunkID)
+ 		}
+@@ -269,7 +345,7 @@
+ 				operator.fossils = append(operator.fossils, fossilPath)
+ 				operator.collectionLock.Unlock()
+ 			} else {
+-				LOG_ERROR("CHUNK_DELETE", "Failed to fossilize the chunk %s: %v", task.chunkID, err)
++				logErrorAndPanic("CHUNK_DELETE", "Failed to fossilize the chunk %s: %v", task.chunkID, err)
+ 			}
+ 		} else {
+ 			LOG_TRACE("CHUNK_FOSSILIZE", "The chunk %s has been marked as a fossil", task.chunkID)
+@@ -280,7 +356,7 @@
+ 	} else if task.operation == ChunkOperationResurrect {
+ 		chunkPath, exist, _, err := operator.storage.FindChunk(threadIndex, task.chunkID, false, task.isMetadata)
+ 		if err != nil {
+-			LOG_ERROR("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
++			logErrorAndPanic("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
+ 		}
+ 
+ 		if exist {
+@@ -289,7 +365,7 @@
+ 		} else {
+ 			err := operator.storage.MoveFile(threadIndex, task.filePath, chunkPath)
+ 			if err != nil {
+-				LOG_ERROR("FOSSIL_RESURRECT", "Failed to resurrect the chunk %s from the fossil %s: %v",
++				logErrorAndPanic("FOSSIL_RESURRECT", "Failed to resurrect the chunk %s from the fossil %s: %v",
+ 					task.chunkID, task.filePath, err)
+ 			} else {
+ 				LOG_INFO("FOSSIL_RESURRECT", "The chunk %s has been resurrected", task.filePath)
+@@ -355,6 +431,8 @@
+ 		if operator.allowFailures {
+ 			chunk.isBroken = true
+ 			task.completionFunc(chunk, task.chunkIndex)
++			// The receiver owns the chunk now; the deferred PutChunk must not return it to the pool too
++			chunk = nil
+ 		}
+ 	}
+ 
+@@ -372,7 +450,7 @@
+ 		chunkPath, exist, _, err = operator.storage.FindChunk(threadIndex, chunkID, false, task.isMetadata)
+ 		if err != nil {
+ 			completeFailedChunk()
+-			LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
++			operator.logDownloadError("DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
+ 			return
+ 		}
+ 
+@@ -383,7 +461,7 @@
+ 			fossilPath, exist, _, err = operator.storage.FindChunk(threadIndex, chunkID, true, task.isMetadata)
+ 			if err != nil {
+ 				completeFailedChunk()
+-				LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
++				operator.logDownloadError("DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
+ 				return
+ 			}
+ 
+@@ -408,9 +486,9 @@
+ 				// A chunk is not found.  This is a serious error and hopefully it will never happen.
+ 				completeFailedChunk()
+ 				if err != nil {
+-					LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Chunk %s can't be found: %v", chunkID, err)
++					operator.logDownloadError("DOWNLOAD_CHUNK", "Chunk %s can't be found: %v", chunkID, err)
+ 				} else {
+-					LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Chunk %s can't be found", chunkID)
++					operator.logDownloadError("DOWNLOAD_CHUNK", "Chunk %s can't be found", chunkID)
+ 				}
+ 				return
+ 			}
+@@ -430,7 +508,7 @@
+ 				continue
+ 			} else {
+ 				completeFailedChunk()
+-				LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Failed to download the chunk %s: %v", chunkID, err)
++				operator.logDownloadError("DOWNLOAD_CHUNK", "Failed to download the chunk %s: %v", chunkID, err)
+ 				return
+ 			}
+ 		}
+@@ -445,7 +523,7 @@
+ 				continue
+ 			} else {
+ 				completeFailedChunk()
+-				LOG_WERROR(operator.allowFailures, "DOWNLOAD_DECRYPT", "Failed to decrypt the chunk %s: %v", chunkID, err)
++				operator.logDownloadError("DOWNLOAD_DECRYPT", "Failed to decrypt the chunk %s: %v", chunkID, err)
+ 				return
+ 			}
+ 		}
+@@ -459,7 +537,7 @@
+ 				continue
+ 			} else {
+ 				completeFailedChunk()
+-				LOG_WERROR(operator.allowFailures, "DOWNLOAD_CORRUPTED", "The chunk %s has a hash id of %s", chunkID, actualChunkID)
++				operator.logDownloadError("DOWNLOAD_CORRUPTED", "The chunk %s has a hash id of %s", chunkID, actualChunkID)
+ 				return
+ 			}
+ 		}
+@@ -559,7 +637,7 @@
+ 	// This returns the path the chunk file should be at.
+ 	chunkPath, exist, _, err := operator.storage.FindChunk(threadIndex, chunkID, false, task.isMetadata)
+ 	if err != nil {
+-		LOG_ERROR("UPLOAD_CHUNK", "Failed to find the path for the chunk %s: %v", chunkID, err)
++		operator.logUploadError("UPLOAD_CHUNK", "Failed to find the path for the chunk %s: %v", chunkID, err)
+ 		return false
+ 	}
+ 
+@@ -574,14 +652,14 @@
+ 	// Encrypt the chunk only after we know that it must be uploaded.
+ 	err = chunk.Encrypt(operator.config.ChunkKey, chunk.GetHash(), task.isMetadata)
+ 	if err != nil {
+-		LOG_ERROR("UPLOAD_CHUNK", "Failed to encrypt the chunk %s: %v", chunkID, err)
++		operator.logUploadError("UPLOAD_CHUNK", "Failed to encrypt the chunk %s: %v", chunkID, err)
+ 		return false
+ 	}
+ 
+ 	if !operator.config.dryRun {
+ 		err = operator.storage.UploadFile(threadIndex, chunkPath, chunk.GetBytes())
+ 		if err != nil {
+-			LOG_ERROR("UPLOAD_CHUNK", "Failed to upload the chunk %s: %v", chunkID, err)
++			operator.logUploadError("UPLOAD_CHUNK", "Failed to upload the chunk %s: %v", chunkID, err)
+ 			return false
+ 		}
+ 		LOG_DEBUG("CHUNK_UPLOAD", "Chunk %s has been uploaded", chunkID)
+diff -ruN -x .git a/src/duplicacy_config.go b/src/duplicacy_config.go
+--- a/src/duplicacy_config.go	2026-11-05 05:49:43.863238338 +0000
++++ b/src/duplicacy_config.go	2026-11-05 05:49:44.055243037 +0000
+@@ -85,8 +85,8 @@
+ 	FileKey []byte `json:"-"`
+ 
+ 	// for erasure coding
+-	DataShards int `json:'data-shards'`
+-	ParityShards int `json:'parity-shards'`
++	DataShards int `json:"DataShards"`
++	ParityShards int `json:"ParityShards"`
+ 
+ 	// for RSA encryption
+ 	rsaPrivateKey *rsa.PrivateKey
+diff -ruN -x .git a/src/duplicacy_sambastorage.go b/src/duplicacy_sambastorage.go
+--- a/src/duplicacy_sambastorage.go	2026-11-05 05:49:43.875238631 +0000
++++ b/src/duplicacy_sambastorage.go	2026-11-05 05:49:44.055243037 +0000
+@@ -13,6 +13,7 @@
+ 	"path"
+ 	"time"
+ 	"strings"
++	"strconv"
+ 	"syscall"
+ 	"math/rand"
+ 
+@@ -31,7 +32,7 @@
+ // CreateSambaStorage creates a file storage.
+ func CreateSambaStorage(server string, port int, username string, password string, shareName string, storageDir string, threads int) (storage *SambaStorage, err error) {
+ 
+-	address := fmt.Sprintf("%s:%d", server, port)
++	address := net.JoinHostPort(server, strconv.Itoa(port))
+ 	connection, err := net.Dial("tcp", address)
+ 	if err != nil {
+ 		return nil, err
+diff -ruN -x .git a/src/duplicacy_snapshot.go b/src/duplicacy_snapshot.go
+--- a/src/duplicacy_snapshot.go	2026-11-05 05:49:43.879238729 +0000
++++ b/src/duplicacy_snapshot.go	2026-11-05 05:49:44.055243037 +0000
+@@ -63,9 +63,14 @@
+ 	files *[]Entry
+ }
+ 
++// ListLocalFiles sends the entries under top to listingChannel and closes it; it returns false if top can't be listed
++// and LogFunction returns instead of panicking.
+ func (snapshot *Snapshot) ListLocalFiles(top string, nobackupFile string,
+ 								         filtersFile string, excludeByAttribute bool, listingChannel chan *Entry,
+-								         skippedDirectories *[]string, skippedFiles *[]string) {
++								         skippedDirectories *[]string, skippedFiles *[]string) bool {
++
++	// The channel is closed on every exit, including a panic and a failed listing of the top directory
++	defer close(listingChannel)
+ 
+ 	var patterns []string
+ 
+@@ -85,7 +90,7 @@
+ 		if err != nil {
+ 			if directory.Path == "" {
+ 				LOG_ERROR("LIST_FAILURE", "Failed to list the repository root: %v", err)
+-				return
++				return false
+ 			}
+ 			LOG_WARN("LIST_FAILURE", "Failed to list subdirectory %s: %v", directory.Path, err)
+ 			if skippedDirectories != nil {
+@@ -101,7 +106,7 @@
+ 		}
+ 
+ 	}
+-	close(listingChannel)
++	return true
+ }
+ 
+ func (snapshot *Snapshot)ListRemoteFiles(config *Config, chunkOperator *ChunkOperator, entryOut func(*Entry) bool) {
+diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
+--- a/src/duplicacy_snapshotmanager.go	2026-11-05 05:49:43.879238729 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-05 05:49:44.059243135 +0000
+@@ -294,6 +294,92 @@
+ 	}
+ }
+ 
++// clearOperator removes an operator whose goroutines have been stopped and clears the failures that an earlier
++// operation has left on a running operator, so that the operation starting now reports only its own failures.
++func (manager *SnapshotManager) clearOperator() {
++	operator := manager.chunkOperator
++	if operator == nil {
++		return
++	}
++	if operator.isStopped() {
++		// No goroutine is left to run the tasks of a stopped operator
++		manager.chunkOperator = nil
++	} else if operator.failures.hasFailed() {
++		operator.resetFailures()
++	}
++}
++
++// prepareOperator clears the operator as clearOperator does and creates it with the given settings if there is none.
++// It returns whether the operator has been created here.
++func (manager *SnapshotManager) prepareOperator(resurrect bool, rewriteChunks bool, threads int,
++	allowFailures bool) bool {
++	manager.clearOperator()
++	created := manager.chunkOperator == nil
++	manager.CreateChunkOperator(resurrect, rewriteChunks, threads, allowFailures)
++	return created
++}
++
++// useOperator prepares the operator with the given number of threads, as prepareOperator does, and makes it raise
++// the failed downloads of an operation in the goroutine waiting for them, as catchOperatorDownloads does.  The
++// returned function must be deferred directly, since it recovers the panic of the operation: it waits for the tasks,
++// stops the operator and removes it if it has been created here, or otherwise clears the recorded failures and, with
++// clearFossils, the collected fossils, and restores the mode, so that an operator outliving the operation doesn't
++// report them again.  Then it raises the panic of the operation again, or the first failure of the tasks if the
++// operation has returned without a panic.
++func (manager *SnapshotManager) useOperator(threads int, clearFossils bool) func() {
++	created := manager.prepareOperator(false, false, threads, false)
++	operator := manager.chunkOperator
++	catching := operator.catchDownloadFailures
++	operator.catchDownloadFailures = true
++	return func() {
++		value := recover()
++		operator.waitForTasks()
++		failures := operator.failures
++		if created {
++			operator.stopWorkers()
++			if manager.chunkOperator == operator {
++				manager.chunkOperator = nil
++			}
++		} else {
++			operator.resetFailures()
++			operator.catchDownloadFailures = catching
++			if clearFossils {
++				operator.collectionLock.Lock()
++				operator.fossils = nil
++				operator.collectionLock.Unlock()
++			}
++		}
++		if value != nil {
++			panic(value)
++		}
++		failures.raise()
++	}
++}
++
++// catchOperatorDownloads prepares the operator with the given settings, as prepareOperator does, and makes it raise
++// the failed downloads of an operation in the goroutine waiting for them.  The returned function must be deferred:
++// it stops the operator without raising its error and removes it if it has been created here, or otherwise clears
++// the recorded failures and restores the mode, so that an operator outliving the operation doesn't report them
++// again.
++func (manager *SnapshotManager) catchOperatorDownloads(resurrect bool, rewriteChunks bool, threads int,
++	allowFailures bool) func() {
++	created := manager.prepareOperator(resurrect, rewriteChunks, threads, allowFailures)
++	operator := manager.chunkOperator
++	catching := operator.catchDownloadFailures
++	operator.catchDownloadFailures = true
++	return func() {
++		if created {
++			operator.stopWorkers()
++			if manager.chunkOperator == operator {
++				manager.chunkOperator = nil
++			}
++		} else {
++			operator.resetFailures()
++			operator.catchDownloadFailures = catching
++		}
++	}
++}
++
+ // DownloadSequence returns the content represented by a sequence of chunks.
+ func (manager *SnapshotManager) DownloadSequence(sequence []string) (content []byte) {
+ 	manager.CreateChunkOperator(false, false, 1, false)
+@@ -681,11 +767,7 @@
+ 	LOG_DEBUG("LIST_PARAMETERS", "id: %s, revisions: %v, tag: %s, showFiles: %t, showChunks: %t",
+ 		snapshotID, revisionsToList, tag, showFiles, showChunks)
+ 
+-	manager.CreateChunkOperator(false, false, 1, false)
+-	defer func() {
+-		manager.chunkOperator.Stop()
+-		manager.chunkOperator = nil
+-	}()
++	defer manager.useOperator(1, false)()
+ 
+ 	var snapshotIDs []string
+ 	var err error
+@@ -789,11 +871,8 @@
+ func (manager *SnapshotManager) CheckSnapshots(snapshotID string, revisionsToCheck []int, tag string, showStatistics bool, showTabular bool,
+ 	checkFiles bool, checkChunks, searchFossils bool, resurrect bool, rewriteChunks bool, threads int, allowFailures bool) bool {
+ 
+-	manager.CreateChunkOperator(resurrect, rewriteChunks, threads, allowFailures)
+-	defer func() {
+-		manager.chunkOperator.Stop()
+-		manager.chunkOperator = nil
+-	}()
++	// Failed downloads are raised in the goroutine waiting for them
++	defer manager.catchOperatorDownloads(resurrect, rewriteChunks, threads, allowFailures)()
+ 
+ 	LOG_DEBUG("LIST_PARAMETERS", "id: %s, revisions: %v, tag: %s, showStatistics: %t, showTabular: %t, checkFiles: %t, searchFossils: %t, resurrect: %t",
+ 		snapshotID, revisionsToCheck, tag, showStatistics, showTabular, checkFiles, searchFossils, resurrect)
+@@ -1084,47 +1163,50 @@
+ 	wg.Add(threads)
+ 	for i := 0; i < threads; i++ {
+ 		go func() {
+-			defer CatchLogException()
+-
+-			for {
+-				chunkIndex, ok := <- chunkChannel
+-				if !ok {
+-					wg.Done()
+-					return
+-				}
++			defer wg.Done()
+ 
+-				// The chunk must be read from the storage rather than the snapshot cache; that is the whole
+-				// point of verifying it
+-				chunk := manager.chunkOperator.DownloadFromStorage(chunkHashes[chunkIndex], chunkIndex, isMetadataChunks[chunkIndex])
+-				if chunk == nil {
+-					continue
+-				}
++			for chunkIndex := range chunkChannel {
++				func() {
++					// A panic is recorded by the operator and raised again by WaitForCompletion below; the loop goes
++					// on without downloading, so that the producer never blocks on a full channel
++					defer manager.chunkOperator.failures.catch()
++					if manager.chunkOperator.failures.hasFailed() {
++						return
++					}
+ 
+-				if !chunk.isBroken {
+-					chunkID := manager.config.GetChunkIDFromHash(chunkHashes[chunkIndex])
+-					verifiedChunksLock.Lock()
+-					now := time.Now().Unix()
+-					verifiedChunks[chunkID] = now
+-					if now > lastSaveTime + 5 * 60 {
+-						lastSaveTime = now
+-						verifiedChunksLock.Unlock()
+-						saveVerifiedChunks()
+-					} else {
+-						verifiedChunksLock.Unlock()
++					// The chunk must be read from the storage rather than the snapshot cache; that is the whole
++					// point of verifying it
++					chunk := manager.chunkOperator.DownloadFromStorage(chunkHashes[chunkIndex], chunkIndex, isMetadataChunks[chunkIndex])
++					if chunk == nil {
++						return
+ 					}
+ 
+-					downloadedChunkSize := atomic.AddInt64(&totalDownloadedChunkSize, int64(chunk.GetLength()))
+-					downloadedChunks := atomic.AddInt64(&totalDownloadedChunks, 1)
++					if !chunk.isBroken {
++						chunkID := manager.config.GetChunkIDFromHash(chunkHashes[chunkIndex])
++						verifiedChunksLock.Lock()
++						now := time.Now().Unix()
++						verifiedChunks[chunkID] = now
++						if now > lastSaveTime + 5 * 60 {
++							lastSaveTime = now
++							verifiedChunksLock.Unlock()
++							saveVerifiedChunks()
++						} else {
++							verifiedChunksLock.Unlock()
++						}
++
++						downloadedChunkSize := atomic.AddInt64(&totalDownloadedChunkSize, int64(chunk.GetLength()))
++						downloadedChunks := atomic.AddInt64(&totalDownloadedChunks, 1)
+ 
+-					elapsedTime := time.Now().Sub(startTime).Seconds()
+-					speed := int64(float64(downloadedChunkSize) / elapsedTime)
+-					remainingTime := int64(float64(totalChunks - downloadedChunks) / float64(downloadedChunks) * elapsedTime)
+-					percentage := float64(downloadedChunks) / float64(totalChunks) * 100.0
+-					LOG_INFO("VERIFY_PROGRESS", "Verified chunk %s (%d/%d), %sB/s %s %.1f%%",
+-							chunkID, downloadedChunks, totalChunks, PrettySize(speed), PrettyTime(remainingTime), percentage)
+-				}
++						elapsedTime := time.Now().Sub(startTime).Seconds()
++						speed := int64(float64(downloadedChunkSize) / elapsedTime)
++						remainingTime := int64(float64(totalChunks - downloadedChunks) / float64(downloadedChunks) * elapsedTime)
++						percentage := float64(downloadedChunks) / float64(totalChunks) * 100.0
++						LOG_INFO("VERIFY_PROGRESS", "Verified chunk %s (%d/%d), %sB/s %s %.1f%%",
++								chunkID, downloadedChunks, totalChunks, PrettySize(speed), PrettyTime(remainingTime), percentage)
++					}
+ 
+-				manager.config.PutChunk(chunk)
++					manager.config.PutChunk(chunk)
++				}()
+ 			}
+ 		} ()
+ 	}
+@@ -1477,6 +1559,10 @@
+ 
+ 	LOG_DEBUG("PRINT_PARAMETERS", "id: %s, revision: %d, path: %s", snapshotID, revision, path)
+ 
++	// The operator outlives the operation, as in upstream, and is created when it is needed; one stopped or failed by
++	// an earlier operation is removed or cleared first
++	manager.clearOperator()
++
+ 	var snapshot *Snapshot
+ 
+ 	if revision <= 0 {
+@@ -1522,11 +1608,8 @@
+ 	LOG_DEBUG("DIFF_PARAMETERS", "top: %s, id: %s, revision: %v, path: %s, compareByHash: %t",
+ 		top, snapshotID, revisions, filePath, compareByHash)
+ 
+-	manager.CreateChunkOperator(false, false, 1, false)
+-	defer func() {
+-		manager.chunkOperator.Stop()
+-		manager.chunkOperator = nil
+-	} ()
++	// Failed downloads are raised in this goroutine
++	defer manager.catchOperatorDownloads(false, false, 1, false)()
+ 
+ 	var leftSnapshot *Snapshot
+ 	var rightSnapshot *Snapshot
+@@ -1540,15 +1623,27 @@
+ 		if len(filePath) == 0 {
+ 			rightSnapshot = CreateEmptySnapshot(snapshotID)
+ 			localListingChannel := make(chan *Entry)
++			localListingDone := make(chan struct{})
++			localListingOK := false
+ 			go func() {
+-				defer CatchLogException()
+-				rightSnapshot.ListLocalFiles(top, nobackupFile, filtersFile, excludeByAttribute, localListingChannel, nil, nil)
++				defer close(localListingDone)
++				// A panic is recorded by the operator and raised again once the listing has ended
++				defer manager.chunkOperator.failures.catch()
++				localListingOK = rightSnapshot.ListLocalFiles(top, nobackupFile, filtersFile, excludeByAttribute, localListingChannel, nil, nil)
+ 			} ()
+ 
++			// ListLocalFiles closes the channel on every exit, so the loop ends even if the listing panics
+ 			for entry := range localListingChannel {
+ 				entry.Attributes = nil  // attributes are not compared
+ 				rightSnapshotFiles = append(rightSnapshotFiles, entry)
+ 			}
++			// The panic is recorded after the channel is closed, but before the goroutine exits
++			<-localListingDone
++			manager.chunkOperator.failures.raise()
++			if !localListingOK {
++				// The repository can't be listed and LogFunction has returned instead of panicking
++				return false
++			}
+ 
+ 		}
+ 	} else {
+@@ -1747,11 +1842,7 @@
+ 	LOG_DEBUG("HISTORY_PARAMETERS", "top: %s, id: %s, revisions: %v, path: %s, showLocalHash: %t",
+ 		top, snapshotID, revisions, filePath, showLocalHash)
+ 
+-	manager.CreateChunkOperator(false, false, 1, false)
+-	defer func() {
+-		manager.chunkOperator.Stop()
+-		manager.chunkOperator = nil
+-	} ()
++	defer manager.useOperator(1, false)()
+ 
+ 	var err error
+ 
+@@ -1876,11 +1967,7 @@
+ 		LOG_WARN("DELETE_OPTIONS", "Tags or retention policy will be ignored if at least one revision is specified")
+ 	}
+ 
+-	manager.CreateChunkOperator(false, false, threads, false)
+-	defer func() {
+-		manager.chunkOperator.Stop()
+-		manager.chunkOperator = nil
+-	} ()
++	defer manager.useOperator(threads, true)()
+ 
+ 	prefPath := GetDuplicacyPreferencePath()
+ 	logDir := path.Join(prefPath, "logs")
+@@ -2607,7 +2694,7 @@
+ 		}
+ 
+ 		if entry.EndChunk < entry.StartChunk {
+-			fmt.Errorf("The file %s starts at chunk %d and ends at chunk %d",
++			err = fmt.Errorf("The file %s starts at chunk %d and ends at chunk %d",
+ 				entry.Path, entry.StartChunk, entry.EndChunk)
+ 			return false
+ 		}
+diff -ruN -x .git a/src/duplicacy_swiftstorage.go b/src/duplicacy_swiftstorage.go
+--- a/src/duplicacy_swiftstorage.go	2026-11-05 05:49:43.883238827 +0000
++++ b/src/duplicacy_swiftstorage.go	2026-11-05 05:49:44.059243135 +0000
+@@ -113,7 +113,13 @@
+ 		arguments["protocol"] = "https"
+ 	}
+ 
+-	ctx, _ := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
++	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
++	defer func() {
++		// The timeout bounds the whole life of the returned storage, so it is released only on failure
++		if storage == nil {
++			cancel()
++		}
++	}()
+ 
+ 	// Please refer to https://godoc.org/github.com/ncw/swift#Connection
+ 	connection := swift.Connection{
+diff -ruN -x .git a/src/duplicacy_workererrors.go b/src/duplicacy_workererrors.go
+--- a/src/duplicacy_workererrors.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_workererrors.go	2026-11-05 05:49:44.059243135 +0000
+@@ -0,0 +1,76 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"fmt"
++	"os"
++	"runtime/debug"
++	"sync"
++)
++
++// workerErrors keeps the first panic of the background goroutines of an operation, so that the goroutine that
++// called the operation can raise it again instead of the whole process exiting through CatchLogException.
++type workerErrors struct {
++	once   sync.Once
++	failed chan struct{} // Closed once the first panic has been recorded
++	value  interface{}   // The value of the first panic
++}
++
++func newWorkerErrors() *workerErrors {
++	return &workerErrors{failed: make(chan struct{})}
++}
++
++// catch records the panic of the current goroutine.  It must be deferred directly: 'defer failures.catch()'.
++func (failures *workerErrors) catch() {
++	if r := recover(); r != nil {
++		failures.record(r)
++	}
++}
++
++// record keeps the first panic and wakes up the goroutines waiting on 'failed'; later panics are dropped.
++func (failures *workerErrors) record(value interface{}) {
++	failures.once.Do(func() {
++		if _, ok := value.(Exception); ok {
++			if printStackTrace {
++				debug.PrintStack()
++			}
++		} else {
++			// Print the stack of the goroutine that panicked, as CatchLogException does
++			fmt.Fprintf(os.Stderr, "%v\n", value)
++			debug.PrintStack()
++		}
++		failures.value = value
++		close(failures.failed)
++	})
++}
++
++// hasFailed reports whether a panic has been recorded.
++func (failures *workerErrors) hasFailed() bool {
++	select {
++	case <-failures.failed:
++		return true
++	default:
++		return false
++	}
++}
++
++// raise panics in the calling goroutine with the recorded value, if there is one.
++func (failures *workerErrors) raise() {
++	if failures.hasFailed() {
++		panic(failures.value)
++	}
++}
++
++// logErrorAndPanic logs an error and raises it as an Exception even if LogFunction returns instead of panicking,
++// so that the error reaches the caller of the operation.
++func logErrorAndPanic(logID string, format string, v ...interface{}) {
++	LOG_ERROR(logID, format, v...)
++	panic(Exception{
++		Level:   ERROR,
++		LogID:   logID,
++		Message: fmt.Sprintf(format, v...),
++	})
++}
+diff -ruN -x .git a/src/duplicacy_workererrors_copy_test.go b/src/duplicacy_workererrors_copy_test.go
+--- a/src/duplicacy_workererrors_copy_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_workererrors_copy_test.go	2026-11-05 11:56:11.565838222 +0000
+@@ -0,0 +1,515 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// workerErrorsCopyFixture is a source fixture with the revision 1 backed up and a destination storage wrapped by
++// faultStorage, configured from the source config as 'add -copy' does.
++type workerErrorsCopyFixture struct {
++	*workerErrorsFixture
++	snapshot           *Snapshot // The revision 1 of the source with its chunk sequences
++	destinationRaw     *FileStorage
++	destinationStorage *faultStorage
++	destination        *BackupManager
++}
++
++func newWorkerErrorsCopyFixture(t *testing.T) *workerErrorsCopyFixture {
++	source := newWorkerErrorsFixture(t, false)
++	source.expectSuccess(source.backup(source.repository, false), 1)
++	fixture := &workerErrorsCopyFixture{workerErrorsFixture: source, snapshot: source.revisionSnapshot(1)}
++	if len(fixture.snapshot.ChunkHashes) < 6 {
++		t.Fatalf("Expected at least 6 file chunks, got %d", len(fixture.snapshot.ChunkHashes))
++	}
++	raw, err := CreateFileStorage(filepath.Join(t.TempDir(), "destination"), false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the destination storage: %v", err)
++	}
++	if !ConfigStorage(raw, 16384, 100, 64*1024, 256*1024, 16*1024, "", source.manager.config, false, "", 0, 0) {
++		t.Fatalf("Failed to initialize the destination storage")
++	}
++	fixture.destinationRaw = raw
++	fixture.destinationStorage = newFaultStorage(raw)
++	fixture.destination = CreateBackupManager("host1", fixture.destinationStorage, source.repository, "", "", "",
++		false)
++	// The destination has its own snapshot cache, as the copy command sets up
++	if fixture.destination == nil || !fixture.destination.SetupSnapshotCache("destination") {
++		t.Fatalf("Failed to create the destination backup manager")
++	}
++	return fixture
++}
++
++// copy copies the revision 1 to the destination with 2 uploading and 2 downloading threads.
++func (fixture *workerErrorsCopyFixture) copy() workerErrorsOutcome {
++	return runWorkerErrorsOperation(fixture.t, func() bool {
++		return fixture.manager.CopySnapshots(fixture.destination, "host1", []int{1}, 2, 2)
++	})
++}
++
++// chunkCount returns the number of chunks of the revision 1, all of which a copy to the empty destination copies.
++func (fixture *workerErrorsCopyFixture) chunkCount() int {
++	chunks := map[string]bool{}
++	for _, sequence := range [][]string{fixture.snapshot.FileSequence, fixture.snapshot.ChunkSequence,
++		fixture.snapshot.LengthSequence, fixture.snapshot.ChunkHashes} {
++		for _, chunkHash := range sequence {
++			chunks[chunkHash] = true
++		}
++	}
++	return len(chunks)
++}
++
++// copiedRevisionExists checks the destination storage itself, bypassing the faults.
++func (fixture *workerErrorsCopyFixture) copiedRevisionExists() bool {
++	exist, _, _, err := fixture.destinationRaw.GetFileInfo(0, "snapshots/host1/1")
++	if err != nil {
++		fixture.t.Fatalf("Failed to check the copied revision: %v", err)
++	}
++	return exist
++}
++
++// destinationChunkPath returns the path of the file chunk in the destination storage, where it is uploaded to.
++func (fixture *workerErrorsCopyFixture) destinationChunkPath(chunkHash string) string {
++	fixture.t.Helper()
++	chunkID := fixture.destination.config.GetChunkIDFromHash(chunkHash)
++	chunkPath, _, _, err := fixture.destinationRaw.FindChunk(0, chunkID, false, false)
++	if err != nil {
++		fixture.t.Fatalf("Failed to find the destination path of the chunk %s: %v", chunkID, err)
++	}
++	return chunkPath
++}
++
++// expectNotCopied checks the destination and the source after a failed copy: the revision has not been copied, the
++// operator created for the snapshot sequences has been removed and no goroutine of the copy is left.
++func (fixture *workerErrorsCopyFixture) expectNotCopied(baseline int) {
++	fixture.t.Helper()
++	if fixture.copiedRevisionExists() {
++		fixture.t.Fatalf("The revision 1 has been copied despite the failure")
++	}
++	if fixture.manager.SnapshotManager.chunkOperator != nil {
++		fixture.t.Fatalf("The operator of the snapshot manager has not been removed")
++	}
++	waitForWorkerErrorsGoroutines(fixture.t, baseline)
++}
++
++// expectCopied checks that the copy returned true without a panic and that the copied revision passes a check of
++// its files in the destination.
++func (fixture *workerErrorsCopyFixture) expectCopied(outcome workerErrorsOutcome) {
++	fixture.t.Helper()
++	if outcome.recovered != nil || !outcome.result || !fixture.copiedRevisionExists() {
++		fixture.t.Fatalf("The copy failed: %#v (result %t)", outcome.recovered, outcome.result)
++	}
++	checked := runWorkerErrorsOperation(fixture.t, func() bool {
++		return fixture.destination.SnapshotManager.CheckSnapshots("host1", []int{1}, "", false, false, true, false,
++			false, false, false, 2, false)
++	})
++	if checked.recovered != nil || !checked.result {
++		fixture.t.Fatalf("The check of the copied revision failed: %#v (result %t)", checked.recovered,
++			checked.result)
++	}
++}
++
++// TestWorkerErrorsCopyChunkDownload fails the download of a file chunk from the source, which is run by the
++// downloading operator of the copy.
++func TestWorkerErrorsCopyChunkDownload(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsCopyFixture(t)
++			fixture.failDownload(fixture.snapshot.ChunkHashes[len(fixture.snapshot.ChunkHashes)/2], false)
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			expectWorkerErrorsException(t, fixture.copy(), "DOWNLOAD_CHUNK")
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the file chunk has not been attempted")
++			}
++			fixture.expectNotCopied(baseline)
++
++			// The failure must not outlive the copy
++			fixture.storage.clearFaults()
++			fixture.expectCopied(fixture.copy())
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsCopyChunkUpload fails the upload of a file chunk to the destination, which is run by the uploading
++// operator of the copy.
++func TestWorkerErrorsCopyChunkUpload(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsCopyFixture(t)
++			chunkHash := fixture.snapshot.ChunkHashes[len(fixture.snapshot.ChunkHashes)/2]
++			fixture.destinationStorage.fail("UploadFile", fixture.destinationChunkPath(chunkHash))
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			expectWorkerErrorsException(t, fixture.copy(), "UPLOAD_CHUNK")
++			if fixture.destinationStorage.injectedCount() == 0 {
++				t.Fatalf("The upload of the file chunk has not been attempted")
++			}
++			fixture.expectNotCopied(baseline)
++
++			fixture.destinationStorage.clearFaults()
++			fixture.expectCopied(fixture.copy())
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsCopySnapshotFile fails the upload of the snapshot file to the destination, which raises an
++// Exception when the log function panics and makes the copy return false otherwise.
++func TestWorkerErrorsCopySnapshotFile(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsCopyFixture(t)
++			fixture.destinationStorage.fail("UploadFile", "snapshots/host1/1")
++			// The log function collects the messages and doesn't panic, so the copy returns false
++			var lock sync.Mutex
++			var messages []string
++			if name == "LogFunction" {
++				LogFunction = func(level int, logID string, message string) {
++					lock.Lock()
++					defer lock.Unlock()
++					messages = append(messages, logID+" "+message)
++				}
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			expectWorkerErrorsFailure(t, name, fixture.copy(), "UPLOAD_File")
++			if fixture.destinationStorage.injectedCount() == 0 {
++				t.Fatalf("The upload of the snapshot file has not been attempted")
++			}
++			if name == "LogFunction" {
++				lock.Lock()
++				logged := strings.Join(messages, "\n")
++				lock.Unlock()
++				if !strings.Contains(logged, "UPLOAD_File") {
++					t.Fatalf("The failure of the snapshot file has not been logged:\n%s", logged)
++				}
++				if strings.Contains(logged, "SNAPSHOT_COPY Copied snapshot") {
++					t.Fatalf("The copy has reported the revision as copied:\n%s", logged)
++				}
++			}
++			fixture.expectNotCopied(baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsCopyMetadata fails the download of the chunk sequence of the revision, which the copy downloads
++// through the operator of the source snapshot manager in the calling goroutine.  The cached copy of the chunk is
++// removed, so the download reaches the storage.
++func TestWorkerErrorsCopyMetadata(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsCopyFixture(t)
++			fixture.failDownload(fixture.snapshot.ChunkSequence[0], true)
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			expectWorkerErrorsException(t, fixture.copy(), "DOWNLOAD_CHUNK")
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the chunk sequence has not been attempted")
++			}
++			fixture.expectNotCopied(baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsCopyExistingOperator copies with an operator of the source snapshot manager that exists before the
++// copy and keeps a failure of an earlier operation: the copy succeeds and the operator is kept without the failure.
++func TestWorkerErrorsCopyExistingOperator(t *testing.T) {
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsCopyFixture(t)
++	waitForWorkerErrorsGoroutines(t, baseline)
++	operator := fixture.existingSnapshotOperator()
++	operator.failures.record(Exception{Level: ERROR, LogID: "EARLIER_OPERATION", Message: "earlier failure"})
++	baseline = runtime.NumGoroutine()
++
++	fixture.expectCopied(fixture.copy())
++	fixture.expectSnapshotOperator(operator)
++	waitForWorkerErrorsGoroutines(t, baseline)
++	fixture.stopSnapshotOperator()
++}
++
++// TestWorkerErrorsCopyNoFaults copies the revision without faults; copying it again finds nothing to copy.
++func TestWorkerErrorsCopyNoFaults(t *testing.T) {
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsCopyFixture(t)
++	waitForWorkerErrorsGoroutines(t, baseline)
++
++	fixture.expectCopied(fixture.copy())
++	waitForWorkerErrorsGoroutines(t, baseline)
++	// The messages of the second copy are collected; errors are not expected, so the log function doesn't panic
++	var lock sync.Mutex
++	var messages []string
++	LogFunction = func(level int, logID string, message string) {
++		lock.Lock()
++		defer lock.Unlock()
++		messages = append(messages, logID+" "+message)
++	}
++	outcome := fixture.copy()
++	if outcome.recovered != nil || !outcome.result {
++		t.Fatalf("The second copy failed: %#v (result %t)", outcome.recovered, outcome.result)
++	}
++	lock.Lock()
++	logged := strings.Join(messages, "\n")
++	lock.Unlock()
++	if !strings.Contains(logged, "SNAPSHOT_COPY Nothing to copy") {
++		t.Fatalf("The second copy has not found the revision at the destination:\n%s", logged)
++	}
++	if strings.Contains(logged, "SNAPSHOT_COPY Chunks to copy") {
++		t.Fatalf("The second copy has gone on after finding nothing to copy:\n%s", logged)
++	}
++	if fixture.manager.SnapshotManager.chunkOperator != nil {
++		t.Fatalf("The operator of the snapshot manager has not been removed")
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++}
++
++// workerErrorsCopyOrder is shared by the wrappers of the source and the destination storages of a copy: the first
++// chunk upload waits until the chunk download with the number 'failing' has started and then 200 ms more, so that
++// the copy is waiting for that download, and fails; that download waits until the upload has failed and then
++// 200 ms more, so that the upload failure has been recorded, and fails too.
++type workerErrorsCopyOrder struct {
++	failing        int32 // The number of the failing chunk download, counted from 1
++	downloads      int32 // The number of chunk downloads started
++	uploads        int32 // The number of chunk uploads started
++	started        int32 // Set once the failing download has started
++	uploadFailed   int32 // Set once the first chunk upload has failed
++	downloadFailed int32 // Set once the failing download has failed
++	late           int32 // The number of waits whose condition didn't hold in 10 seconds
++}
++
++// wait waits until the flag is set, for 10 seconds at most, and then for 200 ms more.
++func (order *workerErrorsCopyOrder) wait(flag *int32) {
++	for deadline := time.Now().Add(10 * time.Second); atomic.LoadInt32(flag) == 0; time.Sleep(10 * time.Millisecond) {
++		if time.Now().After(deadline) {
++			atomic.AddInt32(&order.late, 1)
++			return
++		}
++	}
++	time.Sleep(200 * time.Millisecond)
++}
++
++// workerErrorsOrderedStorage wraps the storage of the source or the destination with the shared order.
++type workerErrorsOrderedStorage struct {
++	Storage
++	order *workerErrorsCopyOrder
++}
++
++func (storage *workerErrorsOrderedStorage) DownloadFile(threadIndex int, filePath string, chunk *Chunk) error {
++	order := storage.order
++	if strings.HasPrefix(filePath, "chunks/") && atomic.AddInt32(&order.downloads, 1) == order.failing {
++		atomic.StoreInt32(&order.started, 1)
++		order.wait(&order.uploadFailed)
++		atomic.StoreInt32(&order.downloadFailed, 1)
++		return fmt.Errorf("injected DownloadFile failure for %s", filePath)
++	}
++	return storage.Storage.DownloadFile(threadIndex, filePath, chunk)
++}
++
++func (storage *workerErrorsOrderedStorage) UploadFile(threadIndex int, filePath string, content []byte) error {
++	order := storage.order
++	if strings.HasPrefix(filePath, "chunks/") && atomic.AddInt32(&order.uploads, 1) == 1 {
++		order.wait(&order.started)
++		atomic.StoreInt32(&order.uploadFailed, 1)
++		return fmt.Errorf("injected UploadFile failure for %s", filePath)
++	}
++	return storage.Storage.UploadFile(threadIndex, filePath, content)
++}
++
++// TestWorkerErrorsCopyFailureOrder fails a chunk upload and then a chunk download that was running when the upload
++// failed: the copy raises the upload failure, which came first, both when the loop adding the chunks raises it and
++// when the downloading operator is stopped after the last chunk has been added.
++func TestWorkerErrorsCopyFailureOrder(t *testing.T) {
++	for _, name := range []string{"LoopLog", "LoopLogFunction", "StopLog", "StopLogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsCopyFixture(t)
++			// With one thread of each operator the second download starts once the first chunk has been passed to
++			// the uploading operator, and the copy waits to add the fourth chunk while that download is held
++			order := &workerErrorsCopyOrder{failing: 2}
++			uploadingThreads := 1
++			if strings.HasPrefix(name, "Stop") {
++				// The last download starts after every chunk has been added, and the other uploads don't wait for
++				// the held one
++				order.failing = int32(fixture.chunkCount())
++				uploadingThreads = int(order.failing)
++			}
++			fixture.manager.storage = &workerErrorsOrderedStorage{Storage: fixture.storage, order: order}
++			fixture.destination.storage = &workerErrorsOrderedStorage{Storage: fixture.destinationStorage,
++				order: order}
++			if strings.HasSuffix(name, "LogFunction") {
++				setWorkerErrorsLogFunction()
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			expectWorkerErrorsException(t, runWorkerErrorsOperation(t, func() bool {
++				return fixture.manager.CopySnapshots(fixture.destination, "host1", []int{1}, uploadingThreads, 1)
++			}), "UPLOAD_CHUNK")
++			late := atomic.LoadInt32(&order.late)
++			if atomic.LoadInt32(&order.downloadFailed) == 0 || late != 0 {
++				t.Fatalf("The download %d has not failed after the upload: %d late waits", order.failing, late)
++			}
++			fixture.expectNotCopied(baseline)
++		})
++	}
++}
++
++// workerErrorsHeldStorage holds the calls of one operation on the benchmark chunks: the failing chunk waits until
++// another call is held, and the other calls wait until the failure has been injected and then 200 ms more.  So the
++// chunk fails while another goroutine is running a job, and that goroutine has to return without blocking before
++// Benchmark raises the failure.
++type workerErrorsHeldStorage struct {
++	*faultStorage
++	operation string // The held operation, or empty
++	failed    string // The path of the failing chunk
++	held      int32  // The number of held calls of the other chunks
++	running   int32  // The number of held calls of the other chunks that haven't returned yet
++	late      int32  // The number of held calls whose condition didn't hold in 10 seconds
++}
++
++// hold holds the call and returns whether it is a held call of another chunk, which runs until the call returns.
++func (storage *workerErrorsHeldStorage) hold(operation string, filePath string) bool {
++	if operation != storage.operation || !strings.HasPrefix(filePath, "benchmark/chunk") {
++		return false
++	}
++	other := filePath != storage.failed
++	ready := func() bool { return storage.injectedCount() > 0 }
++	if !other {
++		ready = func() bool { return atomic.LoadInt32(&storage.held) > 0 }
++	} else {
++		atomic.AddInt32(&storage.held, 1)
++		atomic.AddInt32(&storage.running, 1)
++	}
++	for deadline := time.Now().Add(10 * time.Second); !ready(); time.Sleep(10 * time.Millisecond) {
++		if time.Now().After(deadline) {
++			atomic.AddInt32(&storage.late, 1)
++			return other
++		}
++	}
++	if other {
++		time.Sleep(200 * time.Millisecond)
++	}
++	return other
++}
++
++func (storage *workerErrorsHeldStorage) UploadFile(threadIndex int, filePath string, content []byte) error {
++	if storage.hold("UploadFile", filePath) {
++		defer atomic.AddInt32(&storage.running, -1)
++	}
++	return storage.faultStorage.UploadFile(threadIndex, filePath, content)
++}
++
++func (storage *workerErrorsHeldStorage) DownloadFile(threadIndex int, filePath string, chunk *Chunk) error {
++	if storage.hold("DownloadFile", filePath) {
++		defer atomic.AddInt32(&storage.running, -1)
++	}
++	return storage.faultStorage.DownloadFile(threadIndex, filePath, chunk)
++}
++
++// workerErrorsBenchmarkFixture is a local directory and a file storage wrapped by faultStorage for Benchmark.
++type workerErrorsBenchmarkFixture struct {
++	t       *testing.T
++	local   string // The directory of the local benchmark file
++	storage *workerErrorsHeldStorage
++}
++
++func newWorkerErrorsBenchmarkFixture(t *testing.T) *workerErrorsBenchmarkFixture {
++	saveWorkerErrorsGlobals(t)
++	dir := t.TempDir()
++	fixture := &workerErrorsBenchmarkFixture{t: t, local: filepath.Join(dir, "local")}
++	if err := os.MkdirAll(fixture.local, 0700); err != nil {
++		t.Fatalf("Failed to create the local directory: %v", err)
++	}
++	raw, err := CreateFileStorage(filepath.Join(dir, "storage"), false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the storage: %v", err)
++	}
++	fixture.storage = &workerErrorsHeldStorage{faultStorage: newFaultStorage(raw)}
++	return fixture
++}
++
++// run runs a benchmark of 16 chunks of 4 KB with 2 uploading and 2 downloading threads, so that more chunks than
++// threads are left when an early chunk fails.
++func (fixture *workerErrorsBenchmarkFixture) run() workerErrorsOutcome {
++	return runWorkerErrorsOperation(fixture.t, func() bool {
++		return Benchmark(fixture.local, fixture.storage, 64*1024, 4096, 16, 2, 2)
++	})
++}
++
++func (fixture *workerErrorsBenchmarkFixture) expectFileRemoved() {
++	fixture.t.Helper()
++	if _, err := os.Stat(filepath.Join(fixture.local, "benchmark.dat")); !os.IsNotExist(err) {
++		fixture.t.Fatalf("The local benchmark file has not been removed: %v", err)
++	}
++}
++
++// TestWorkerErrorsBenchmark fails the upload and the download of the first chunk of Benchmark while another
++// goroutine is running a job, which must return without blocking before Benchmark raises the failure.
++func TestWorkerErrorsBenchmark(t *testing.T) {
++	for _, name := range []string{"UploadLog", "UploadLogFunction", "DownloadLog", "DownloadLogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsBenchmarkFixture(t)
++			operation, logID := "UploadFile", "BENCHMARK_UPLOAD"
++			if strings.HasPrefix(name, "Download") {
++				operation, logID = "DownloadFile", "BENCHMARK_DOWNLOAD"
++			}
++			fixture.storage.operation, fixture.storage.failed = operation, "benchmark/chunk0"
++			fixture.storage.fail(operation, "benchmark/chunk0")
++			if strings.HasSuffix(name, "LogFunction") {
++				setWorkerErrorsLogFunction()
++			}
++
++			outcome := fixture.run()
++			running := atomic.LoadInt32(&fixture.storage.running)
++			expectWorkerErrorsException(t, outcome, logID)
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The chunk has not been attempted")
++			}
++			held, late := atomic.LoadInt32(&fixture.storage.held), atomic.LoadInt32(&fixture.storage.late)
++			if held != 1 || late != 0 {
++				t.Fatalf("Not exactly one job was running at the failure: %d held and %d late calls", held, late)
++			}
++			if running != 0 {
++				t.Fatalf("Benchmark has raised the failure with %d held calls still running", running)
++			}
++			fixture.expectFileRemoved()
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++func TestWorkerErrorsBenchmarkNoFaults(t *testing.T) {
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsBenchmarkFixture(t)
++	outcome := fixture.run()
++	if outcome.recovered != nil || !outcome.result {
++		t.Fatalf("The benchmark failed: %#v (result %t)", outcome.recovered, outcome.result)
++	}
++	fixture.expectFileRemoved()
++	waitForWorkerErrorsGoroutines(t, baseline)
++}
+diff -ruN -x .git a/src/duplicacy_workererrors_prune_test.go b/src/duplicacy_workererrors_prune_test.go
+--- a/src/duplicacy_workererrors_prune_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_workererrors_prune_test.go	2026-11-05 05:49:44.059243135 +0000
+@@ -0,0 +1,417 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// workerErrorsKeep removes the revisions older than a day, except the latest one when the prune isn't exclusive.
++var workerErrorsKeep = []string{"0:1"}
++
++// workerErrorsPruneFixture is a snapshot manager with the revisions 1 and 2 of vm1@host1 on a file storage wrapped by
++// faultStorage, as in TestPruneAndResurrect: revision 1 references the chunks 1 and 2, revision 2 the chunks 2 and 3.
++type workerErrorsPruneFixture struct {
++	t       *testing.T
++	testDir string
++	raw     *FileStorage
++	storage *faultStorage
++	manager *SnapshotManager
++	chunks  []string // The hashes of the chunks 1, 2 and 3
++	now     int64
++}
++
++func newWorkerErrorsPruneFixture(t *testing.T) *workerErrorsPruneFixture {
++	saveWorkerErrorsGlobals(t)
++	fixture := &workerErrorsPruneFixture{t: t, testDir: filepath.Join(t.TempDir(), "snapshot_test")}
++	fixture.manager = createTestSnapshotManager(fixture.testDir)
++	fixture.raw = fixture.manager.storage.(*FileStorage)
++	fixture.storage = newFaultStorage(fixture.raw)
++	fixture.manager.storage = fixture.storage
++	for i := 0; i < 3; i++ {
++		fixture.chunks = append(fixture.chunks, uploadRandomChunk(fixture.manager, 1024))
++	}
++	fixture.now = time.Now().Unix()
++	fixture.createRevision(1, -3, fixture.chunks[0], fixture.chunks[1])
++	fixture.createRevision(2, -2, fixture.chunks[1], fixture.chunks[2])
++	return fixture
++}
++
++// createRevision creates a revision of vm1@host1 that ends the given number of days from now.
++func (fixture *workerErrorsPruneFixture) createRevision(revision int, days int64, chunkHashes ...string) {
++	end := fixture.now + days*24*3600
++	createTestSnapshot(fixture.manager, "vm1@host1", revision, end-3600, end-60, chunkHashes, "tag")
++}
++
++// prune prunes vm1@host1 with 2 threads.
++func (fixture *workerErrorsPruneFixture) prune(revisions []int, retentions []string,
++	exclusive bool) workerErrorsOutcome {
++	return runWorkerErrorsOperation(fixture.t, func() bool {
++		return fixture.manager.PruneSnapshots("vm1@host1", "vm1@host1", revisions, nil, retentions, false,
++			exclusive, nil, false, false, false, 2)
++	})
++}
++
++// chunkPath returns the path of the chunk in the storage; it must be called before a GetFileInfo fault is set.
++func (fixture *workerErrorsPruneFixture) chunkPath(chunkHash string) string {
++	fixture.t.Helper()
++	chunkID := fixture.manager.config.GetChunkIDFromHash(chunkHash)
++	chunkPath, exist, _, err := fixture.raw.FindChunk(0, chunkID, false, false)
++	if err != nil || !exist {
++		fixture.t.Fatalf("Failed to find the chunk %s: %v (exist %t)", chunkID, err, exist)
++	}
++	return chunkPath
++}
++
++// revisionExists checks the revision file in the storage itself, bypassing the faults.
++func (fixture *workerErrorsPruneFixture) revisionExists(revision int) bool {
++	fixture.t.Helper()
++	exist, _, _, err := fixture.raw.GetFileInfo(0, fmt.Sprintf("snapshots/vm1@host1/%d", revision))
++	if err != nil {
++		fixture.t.Fatalf("Failed to check the revision %d: %v", revision, err)
++	}
++	return exist
++}
++
++// expectRevisions checks that the present revisions exist and the absent ones have been deleted.
++func (fixture *workerErrorsPruneFixture) expectRevisions(present []int, absent []int) {
++	fixture.t.Helper()
++	for _, revision := range present {
++		if !fixture.revisionExists(revision) {
++			fixture.t.Fatalf("The revision %d is missing", revision)
++		}
++	}
++	for _, revision := range absent {
++		if fixture.revisionExists(revision) {
++			fixture.t.Fatalf("The revision %d has not been deleted", revision)
++		}
++	}
++}
++
++// collectionSaved reports whether a fossil collection has been saved in the snapshot cache.
++func (fixture *workerErrorsPruneFixture) collectionSaved() bool {
++	fixture.t.Helper()
++	files, err := os.ReadDir(filepath.Join(fixture.testDir, "cache", "fossils"))
++	if err != nil && !os.IsNotExist(err) {
++		fixture.t.Fatalf("Failed to list the fossil collections: %v", err)
++	}
++	return len(files) > 0
++}
++
++// expectSuccess checks that the operation returned true without a panic.
++func (fixture *workerErrorsPruneFixture) expectSuccess(outcome workerErrorsOutcome) {
++	fixture.t.Helper()
++	if outcome.recovered != nil || !outcome.result {
++		fixture.t.Fatalf("The operation failed: %#v (result %t)", outcome.recovered, outcome.result)
++	}
++}
++
++// expectOperator checks the operator of the snapshot manager after an operation: an operator existing before it is
++// kept running without the failures and the fossils, otherwise the operator has been removed.
++func (fixture *workerErrorsPruneFixture) expectOperator(existing *ChunkOperator) {
++	fixture.t.Helper()
++	operator := fixture.manager.chunkOperator
++	if existing == nil {
++		if operator != nil {
++			fixture.t.Fatalf("The operator of the snapshot manager has not been removed")
++		}
++		return
++	}
++	if operator != existing || operator.isStopped() || operator.failures.hasFailed() || len(operator.fossils) != 0 ||
++		operator.catchDownloadFailures || atomic.LoadInt64(&operator.NumberOfFailedChunks) != 0 {
++		fixture.t.Fatalf("The existing operator of the snapshot manager has not been kept without its failures")
++	}
++}
++
++// expectPruned checks the storage after a successful prune of revision 1 that isn't exclusive: revision 2 is kept
++// with all its chunks, and the fossils of the chunk 1 and of the chunk sequence of revision 1 are collected.
++func (fixture *workerErrorsPruneFixture) expectPruned() {
++	fixture.t.Helper()
++	fixture.expectRevisions([]int{2}, []int{1})
++	if !fixture.collectionSaved() {
++		fixture.t.Fatalf("No fossil collection has been saved")
++	}
++	fixture.expectSuccess(runWorkerErrorsOperation(fixture.t, func() bool {
++		checkTestSnapshots(fixture.manager, 1, 2)
++		return true
++	}))
++	fixture.expectSuccess(runWorkerErrorsOperation(fixture.t, func() bool {
++		// No file of the fixture can be restored, so the content of every chunk of revision 2 is verified instead
++		return fixture.manager.CheckSnapshots("vm1@host1", []int{2}, "", false, false, false, true, false, false,
++			false, 2, false)
++	}))
++}
++
++// expectInjected checks that a fault has been hit.
++func (fixture *workerErrorsPruneFixture) expectInjected() {
++	fixture.t.Helper()
++	if fixture.storage.injectedCount() == 0 {
++		fixture.t.Fatalf("The failing storage call has not been attempted")
++	}
++}
++
++func TestWorkerErrorsPruneFossilize(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction", "ExistingOperator"} {
++		t.Run(name, func(t *testing.T) {
++			fixture := newWorkerErrorsPruneFixture(t)
++			fixture.storage.fail("MoveFile", fixture.chunkPath(fixture.chunks[0]))
++			var operator *ChunkOperator
++			if name == "ExistingOperator" {
++				fixture.manager.CreateChunkOperator(false, false, 2, false)
++				operator = fixture.manager.chunkOperator
++				t.Cleanup(operator.stopWorkers)
++				// A fossil collected before the prune, so that clearing the fossils is checked even if the failed
++				// prune has skipped every task that would add one
++				operator.fossils = []string{"chunks/workererrors.fsl"}
++			}
++			baseline := runtime.NumGoroutine()
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			// The chunk 1 can't be turned into a fossil and no fossil of it exists
++			expectWorkerErrorsException(t, fixture.prune(nil, workerErrorsKeep, false), "CHUNK_DELETE")
++			LogFunction = nil
++			fixture.expectInjected()
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectRevisions([]int{1, 2}, nil)
++			if fixture.collectionSaved() {
++				t.Fatalf("A fossil collection has been saved after the failure")
++			}
++			fixture.expectOperator(operator)
++
++			fixture.storage.clearFaults()
++			fixture.expectSuccess(fixture.prune(nil, workerErrorsKeep, false))
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectOperator(operator)
++			fixture.expectPruned()
++		})
++	}
++}
++
++func TestWorkerErrorsPruneDownload(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction", "ExistingOperator"} {
++		t.Run(name, func(t *testing.T) {
++			fixture := newWorkerErrorsPruneFixture(t)
++			snapshot := fixture.manager.DownloadSnapshot("vm1@host1", 2)
++			// The chunks of the fixture and the chunks of the chunk sequences of both revisions
++			chunks := append(append([]string{}, fixture.chunks...), snapshot.ChunkSequence...)
++			chunks = append(chunks, fixture.manager.DownloadSnapshot("vm1@host1", 1).ChunkSequence...)
++			fixture.storage.fail("DownloadFile", fixture.chunkPath(snapshot.ChunkSequence[0]))
++			var operator *ChunkOperator
++			if name == "ExistingOperator" {
++				fixture.manager.CreateChunkOperator(false, false, 2, false)
++				operator = fixture.manager.chunkOperator
++				t.Cleanup(operator.stopWorkers)
++			}
++			baseline := runtime.NumGoroutine()
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			// The chunk sequence of revision 2, which is kept, is downloaded by a task of the operator of the snapshot
++			// manager before any chunk is turned into a fossil
++			expectWorkerErrorsException(t, fixture.prune(nil, workerErrorsKeep, false), "DOWNLOAD_CHUNK")
++			LogFunction = nil
++			fixture.expectInjected()
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectRevisions([]int{1, 2}, nil)
++			// No chunk of the revisions has been turned into a fossil: chunkPath fails if the chunk itself is missing
++			for _, chunk := range chunks {
++				fixture.chunkPath(chunk)
++			}
++			if fixture.collectionSaved() {
++				t.Fatalf("A fossil collection has been saved after the failure")
++			}
++			fixture.expectOperator(operator)
++
++			fixture.storage.clearFaults()
++			fixture.expectSuccess(fixture.prune(nil, workerErrorsKeep, false))
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectOperator(operator)
++			fixture.expectPruned()
++		})
++	}
++}
++
++func TestWorkerErrorsPruneFossilizeLookup(t *testing.T) {
++	fixture := newWorkerErrorsPruneFixture(t)
++	chunkPath := fixture.chunkPath(fixture.chunks[0])
++	// FindChunk looks for the chunk at the nesting levels 2 and 3, chunks/ab/cd/efgh... and chunks/ab/cd/ef/gh...,
++	// and for its fossil at the same paths with .fsl; the prefix up to ef covers them all.  FindChunk treats the
++	// failed GetFileInfo as a missing chunk, so the fossilize task finds neither the chunk nor its fossil.
++	fixture.storage.fail("GetFileInfo", chunkPath[:strings.LastIndex(chunkPath, "/")+3])
++	baseline := runtime.NumGoroutine()
++	expectWorkerErrorsException(t, fixture.prune(nil, workerErrorsKeep, false), "CHUNK_FIND")
++	fixture.expectInjected()
++	waitForWorkerErrorsGoroutines(t, baseline)
++	fixture.expectRevisions([]int{1, 2}, nil)
++	if fixture.collectionSaved() {
++		t.Fatalf("A fossil collection has been saved after the failure")
++	}
++	fixture.expectOperator(nil)
++}
++
++func TestWorkerErrorsPruneResurrect(t *testing.T) {
++	fixture := newWorkerErrorsPruneFixture(t)
++	fossilPath := fixture.chunkPath(fixture.chunks[0]) + ".fsl"
++	fixture.expectSuccess(fixture.prune(nil, workerErrorsKeep, false))
++	// Revision 4 references the chunk 1 again, so the next prune resurrects its fossil from the collection
++	fixture.createRevision(4, 1, uploadRandomChunk(fixture.manager, 1024), fixture.chunks[0])
++	fixture.storage.fail("MoveFile", fossilPath)
++	baseline := runtime.NumGoroutine()
++	// No revision is to be deleted, so the prune returns without waiting for the resurrection; its failure is
++	// raised when the operator is stopped
++	expectWorkerErrorsException(t, fixture.prune(nil, nil, false), "FOSSIL_RESURRECT")
++	fixture.expectInjected()
++	waitForWorkerErrorsGoroutines(t, baseline)
++	fixture.expectRevisions([]int{2, 4}, []int{1})
++	fixture.expectOperator(nil)
++}
++
++func TestWorkerErrorsPruneExclusiveDelete(t *testing.T) {
++	fixture := newWorkerErrorsPruneFixture(t)
++	chunkPath := fixture.chunkPath(fixture.chunks[0])
++	fixture.storage.fail("DeleteFile", chunkPath)
++	baseline := runtime.NumGoroutine()
++	// A chunk that can't be deleted is only a warning
++	fixture.expectSuccess(fixture.prune([]int{1}, nil, true))
++	fixture.expectInjected()
++	waitForWorkerErrorsGoroutines(t, baseline)
++	fixture.expectRevisions([]int{2}, []int{1})
++	if exist, _, _, err := fixture.raw.GetFileInfo(0, chunkPath); err != nil || !exist {
++		t.Fatalf("The chunk 1 that failed to be deleted is missing: %v", err)
++	}
++	fixture.expectOperator(nil)
++}
++
++func TestWorkerErrorsPruneNoFaults(t *testing.T) {
++	fixture := newWorkerErrorsPruneFixture(t)
++	baseline := runtime.NumGoroutine()
++	fixture.expectSuccess(fixture.prune(nil, workerErrorsKeep, false))
++	waitForWorkerErrorsGoroutines(t, baseline)
++	fixture.expectOperator(nil)
++	fixture.expectPruned()
++}
++
++// testWorkerErrorsPruneAfter fails the download of the chunk sequence of revision 2 by the operation, which downloads
++// it by a task of the operator of the snapshot manager, and then checks that a prune doesn't hang on the operator.
++func testWorkerErrorsPruneAfter(t *testing.T, operation func(fixture *workerErrorsPruneFixture) bool) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			fixture := newWorkerErrorsPruneFixture(t)
++			snapshot := fixture.manager.DownloadSnapshot("vm1@host1", 2)
++			fixture.storage.fail("DownloadFile", fixture.chunkPath(snapshot.ChunkSequence[0]))
++			baseline := runtime.NumGoroutine()
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				return operation(fixture)
++			})
++			LogFunction = nil
++			expectWorkerErrorsException(t, outcome, "DOWNLOAD_CHUNK")
++			fixture.expectInjected()
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectOperator(nil)
++
++			// A stopped operator left in the snapshot manager would make the prune wait for tasks that no goroutine
++			// runs
++			fixture.storage.clearFaults()
++			fixture.expectSuccess(fixture.prune(nil, workerErrorsKeep, false))
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectOperator(nil)
++			fixture.expectPruned()
++		})
++	}
++}
++
++func TestWorkerErrorsPruneAfterListing(t *testing.T) {
++	testWorkerErrorsPruneAfter(t, func(fixture *workerErrorsPruneFixture) bool {
++		fixture.manager.ListSnapshots("vm1@host1", []int{2}, "", false, true)
++		return true
++	})
++}
++
++func TestWorkerErrorsPruneAfterHistory(t *testing.T) {
++	testWorkerErrorsPruneAfter(t, func(fixture *workerErrorsPruneFixture) bool {
++		return fixture.manager.ShowHistory(fixture.testDir, "vm1@host1", []int{2}, "file", false)
++	})
++}
++
++// createPrintableRevision creates the revision 1 of print@host1 that PrintFile can print, unlike the revisions of
++// createTestSnapshot, which have no file and length sequences; it references the chunk 1 and lists no files.  It
++// returns the hash of the chunk of its chunk sequence.
++func (fixture *workerErrorsPruneFixture) createPrintableRevision() string {
++	fixture.t.Helper()
++	manager := fixture.manager
++	chunkHashes, err := json.Marshal([]string{hex.EncodeToString([]byte(fixture.chunks[0]))})
++	if err != nil {
++		fixture.t.Fatalf("Failed to encode the chunk hashes: %v", err)
++	}
++	lengths, err := json.Marshal([]int{1024})
++	if err != nil {
++		fixture.t.Fatalf("Failed to encode the chunk lengths: %v", err)
++	}
++	snapshot := &Snapshot{
++		ID:             "print@host1",
++		Revision:       1,
++		StartTime:      fixture.now - 3600,
++		EndTime:        fixture.now - 60,
++		FileSequence:   []string{uploadTestChunk(manager, []byte("[]"))},
++		ChunkSequence:  []string{uploadTestChunk(manager, chunkHashes)},
++		LengthSequence: []string{uploadTestChunk(manager, lengths)},
++	}
++	description, err := snapshot.MarshalJSON()
++	if err != nil {
++		fixture.t.Fatalf("Failed to encode the snapshot: %v", err)
++	}
++	if err = manager.storage.CreateDirectory(0, "snapshots/print@host1"); err != nil {
++		fixture.t.Fatalf("Failed to create the directory of print@host1: %v", err)
++	}
++	if !manager.UploadFile("snapshots/print@host1/1", "snapshots/print@host1/1", description) {
++		fixture.t.Fatalf("Failed to upload the revision 1 of print@host1")
++	}
++	return snapshot.ChunkSequence[0]
++}
++
++func TestWorkerErrorsPrintAfterFailure(t *testing.T) {
++	fixture := newWorkerErrorsPruneFixture(t)
++	fixture.storage.fail("DownloadFile", fixture.chunkPath(fixture.createPrintableRevision()))
++	t.Cleanup(func() {
++		if operator := fixture.manager.chunkOperator; operator != nil {
++			operator.stopWorkers()
++		}
++	})
++	printFile := func() workerErrorsOutcome {
++		return runWorkerErrorsOperation(t, func() bool {
++			return fixture.manager.PrintFile("print@host1", 1, "")
++		})
++	}
++	// The chunk sequence is downloaded by a task of the operator of the snapshot manager, which outlives PrintFile
++	// with the failure of that task
++	expectWorkerErrorsException(t, printFile(), "DOWNLOAD_CHUNK")
++	fixture.expectInjected()
++	operator := fixture.manager.chunkOperator
++	if operator == nil || !operator.failures.hasFailed() {
++		t.Fatalf("The operator of the snapshot manager has not kept the failure of the download")
++	}
++
++	fixture.storage.clearFaults()
++	// The earlier failure must not be raised again
++	if outcome := printFile(); outcome.recovered != nil || !outcome.result {
++		t.Fatalf("Unexpected outcome of the print: %#v (result %t)", outcome.recovered, outcome.result)
++	}
++	if fixture.manager.chunkOperator != operator || operator.failures.hasFailed() {
++		t.Fatalf("The operator of the snapshot manager has not been kept without the earlier failure")
++	}
++}
+diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererrors_test.go
+--- a/src/duplicacy_workererrors_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_workererrors_test.go	2026-11-05 05:49:44.059243135 +0000
+@@ -0,0 +1,1389 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	crypto_rand "crypto/rand"
++	"fmt"
++	"math/rand"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// faultStorage wraps a file storage and fails the calls of its operations on the paths under the given prefixes
++// and the lookups of the given chunks.
++type faultStorage struct {
++	Storage
++	lock     sync.Mutex
++	faults   map[string][]string // Path prefixes by operation name
++	chunkIDs []string
++	uploads  int                    // The number of successful uploads
++	injected int                    // The number of injected failures
++	delays   map[string]func() bool // Conditions that DownloadFile waits for, by path prefix
++	delayed  int                    // The number of delayed downloads
++	late     int                    // The number of delayed downloads whose condition didn't hold in 10 seconds
++}
++
++func newFaultStorage(storage *FileStorage) *faultStorage {
++	wrapper := &faultStorage{Storage: storage, faults: map[string][]string{}, delays: map[string]func() bool{}}
++	// FindChunk (GetFileInfo) and SetNestingLevels (GetFileInfo, DownloadFile and CreateDirectory) call the storage
++	// through DerivedStorage and would bypass the wrapper otherwise; CreateDirectory is not intercepted
++	storage.DerivedStorage = wrapper
++	return wrapper
++}
++
++// fail makes every call of the operation (UploadFile, DownloadFile, DeleteFile, MoveFile, GetFileInfo or ListFiles)
++// on a path starting with prefix return an error.  Some callers drop the error: FindChunk treats a failed
++// GetFileInfo as a missing chunk and SetNestingLevels falls back to the default levels, so chunk lookups are failed
++// with failFindChunk instead.
++func (storage *faultStorage) fail(operation string, prefix string) {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	storage.faults[operation] = append(storage.faults[operation], prefix)
++}
++
++// failFindChunk makes every lookup of the chunk fail.
++func (storage *faultStorage) failFindChunk(chunkID string) {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	storage.chunkIDs = append(storage.chunkIDs, chunkID)
++}
++
++// delayDownload makes every DownloadFile call on a path starting with prefix wait until ready returns true, for 10
++// seconds at most, and then for 200 ms more, so that the operation goes on past the point that ready marks.
++func (storage *faultStorage) delayDownload(prefix string, ready func() bool) {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	storage.delays[prefix] = ready
++}
++
++func (storage *faultStorage) delayedCount() int {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	return storage.delayed
++}
++
++func (storage *faultStorage) lateCount() int {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	return storage.late
++}
++
++// wait delays a download of the path as set by delayDownload.
++func (storage *faultStorage) wait(filePath string) {
++	storage.lock.Lock()
++	var ready func() bool
++	for prefix, condition := range storage.delays {
++		if strings.HasPrefix(filePath, prefix) {
++			ready = condition
++			storage.delayed++
++		}
++	}
++	storage.lock.Unlock()
++	if ready == nil {
++		return
++	}
++	for deadline := time.Now().Add(10 * time.Second); !ready(); time.Sleep(10 * time.Millisecond) {
++		if time.Now().After(deadline) {
++			storage.lock.Lock()
++			storage.late++
++			storage.lock.Unlock()
++			return
++		}
++	}
++	time.Sleep(200 * time.Millisecond)
++}
++
++func (storage *faultStorage) clearFaults() {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	storage.faults, storage.chunkIDs, storage.delays = map[string][]string{}, nil, map[string]func() bool{}
++}
++
++func (storage *faultStorage) uploadCount() int {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	return storage.uploads
++}
++
++func (storage *faultStorage) injectedCount() int {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	return storage.injected
++}
++
++func (storage *faultStorage) check(operation string, filePath string) error {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	for _, prefix := range storage.faults[operation] {
++		if strings.HasPrefix(filePath, prefix) {
++			storage.injected++
++			return fmt.Errorf("injected %s failure for %s", operation, filePath)
++		}
++	}
++	return nil
++}
++
++func (storage *faultStorage) FindChunk(threadIndex int, chunkID string, isFossil bool,
++	isMetadata bool) (filePath string, exist bool, size int64, err error) {
++	storage.lock.Lock()
++	failed := false
++	for _, id := range storage.chunkIDs {
++		failed = failed || id == chunkID
++	}
++	storage.lock.Unlock()
++	if failed {
++		return "", false, 0, fmt.Errorf("injected lookup failure for %s", chunkID)
++	}
++	return storage.Storage.FindChunk(threadIndex, chunkID, isFossil, isMetadata)
++}
++
++func (storage *faultStorage) ListFiles(threadIndex int, dir string) (files []string, sizes []int64, err error) {
++	if err = storage.check("ListFiles", dir); err != nil {
++		return nil, nil, err
++	}
++	return storage.Storage.ListFiles(threadIndex, dir)
++}
++
++func (storage *faultStorage) DeleteFile(threadIndex int, filePath string) (err error) {
++	if err = storage.check("DeleteFile", filePath); err != nil {
++		return err
++	}
++	return storage.Storage.DeleteFile(threadIndex, filePath)
++}
++
++func (storage *faultStorage) MoveFile(threadIndex int, from string, to string) (err error) {
++	if err = storage.check("MoveFile", from); err != nil {
++		return err
++	}
++	return storage.Storage.MoveFile(threadIndex, from, to)
++}
++
++func (storage *faultStorage) GetFileInfo(threadIndex int, filePath string) (exist bool, isDir bool, size int64, err error) {
++	if err = storage.check("GetFileInfo", filePath); err != nil {
++		return false, false, 0, err
++	}
++	return storage.Storage.GetFileInfo(threadIndex, filePath)
++}
++
++func (storage *faultStorage) DownloadFile(threadIndex int, filePath string, chunk *Chunk) (err error) {
++	if err = storage.check("DownloadFile", filePath); err != nil {
++		return err
++	}
++	storage.wait(filePath)
++	return storage.Storage.DownloadFile(threadIndex, filePath, chunk)
++}
++
++func (storage *faultStorage) UploadFile(threadIndex int, filePath string, content []byte) (err error) {
++	if err = storage.check("UploadFile", filePath); err != nil {
++		return err
++	}
++	if err = storage.Storage.UploadFile(threadIndex, filePath, content); err == nil {
++		storage.lock.Lock()
++		storage.uploads++
++		storage.lock.Unlock()
++	}
++	return err
++}
++
++// saveWorkerErrorsGlobals resets the global state touched by expected errors and restores it after the test.
++func saveWorkerErrorsGlobals(t *testing.T) {
++	savedTestingT, savedLogFunction, savedLoggingLevel := testingT, LogFunction, loggingLevel
++	savedRunAtError, savedPreferencePath := RunAtError, preferencePath
++	t.Cleanup(func() {
++		testingT, LogFunction, loggingLevel = savedTestingT, savedLogFunction, savedLoggingLevel
++		RunAtError, preferencePath = savedRunAtError, savedPreferencePath
++	})
++	// Expected errors would fail the test through testingT, as in verifyChunk
++	testingT = nil
++	LogFunction = nil
++	SetLoggingLevel(ERROR)
++	for _, name := range []string{"DUPLICACY_FAIL_CHUNK", "DUPLICACY_FAIL_SNAPSHOT"} {
++		// t.Setenv restores the variable after the test; the variable must be absent, not empty
++		t.Setenv(name, "")
++		os.Unsetenv(name)
++	}
++}
++
++// setWorkerErrorsLogFunction installs a log function that returns instead of panicking on errors.
++func setWorkerErrorsLogFunction() {
++	LogFunction = func(level int, logID string, message string) {}
++}
++
++// workerErrorsOutcome is what an operation run by runWorkerErrorsOperation returned or panicked with.
++type workerErrorsOutcome struct {
++	result    bool
++	recovered interface{}
++}
++
++// runWorkerErrorsOperation runs the operation in a new goroutine and fails the test if it hangs.
++func runWorkerErrorsOperation(t *testing.T, operation func() bool) workerErrorsOutcome {
++	t.Helper()
++	done := make(chan workerErrorsOutcome, 1)
++	go func() {
++		var outcome workerErrorsOutcome
++		defer func() {
++			outcome.recovered = recover()
++			done <- outcome
++		}()
++		outcome.result = operation()
++	}()
++	select {
++	case outcome := <-done:
++		return outcome
++	case <-time.After(60 * time.Second):
++		t.Fatalf("The operation did not return in 60 seconds:\n%s", workerErrorsStacks())
++	}
++	return workerErrorsOutcome{}
++}
++
++func expectWorkerErrorsException(t *testing.T, outcome workerErrorsOutcome, logID string) {
++	t.Helper()
++	exception, ok := outcome.recovered.(Exception)
++	if !ok || exception.LogID != logID || exception.Level != ERROR {
++		t.Fatalf("Expected an Exception with the log id %s, got %#v (result %t)", logID, outcome.recovered,
++			outcome.result)
++	}
++}
++
++// waitForWorkerErrorsGoroutines waits up to 2 seconds for the number of goroutines to drop to the baseline.
++func waitForWorkerErrorsGoroutines(t *testing.T, baseline int) {
++	t.Helper()
++	deadline := time.Now().Add(2 * time.Second)
++	for runtime.NumGoroutine() > baseline {
++		if time.Now().After(deadline) {
++			t.Fatalf("%d goroutines are running instead of %d:\n%s", runtime.NumGoroutine(), baseline,
++				workerErrorsStacks())
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++}
++
++func workerErrorsStacks() string {
++	buffer := make([]byte, 1<<20)
++	return string(buffer[:runtime.Stack(buffer, true)])
++}
++
++// workerErrorsFixture is a repository with three random files backed up to a file storage wrapped by faultStorage.
++type workerErrorsFixture struct {
++	t           *testing.T
++	repository  string
++	raw         *FileStorage
++	storage     *faultStorage
++	manager     *BackupManager
++	failedFiles int // The number of files that the last restore failed to restore
++}
++
++// newWorkerErrorsFixture creates the fixture; with separateMetadata metadata chunks are stored under metadata/.
++func newWorkerErrorsFixture(t *testing.T, separateMetadata bool) *workerErrorsFixture {
++	saveWorkerErrorsGlobals(t)
++	dir := t.TempDir()
++	fixture := &workerErrorsFixture{t: t, repository: filepath.Join(dir, "repository")}
++	for _, subdir := range []string{"dir1", ".duplicacy"} {
++		if err := os.MkdirAll(filepath.Join(fixture.repository, subdir), 0700); err != nil {
++			t.Fatalf("Failed to create the repository: %v", err)
++		}
++	}
++	for _, file := range []string{"file1", "file2", "dir1/file3"} {
++		createRandomFile(filepath.Join(fixture.repository, file), 1000000)
++	}
++	raw, err := CreateFileStorage(filepath.Join(dir, "storage"), false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the storage: %v", err)
++	}
++	if !ConfigStorage(raw, 16384, 100, 64*1024, 256*1024, 16*1024, "", nil, false, "", 0, 0) {
++		t.Fatalf("Failed to initialize the storage")
++	}
++	if separateMetadata {
++		// The nesting file must exist before the storage is loaded by CreateBackupManager, as in TestBackupManager
++		nesting := []byte(`{"read-levels":[1],"write-level":1,"separate-metadata":true}`)
++		if err = raw.UploadFile(0, "nesting", nesting); err != nil {
++			t.Fatalf("Failed to upload the nesting file: %v", err)
++		}
++	}
++	fixture.raw = raw
++	fixture.storage = newFaultStorage(raw)
++	SetDuplicacyPreferencePath(filepath.Join(fixture.repository, ".duplicacy"))
++	fixture.manager = CreateBackupManager("host1", fixture.storage, fixture.repository, "", "", "", false)
++	if fixture.manager == nil || !fixture.manager.SetupSnapshotCache("default") {
++		t.Fatalf("Failed to create the backup manager")
++	}
++	return fixture
++}
++
++func (fixture *workerErrorsFixture) backup(top string, quickMode bool) workerErrorsOutcome {
++	return runWorkerErrorsOperation(fixture.t, func() bool {
++		// The metadata chunk size of 65536 (the minimum chunk is 16384 bytes) keeps each metadata sequence of the
++		// small test repositories in one chunk
++		return fixture.manager.Backup(top, quickMode, 2, "test", false, false, 0, false, 65536, 1024)
++	})
++}
++
++// revisionExists checks the storage itself, bypassing the faults.
++func (fixture *workerErrorsFixture) revisionExists(revision int) bool {
++	exist, _, _, err := fixture.raw.GetFileInfo(0, fmt.Sprintf("snapshots/host1/%d", revision))
++	if err != nil {
++		fixture.t.Fatalf("Failed to check the revision %d: %v", revision, err)
++	}
++	return exist
++}
++
++func (fixture *workerErrorsFixture) expectSuccess(outcome workerErrorsOutcome, revision int) {
++	fixture.t.Helper()
++	if outcome.recovered != nil || !outcome.result || !fixture.revisionExists(revision) {
++		fixture.t.Fatalf("The backup of revision %d failed: %#v (result %t)", revision, outcome.recovered,
++			outcome.result)
++	}
++}
++
++// stopSnapshotOperator stops the operator created by the snapshot manager during preparation, so that its worker
++// neither enters the baseline nor outlives the test.
++func (fixture *workerErrorsFixture) stopSnapshotOperator() {
++	if operator := fixture.manager.SnapshotManager.chunkOperator; operator != nil {
++		operator.Stop()
++		fixture.manager.SnapshotManager.chunkOperator = nil
++	}
++}
++
++// restore restores the revision 1 to top with 2 threads, keeping the number of failed files in failedFiles.
++func (fixture *workerErrorsFixture) restore(top string, quickMode bool, allowFailures bool) workerErrorsOutcome {
++	fixture.failedFiles = -1
++	return runWorkerErrorsOperation(fixture.t, func() bool {
++		fixture.failedFiles = fixture.manager.Restore(top, 1, true, quickMode, 2, true, false, false, false, nil,
++			allowFailures)
++		return fixture.failedFiles == 0
++	})
++}
++
++// expectRestored checks that the restore returned without a panic and without failed files.
++func (fixture *workerErrorsFixture) expectRestored(outcome workerErrorsOutcome) {
++	fixture.t.Helper()
++	if outcome.recovered != nil || fixture.failedFiles != 0 {
++		fixture.t.Fatalf("The restore failed: %#v (%d failed files)", outcome.recovered, fixture.failedFiles)
++	}
++}
++
++// outstandingChunks returns the number of the chunks that GetChunk has handed out and
++// that have not been returned to the chunk pool.  It is exact as long as the pool is not
++// full, since PutChunk discards a chunk then; the pool holds 16 chunks per CPU.
++func (fixture *workerErrorsFixture) outstandingChunks() int32 {
++	config := fixture.manager.config
++	return atomic.LoadInt32(&config.numberOfChunks) - int32(len(config.chunkPool))
++}
++
++// check checks the revision 1 with 2 threads: its files with checkFiles, its chunks otherwise.
++func (fixture *workerErrorsFixture) check(checkFiles bool, allowFailures bool) workerErrorsOutcome {
++	return runWorkerErrorsOperation(fixture.t, func() bool {
++		return fixture.manager.SnapshotManager.CheckSnapshots("host1", []int{1}, "", false, false, checkFiles,
++			!checkFiles, false, false, false, 2, allowFailures)
++	})
++}
++
++// revisionSnapshot downloads the revision with its chunk sequences through a temporary operator.
++func (fixture *workerErrorsFixture) revisionSnapshot(revision int) *Snapshot {
++	fixture.t.Helper()
++	manager := fixture.manager.SnapshotManager
++	snapshot := manager.DownloadSnapshot("host1", revision)
++	if snapshot == nil {
++		fixture.t.Fatalf("Failed to download the revision %d", revision)
++	}
++	manager.CreateChunkOperator(false, false, 1, false)
++	defer fixture.stopSnapshotOperator()
++	manager.DownloadSnapshotSequences(snapshot)
++	return snapshot
++}
++
++// findFile returns the entry of the file in the snapshot, listed through a temporary operator.
++func (fixture *workerErrorsFixture) findFile(snapshot *Snapshot, file string) *Entry {
++	fixture.t.Helper()
++	manager := fixture.manager.SnapshotManager
++	manager.CreateChunkOperator(false, false, 1, false)
++	defer fixture.stopSnapshotOperator()
++	entry := manager.FindFile(snapshot, file, false)
++	if entry == nil {
++		fixture.t.Fatalf("The file %s is not in the revision %d", file, snapshot.Revision)
++	}
++	return entry
++}
++
++// chunkPath returns the path of the chunk in the storage, bypassing the faults.
++func (fixture *workerErrorsFixture) chunkPath(chunkHash string, isMetadata bool) string {
++	fixture.t.Helper()
++	chunkID := fixture.manager.config.GetChunkIDFromHash(chunkHash)
++	chunkPath, exist, _, err := fixture.raw.FindChunk(0, chunkID, false, isMetadata)
++	if err != nil || !exist {
++		fixture.t.Fatalf("Failed to find the chunk %s: %v (exist %t)", chunkID, err, exist)
++	}
++	return chunkPath
++}
++
++// failDownload makes the downloads of the chunk fail; a metadata chunk is also removed from the snapshot cache,
++// since its cached copy would be read instead of the storage.
++func (fixture *workerErrorsFixture) failDownload(chunkHash string, isMetadata bool) {
++	fixture.t.Helper()
++	fixture.storage.fail("DownloadFile", fixture.chunkPath(chunkHash, isMetadata))
++	if !isMetadata {
++		return
++	}
++	chunkID := fixture.manager.config.GetChunkIDFromHash(chunkHash)
++	cache := fixture.manager.snapshotCache
++	cachedPath, exist, _, err := cache.FindChunk(0, chunkID, false, true)
++	if err != nil {
++		fixture.t.Fatalf("Failed to find the cached chunk %s: %v", chunkID, err)
++	}
++	if exist {
++		if err = cache.DeleteFile(0, cachedPath); err != nil {
++			fixture.t.Fatalf("Failed to delete the cached chunk %s: %v", chunkID, err)
++		}
++	}
++}
++
++// existingSnapshotOperator creates the operator of the snapshot manager before an operation, as a program reusing
++// the manager would, and returns it.
++func (fixture *workerErrorsFixture) existingSnapshotOperator() *ChunkOperator {
++	fixture.manager.SnapshotManager.CreateChunkOperator(false, false, 1, false)
++	return fixture.manager.SnapshotManager.chunkOperator
++}
++
++// expectSnapshotOperator checks the operator of the snapshot manager after a failed operation: an operator existing
++// before it is kept without the failures, otherwise the operator has been removed.
++func (fixture *workerErrorsFixture) expectSnapshotOperator(existing *ChunkOperator) {
++	fixture.t.Helper()
++	operator := fixture.manager.SnapshotManager.chunkOperator
++	if existing == nil {
++		if operator != nil {
++			fixture.t.Fatalf("The operator of the snapshot manager has not been removed")
++		}
++		return
++	}
++	if operator != existing || operator.failures.hasFailed() || operator.catchDownloadFailures ||
++		atomic.LoadInt64(&operator.NumberOfFailedChunks) != 0 {
++		fixture.t.Fatalf("The existing operator of the snapshot manager has not been restored")
++	}
++}
++
++func TestWorkerErrorsChunkOperator(t *testing.T) {
++	for _, name := range []string{"UploadFailure", "FindChunkFailure", "CompletionPanic"} {
++		t.Run(name, func(t *testing.T) {
++			saveWorkerErrorsGlobals(t)
++			raw, err := CreateFileStorage(t.TempDir(), false, 2)
++			if err != nil {
++				t.Fatalf("Failed to create the storage: %v", err)
++			}
++			for _, dir := range []string{"chunks", "snapshots"} {
++				if err = raw.CreateDirectory(0, dir); err != nil {
++					t.Fatalf("Failed to create the directory %s: %v", dir, err)
++				}
++			}
++			storage := newFaultStorage(raw)
++			config := CreateConfig()
++			config.MinimumChunkSize = 100
++			config.chunkPool = make(chan *Chunk, 20)
++			var chunks []*Chunk
++			for i := 0; i < 10; i++ {
++				content := make([]byte, 1000)
++				if _, err = crypto_rand.Read(content); err != nil {
++					t.Fatalf("Failed to generate the content: %v", err)
++				}
++				chunk := CreateChunk(config, true)
++				chunk.Reset(true)
++				chunk.Write(content)
++				chunks = append(chunks, chunk)
++			}
++			var expected interface{} = "injected completion failure"
++			completionFunc := func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int) {}
++			if name == "UploadFailure" {
++				chunkPath, _, _, err := raw.FindChunk(0, chunks[5].GetID(), false, false)
++				if err != nil {
++					t.Fatalf("Failed to find the chunk path: %v", err)
++				}
++				storage.fail("UploadFile", chunkPath)
++			} else if name == "FindChunkFailure" {
++				storage.failFindChunk(chunks[5].GetID())
++			} else {
++				completionFunc = func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int) {
++					if chunkIndex == 5 {
++						panic(expected)
++					}
++				}
++			}
++			baseline := runtime.NumGoroutine()
++			operator := CreateChunkOperator(config, storage, nil, false, false, 2, false)
++			operator.catchUploadFailures = true
++			operator.UploadCompletionFunc = completionFunc
++			outcomes := []workerErrorsOutcome{runWorkerErrorsOperation(t, func() bool {
++				for i, chunk := range chunks {
++					operator.Upload(chunk, i, false)
++				}
++				operator.WaitForCompletion()
++				return true
++			})}
++			outcomes = append(outcomes, runWorkerErrorsOperation(t, func() bool {
++				operator.Stop()
++				return true
++			}))
++			for _, outcome := range outcomes {
++				if name != "CompletionPanic" {
++					expectWorkerErrorsException(t, outcome, "UPLOAD_CHUNK")
++				} else if outcome.recovered != expected {
++					t.Fatalf("Expected the panic %v, got %#v", expected, outcome.recovered)
++				}
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// expectWorkerErrorsFailure checks the outcome of a failed operation: an Exception with
++// the log id when the log function panics, or false without a panic when LogFunction
++// only returns.
++func expectWorkerErrorsFailure(t *testing.T, mode string, outcome workerErrorsOutcome,
++	logID string) {
++	t.Helper()
++	if mode == "Log" {
++		expectWorkerErrorsException(t, outcome, logID)
++	} else if outcome.recovered != nil || outcome.result {
++		t.Fatalf("Expected false without a panic, got %#v (result %t)", outcome.recovered,
++			outcome.result)
++	}
++}
++
++func TestWorkerErrorsRecordFirst(t *testing.T) {
++	t.Run("Sequential", func(t *testing.T) {
++		failures := newWorkerErrors()
++		failures.record(Exception{Level: ERROR, LogID: "FIRST", Message: "first"})
++		failures.record(Exception{Level: ERROR, LogID: "SECOND", Message: "second"})
++		if !failures.hasFailed() {
++			t.Fatalf("The panic has not been recorded")
++		}
++		outcome := runWorkerErrorsOperation(t, func() bool {
++			failures.raise()
++			return true
++		})
++		expectWorkerErrorsException(t, outcome, "FIRST")
++	})
++	t.Run("Concurrent", func(t *testing.T) {
++		failures := newWorkerErrors()
++		expected := map[string]bool{}
++		start := make(chan struct{})
++		var ready, finished sync.WaitGroup
++		for i := 0; i < 8; i++ {
++			logID := fmt.Sprintf("WORKER%d", i)
++			expected[logID] = true
++			ready.Add(1)
++			finished.Add(1)
++			go func() {
++				defer finished.Done()
++				ready.Done()
++				<-start
++				failures.record(Exception{Level: ERROR, LogID: logID, Message: "concurrent"})
++			}()
++		}
++		ready.Wait()
++		close(start)
++		finished.Wait()
++		raise := func() workerErrorsOutcome {
++			return runWorkerErrorsOperation(t, func() bool {
++				failures.raise()
++				return true
++			})
++		}
++		first, second := raise(), raise()
++		exception, ok := first.recovered.(Exception)
++		if !ok || !expected[exception.LogID] {
++			t.Fatalf("Expected an Exception of a worker, got %#v", first.recovered)
++		}
++		if second.recovered != first.recovered {
++			t.Fatalf("The panics differ: %#v and %#v", first.recovered, second.recovered)
++		}
++	})
++}
++
++func TestWorkerErrorsBackupChunkUpload(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			// Without encryption the same files give the same chunk ids in any storage,
++			// so the chunk in the middle of the probe backup is the one to fail in the
++			// backup under test
++			probe := newWorkerErrorsFixture(t, false)
++			probe.expectSuccess(probe.backup(probe.repository, false), 1)
++			snapshot := probe.manager.SnapshotManager.DownloadSnapshot("host1", 1)
++			if snapshot == nil {
++				t.Fatalf("Failed to download the revision 1")
++			}
++			probe.manager.SnapshotManager.GetSnapshotChunks(snapshot, true)
++			if len(snapshot.ChunkHashes) < 6 {
++				t.Fatalf("Expected at least 6 file chunks, got %d", len(snapshot.ChunkHashes))
++			}
++			chunkHash := snapshot.ChunkHashes[len(snapshot.ChunkHashes)/2]
++			chunkID := probe.manager.config.GetChunkIDFromHash(chunkHash)
++			probe.stopSnapshotOperator()
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			fixture := newWorkerErrorsFixture(t, false)
++			for _, file := range []string{"file1", "file2", "dir1/file3"} {
++				content, err := os.ReadFile(filepath.Join(probe.repository, file))
++				if err != nil {
++					t.Fatalf("Failed to read %s: %v", file, err)
++				}
++				err = os.WriteFile(filepath.Join(fixture.repository, file), content, 0600)
++				if err != nil {
++					t.Fatalf("Failed to write %s: %v", file, err)
++				}
++			}
++			chunkPath, _, _, err := fixture.raw.FindChunk(0, chunkID, false, false)
++			if err != nil {
++				t.Fatalf("Failed to find the path of the chunk %s: %v", chunkID, err)
++			}
++			fixture.storage.fail("UploadFile", chunkPath)
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++
++			expectWorkerErrorsException(t, fixture.backup(fixture.repository, false),
++				"UPLOAD_CHUNK")
++			if fixture.revisionExists(1) {
++				t.Fatalf("The revision 1 has been created despite the failed upload")
++			}
++			if fixture.storage.injectedCount() == 0 || fixture.storage.uploadCount() == 0 {
++				t.Fatalf("Expected uploads before the failure, got %d uploads and %d failures",
++					fixture.storage.uploadCount(), fixture.storage.injectedCount())
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			fixture.storage.clearFaults()
++			fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectSuccess(fixture.backup(fixture.repository, true), 2)
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++func TestWorkerErrorsBackupMetadataUpload(t *testing.T) {
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsFixture(t, true)
++	fixture.storage.fail("UploadFile", "metadata/")
++	expectWorkerErrorsException(t, fixture.backup(fixture.repository, false), "UPLOAD_CHUNK")
++	if fixture.revisionExists(1) {
++		t.Fatalf("The revision 1 has been created despite the failed upload")
++	}
++	if fixture.storage.injectedCount() == 0 {
++		t.Fatalf("The upload of a metadata chunk has not been attempted")
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++}
++
++func TestWorkerErrorsBackupLocalListing(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			outcome := fixture.backup(filepath.Join(fixture.repository, "missing"), false)
++			expectWorkerErrorsFailure(t, name, outcome, "LIST_FAILURE")
++			if fixture.revisionExists(1) {
++				t.Fatalf("The revision 1 has been created despite the failed listing")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++func TestWorkerErrorsBackupRemoteListing(t *testing.T) {
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsFixture(t, false)
++	fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++	snapshot := fixture.manager.SnapshotManager.DownloadSnapshot("host1", 1)
++	if snapshot == nil {
++		t.Fatalf("Failed to download the revision 1")
++	}
++	// The listing goroutine of the next backup panics on the unsupported format version
++	snapshot.Version = 99
++	description, err := snapshot.MarshalJSON()
++	if err != nil {
++		t.Fatalf("Failed to encode the revision 1: %v", err)
++	}
++	if !fixture.manager.SnapshotManager.UploadFile("snapshots/host1/1", "snapshots/host1/1",
++		description) {
++		t.Fatalf("Failed to upload the revision 1")
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++
++	expectWorkerErrorsException(t, fixture.backup(fixture.repository, true),
++		"SNAPSHOT_VERSION")
++	if fixture.revisionExists(2) {
++		t.Fatalf("The revision 2 has been created despite the failed listing")
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++}
++
++func TestWorkerErrorsBackupSnapshotFile(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			fixture.storage.fail("UploadFile", "snapshots/host1/1")
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			outcome := fixture.backup(fixture.repository, false)
++			expectWorkerErrorsFailure(t, name, outcome, "UPLOAD_File")
++			if fixture.revisionExists(1) {
++				t.Fatalf("The revision 1 has been created despite the failed upload")
++			}
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The upload of the snapshot file has not been attempted")
++			}
++			if name == "LogFunction" {
++				// A failed backup must not leave its incomplete snapshot to be saved by a later error
++				RunAtError()
++				incomplete := filepath.Join(fixture.manager.cachePath, "incomplete_snapshot")
++				if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
++					t.Fatalf("RunAtError has saved the incomplete snapshot of the failed backup: %v", err)
++				}
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++func TestWorkerErrorsBackupFailSnapshot(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			t.Setenv("DUPLICACY_FAIL_SNAPSHOT", "1")
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			outcome := fixture.backup(fixture.repository, false)
++			expectWorkerErrorsFailure(t, name, outcome, "SNAPSHOT_FAIL")
++			if fixture.revisionExists(1) {
++				t.Fatalf("The revision 1 has been created despite the failed backup")
++			}
++			if name == "LogFunction" {
++				// A failed backup must not leave its incomplete snapshot to be saved by a later error
++				RunAtError()
++				incomplete := filepath.Join(fixture.manager.cachePath, "incomplete_snapshot")
++				if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
++					t.Fatalf("RunAtError has saved the incomplete snapshot of the failed backup: %v", err)
++				}
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsBackupRemoteDownload checks that a failed download of the remote listing is raised by Backup even
++// when LogFunction returns instead of panicking, and that the listing goroutine doesn't outlive Backup.
++func TestWorkerErrorsBackupRemoteDownload(t *testing.T) {
++	t.Run("EmptyListing", func(t *testing.T) {
++		baseline := runtime.NumGoroutine()
++		fixture := newWorkerErrorsFixture(t, false)
++		fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++		snapshot := fixture.manager.SnapshotManager.DownloadSnapshot("host1", 1)
++		if snapshot == nil || len(snapshot.FileSequence) == 0 {
++			t.Fatalf("The revision 1 has no file sequence")
++		}
++		chunkID := fixture.manager.config.GetChunkIDFromHash(snapshot.FileSequence[0])
++		chunkPath, exist, _, err := fixture.raw.FindChunk(0, chunkID, false, true)
++		if err != nil || !exist {
++			t.Fatalf("Failed to find the chunk %s: %v (exist %t)", chunkID, err, exist)
++		}
++		fixture.storage.fail("DownloadFile", chunkPath)
++
++		// A copy of the chunk in the snapshot cache would be read instead of the storage
++		cache := fixture.manager.snapshotCache
++		cachedPath, exist, _, err := cache.FindChunk(0, chunkID, false, true)
++		if err != nil {
++			t.Fatalf("Failed to find the cached chunk %s: %v", chunkID, err)
++		}
++		if exist {
++			if err = cache.DeleteFile(0, cachedPath); err != nil {
++				t.Fatalf("Failed to delete the cached chunk %s: %v", chunkID, err)
++			}
++		}
++		if _, exist, _, err = cache.FindChunk(0, chunkID, false, true); err != nil || exist {
++			t.Fatalf("The chunk %s is still cached: %v (exist %t)", chunkID, err, exist)
++		}
++
++		// The local listing is empty, so the comparison ends without asking for a remote entry
++		for _, name := range []string{"file1", "file2", "dir1"} {
++			if err = os.RemoveAll(filepath.Join(fixture.repository, name)); err != nil {
++				t.Fatalf("Failed to remove %s: %v", name, err)
++			}
++		}
++		setWorkerErrorsLogFunction()
++		waitForWorkerErrorsGoroutines(t, baseline)
++
++		expectWorkerErrorsException(t, fixture.backup(fixture.repository, true), "DOWNLOAD_CHUNK")
++		if fixture.revisionExists(2) {
++			t.Fatalf("The revision 2 has been created despite the failed download")
++		}
++		if fixture.storage.injectedCount() == 0 {
++			t.Fatalf("The download of the file sequence has not been attempted")
++		}
++		waitForWorkerErrorsGoroutines(t, baseline)
++	})
++
++	t.Run("SecondChunk", func(t *testing.T) {
++		baseline := runtime.NumGoroutine()
++		fixture := newWorkerErrorsFixture(t, false)
++		fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++		chunks := fixture.manager.SnapshotManager.DownloadSnapshot("host1", 1)
++		if chunks == nil {
++			t.Fatalf("Failed to download the revision 1")
++		}
++		fixture.manager.SnapshotManager.GetSnapshotChunks(chunks, true)
++		if len(chunks.ChunkHashes) == 0 {
++			t.Fatalf("The revision 1 has no file chunks")
++		}
++		// A file chunk is not in the snapshot cache; it is appended to the file
++		// sequence as its second chunk, which the listing asks for only after sending
++		// the last entry
++		dataHash := chunks.ChunkHashes[0]
++		dataID := fixture.manager.config.GetChunkIDFromHash(dataHash)
++		_, exist, _, err := fixture.manager.snapshotCache.FindChunk(0, dataID, false, true)
++		if err != nil || exist {
++			t.Fatalf("The chunk %s is cached: %v (exist %t)", dataID, err, exist)
++		}
++		chunkPath, exist, _, err := fixture.raw.FindChunk(0, dataID, false, false)
++		if err != nil || !exist {
++			t.Fatalf("Failed to find the chunk %s: %v (exist %t)", dataID, err, exist)
++		}
++		snapshot := fixture.manager.SnapshotManager.DownloadSnapshot("host1", 1)
++		if snapshot == nil || len(snapshot.FileSequence) != 1 {
++			t.Fatalf("The revision 1 must have exactly one file sequence chunk")
++		}
++		snapshot.FileSequence = append(snapshot.FileSequence, dataHash)
++		description, err := snapshot.MarshalJSON()
++		if err != nil {
++			t.Fatalf("Failed to encode the revision 1: %v", err)
++		}
++		if !fixture.manager.SnapshotManager.UploadFile("snapshots/host1/1",
++			"snapshots/host1/1", description) {
++			t.Fatalf("Failed to upload the revision 1")
++		}
++		fixture.storage.fail("DownloadFile", chunkPath)
++		fixture.stopSnapshotOperator()
++		setWorkerErrorsLogFunction()
++		waitForWorkerErrorsGoroutines(t, baseline)
++
++		// Every local entry matches a remote one, so the comparison ends before the
++		// failed download, which Backup still waits for and raises
++		expectWorkerErrorsException(t, fixture.backup(fixture.repository, true), "DOWNLOAD_CHUNK")
++		if fixture.revisionExists(2) {
++			t.Fatalf("The revision 2 has been created despite the failed download")
++		}
++		if fixture.storage.injectedCount() == 0 {
++			t.Fatalf("The download of the second chunk has not been attempted")
++		}
++		waitForWorkerErrorsGoroutines(t, baseline)
++	})
++}
++
++// TestWorkerErrorsBackupSnapshotSequences checks the download of the chunk sequence of the previous snapshot, done
++// by Backup in the goroutine calling it, through the operator of the snapshot manager.
++func TestWorkerErrorsBackupSnapshotSequences(t *testing.T) {
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsFixture(t, false)
++	fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++	snapshot := fixture.revisionSnapshot(1)
++	fixture.failDownload(snapshot.ChunkSequence[0], true)
++	waitForWorkerErrorsGoroutines(t, baseline)
++
++	expectWorkerErrorsException(t, fixture.backup(fixture.repository, false), "DOWNLOAD_CHUNK")
++	if fixture.revisionExists(2) {
++		t.Fatalf("The revision 2 has been created despite the failed download")
++	}
++	if fixture.storage.injectedCount() == 0 {
++		t.Fatalf("The download of the chunk sequence has not been attempted")
++	}
++	if fixture.manager.SnapshotManager.chunkOperator != nil {
++		t.Fatalf("The operator of the snapshot manager has not been removed")
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++}
++
++// TestWorkerErrorsRestoreChunkDownload fails the download of a file chunk, which is waited for by the chunk
++// downloader of Restore.
++func TestWorkerErrorsRestoreChunkDownload(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction", "AllowFailures"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++			snapshot := fixture.revisionSnapshot(1)
++			if len(snapshot.ChunkHashes) < 6 {
++				t.Fatalf("Expected at least 6 file chunks, got %d", len(snapshot.ChunkHashes))
++			}
++			fixture.failDownload(snapshot.ChunkHashes[len(snapshot.ChunkHashes)/2], false)
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			outcome := fixture.restore(filepath.Join(t.TempDir(), "restored"), false, name == "AllowFailures")
++			if name == "AllowFailures" {
++				if outcome.recovered != nil || fixture.failedFiles <= 0 {
++					t.Fatalf("Expected failed files without a panic, got %#v (%d failed files)",
++						outcome.recovered, fixture.failedFiles)
++				}
++			} else {
++				expectWorkerErrorsException(t, outcome, "DOWNLOAD_CHUNK")
++			}
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the file chunk has not been attempted")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			// The failure must not outlive the restore
++			fixture.storage.clearFaults()
++			fixture.expectRestored(fixture.restore(filepath.Join(t.TempDir(), "again"), false, false))
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsRestoreListing fails the listing of Restore: the file sequence in the remote listing goroutine,
++// the chunk and length sequences in the goroutine calling Restore, and the filters in the local listing goroutine.
++func TestWorkerErrorsRestoreListing(t *testing.T) {
++	for _, name := range []string{"FileSequence", "ChunkSequence", "LengthSequence", "ExistingOperator", "Filter"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++			snapshot := fixture.revisionSnapshot(1)
++			logID := "DOWNLOAD_CHUNK"
++			switch name {
++			case "FileSequence":
++				fixture.failDownload(snapshot.FileSequence[0], true)
++			case "ChunkSequence", "ExistingOperator":
++				fixture.failDownload(snapshot.ChunkSequence[0], true)
++			case "LengthSequence":
++				fixture.failDownload(snapshot.LengthSequence[0], true)
++			case "Filter":
++				filters := filepath.Join(t.TempDir(), "filters")
++				if err := os.WriteFile(filters, []byte("e:[\n"), 0600); err != nil {
++					t.Fatalf("Failed to write the filters: %v", err)
++				}
++				fixture.manager.filtersFile = filters
++				logID = "SNAPSHOT_FILTER"
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			var operator *ChunkOperator
++			if name == "ExistingOperator" {
++				// An operator existing before Restore is kept, but its failure must not outlive Restore
++				operator = fixture.existingSnapshotOperator()
++				baseline = runtime.NumGoroutine()
++			}
++
++			expectWorkerErrorsException(t, fixture.restore(filepath.Join(t.TempDir(), "restored"), false, false),
++				logID)
++			if name != "Filter" && fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the sequence has not been attempted")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectSnapshotOperator(operator)
++			if operator == nil {
++				return
++			}
++			fixture.storage.clearFaults()
++			fixture.expectRestored(fixture.restore(filepath.Join(t.TempDir(), "again"), false, false))
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.stopSnapshotOperator()
++		})
++	}
++}
++
++// workerErrorsPrefetchFixture is the repository of the tests of the chunks that Restore
++// prefetches, backed up as the revision 1.  Its file chunks are cut at 64 KiB: file1 has
++// the chunks 0 to 2, file2 the chunks 2 and 3, file3 the chunks 3 and 4.
++type workerErrorsPrefetchFixture struct {
++	*workerErrorsFixture
++	contents map[string][]byte // The contents of file1, file2 and file3
++	snapshot *Snapshot         // The revision 1
++}
++
++// newWorkerErrorsPrefetchFixture creates the repository and backs up the revision 1.
++// The caller has called saveWorkerErrorsGlobals.
++func newWorkerErrorsPrefetchFixture(t *testing.T) *workerErrorsPrefetchFixture {
++	dir := t.TempDir()
++	repository := filepath.Join(dir, "repository")
++	if err := os.MkdirAll(filepath.Join(repository, ".duplicacy"), 0700); err != nil {
++		t.Fatalf("Failed to create the repository: %v", err)
++	}
++	const chunkSize = 64 * 1024
++	contents := map[string][]byte{}
++	for i, file := range []string{"file1", "file2", "file3"} {
++		size := chunkSize
++		if file == "file1" {
++			size = 2*chunkSize + chunkSize/2
++		}
++		contents[file] = make([]byte, size)
++		rand.New(rand.NewSource(int64(i + 1))).Read(contents[file])
++		if err := os.WriteFile(filepath.Join(repository, file), contents[file], 0600); err != nil {
++			t.Fatalf("Failed to write %s: %v", file, err)
++		}
++	}
++	raw, err := CreateFileStorage(filepath.Join(dir, "storage"), false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the storage: %v", err)
++	}
++	// An average size of 2^30 keeps the rolling hash from cutting the chunks, so they are cut at the maximum size
++	if !ConfigStorage(raw, 16384, 100, 1<<30, chunkSize, chunkSize/4, "", nil, false, "", 0, 0) {
++		t.Fatalf("Failed to initialize the storage")
++	}
++	fixture := &workerErrorsFixture{t: t, repository: repository, raw: raw, storage: newFaultStorage(raw)}
++	SetDuplicacyPreferencePath(filepath.Join(repository, ".duplicacy"))
++	fixture.manager = CreateBackupManager("host1", fixture.storage, repository, "", "", "", false)
++	if fixture.manager == nil || !fixture.manager.SetupSnapshotCache("default") {
++		t.Fatalf("Failed to create the backup manager")
++	}
++	fixture.expectSuccess(fixture.backup(repository, false), 1)
++
++	snapshot := fixture.revisionSnapshot(1)
++	layout := map[string][2]int{"file1": {0, 2}, "file2": {2, 3}, "file3": {3, 4}}
++	for file, chunks := range layout {
++		entry := fixture.findFile(snapshot, file)
++		if entry.StartChunk != chunks[0] || entry.EndChunk != chunks[1] {
++			t.Fatalf("The file %s has the chunks %d to %d instead of %d to %d", file, entry.StartChunk,
++				entry.EndChunk, chunks[0], chunks[1])
++		}
++	}
++	return &workerErrorsPrefetchFixture{workerErrorsFixture: fixture, contents: contents, snapshot: snapshot}
++}
++
++// failDownloadAfterRestore makes the download of the chunk wait until the file under top
++// has been restored, and then fail: the chunk is removed from the storage once the wait
++// is over.  The failure is recorded by the operator after the restore has gone on, when
++// nothing waits for the chunk any more.
++func (fixture *workerErrorsPrefetchFixture) failDownloadAfterRestore(chunkIndex int,
++	top string, file string) {
++	fixture.t.Helper()
++	chunkPath := fixture.chunkPath(fixture.snapshot.ChunkHashes[chunkIndex], false)
++	fixture.storage.delayDownload(chunkPath, func() bool {
++		restored, err := os.ReadFile(filepath.Join(top, file))
++		if err != nil || string(restored) != string(fixture.contents[file]) {
++			return false
++		}
++		err = os.Remove(filepath.Join(fixture.raw.storageDir, chunkPath))
++		if err != nil && !os.IsNotExist(err) {
++			fixture.t.Errorf("Failed to remove the chunk %s: %v", chunkPath, err)
++		}
++		return true
++	})
++}
++
++// expectDownloadDelayed checks that the download set up by failDownloadAfterRestore has
++// started, and that its wait for the restored file did not time out.
++func (fixture *workerErrorsPrefetchFixture) expectDownloadDelayed() {
++	fixture.t.Helper()
++	if fixture.storage.delayedCount() == 0 {
++		fixture.t.Fatalf("The chunk has not been prefetched")
++	}
++	if fixture.storage.lateCount() != 0 {
++		fixture.t.Fatalf("The wait of the download for the restored file timed out")
++	}
++}
++
++// TestWorkerErrorsRestorePrefetch checks that Restore returns when a chunk prefetched for a file that is skipped
++// later is never waited for.  The chunks are cut at 64 KiB: file1 has the chunks 0 to 2, file2 the chunks 2 and 3,
++// file3 the chunks 3 and 4.  The chunk 3 is prefetched while file1 waits for the chunk 2, and file2 and file3 are
++// skipped in quick mode since the filters hide them from the local listing.  The download of the chunk 3 returns
++// only once file1 has been restored, when nothing waits for the chunk 3 any more.
++// The dropped chunk 3 is returned to the chunk pool, as a received chunk is.
++func TestWorkerErrorsRestorePrefetch(t *testing.T) {
++	saveWorkerErrorsGlobals(t)
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsPrefetchFixture(t)
++	repository, snapshot, contents := fixture.repository, fixture.snapshot, fixture.contents
++	file1 := filepath.Join(repository, "file1")
++	fixture.storage.delayDownload(fixture.chunkPath(snapshot.ChunkHashes[3], false), func() bool {
++		restored, err := os.ReadFile(file1)
++		return err == nil && string(restored) == string(contents["file1"])
++	})
++	if err := os.Remove(filepath.Join(repository, "file1")); err != nil {
++		t.Fatalf("Failed to remove file1: %v", err)
++	}
++	filters := filepath.Join(repository, ".duplicacy", "filters")
++	if err := os.WriteFile(filters, []byte("-file2\n-file3\n"), 0600); err != nil {
++		t.Fatalf("Failed to write the filters: %v", err)
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++	outstanding := fixture.outstandingChunks()
++
++	fixture.expectRestored(fixture.restore(repository, true, false))
++	if fixture.storage.delayedCount() == 0 {
++		t.Fatalf("The chunk 3 has not been prefetched")
++	}
++	if fixture.storage.lateCount() != 0 {
++		t.Fatalf("file1 has not been restored in 10 seconds while the download of the chunk 3 waited for it")
++	}
++	restored, err := os.ReadFile(filepath.Join(repository, "file1"))
++	if err != nil || string(restored) != string(contents["file1"]) {
++		t.Fatalf("file1 has not been restored: %v", err)
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++	// The chunk 2, which file1 received last, stays in the downloader since nothing
++	// reclaims it after the last restored file; the chunk 3 must be back in the pool
++	if got := fixture.outstandingChunks() - outstanding; got != 1 {
++		t.Fatalf("The restore left %d chunks out of the pool instead of 1: the chunk 2 "+
++			"stays in the downloader, the chunk 3 must be returned", got)
++	}
++}
++
++// TestWorkerErrorsRestoreDroppedChunk checks that a chunk whose download ends after a
++// failure recorded by the operator, when Restore has stopped waiting for it, is returned
++// to the chunk pool.  file1 has the chunks 0 to 2.  The chunks 0 and 1 are prefetched and
++// the download of the chunk 0 goes on once both have started.  The chunk 2 is prefetched
++// while file1 waits for the chunk 1, and its download fails.  The download of the chunk 1
++// goes on only after that failure, so Restore raises the failure instead of receiving
++// the chunk 1.
++func TestWorkerErrorsRestoreDroppedChunk(t *testing.T) {
++	saveWorkerErrorsGlobals(t)
++	baseline := runtime.NumGoroutine()
++	fixture := newWorkerErrorsPrefetchFixture(t)
++	top, snapshot, storage := fixture.repository, fixture.snapshot, fixture.storage
++	if err := os.Remove(filepath.Join(top, "file1")); err != nil {
++		t.Fatalf("Failed to remove file1: %v", err)
++	}
++	// The download of the chunk 0 waits until the chunk 1 has started, and the chunk 2 is
++	// prefetched only after the chunk 0 has been received, so the chunk 1 has started
++	// before the failure of the chunk 2 is recorded
++	storage.delayDownload(fixture.chunkPath(snapshot.ChunkHashes[0], false), func() bool {
++		return storage.delayedCount() >= 2
++	})
++	fixture.failDownload(snapshot.ChunkHashes[2], false)
++	storage.delayDownload(fixture.chunkPath(snapshot.ChunkHashes[1], false), func() bool {
++		return storage.injectedCount() > 0
++	})
++	waitForWorkerErrorsGoroutines(t, baseline)
++	outstanding := fixture.outstandingChunks()
++	expectWorkerErrorsException(t, fixture.restore(top, false, false), "DOWNLOAD_CHUNK")
++	if storage.injectedCount() == 0 {
++		t.Fatalf("The download of the chunk 2 has not been attempted")
++	}
++	if storage.delayedCount() < 2 {
++		t.Fatalf("The chunks 0 and 1 have not both been prefetched")
++	}
++	if storage.lateCount() != 0 {
++		t.Fatalf("The condition of a delayed download did not hold in 10 seconds")
++	}
++	waitForWorkerErrorsGoroutines(t, baseline)
++	// No chunk is left in the downloader: the chunk 0 was reclaimed before the failure
++	if got := fixture.outstandingChunks() - outstanding; got != 0 {
++		t.Fatalf("The restore left %d chunks out of the pool", got)
++	}
++}
++
++// TestWorkerErrorsRestoreDropBranches checks that the downloader returns the chunk it
++// drops to the chunk pool when only Stop has been called and when only a failure has been
++// recorded by the operator.  The tests of Restore can't tell these apart after a failure,
++// since Restore stops the downloader before the dropped chunk is completed.
++func TestWorkerErrorsRestoreDropBranches(t *testing.T) {
++	for _, name := range []string{"Stopped", "Failed"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			config := CreateConfig()
++			operator := CreateChunkOperator(config, nil, nil, false, false, 1, false)
++			downloader := CreateChunkDownloader(operator)
++			chunk := config.GetChunk()
++			if name == "Stopped" {
++				downloader.Stop()
++			} else {
++				operator.failures.record(Exception{Level: ERROR, LogID: "DOWNLOAD_CHUNK"})
++			}
++			downloader.complete(chunk, 0)
++			select {
++			case returned := <-config.chunkPool:
++				if returned != chunk {
++					t.Fatalf("The pool has got another chunk than the dropped one")
++				}
++			default:
++				t.Fatalf("The dropped chunk has not been returned to the pool")
++			}
++			operator.stopWorkers()
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsRestoreEarlyReturn checks that Restore raises the failed download of a
++// chunk that nothing waits for when it ends early, with a LogFunction that returns after
++// an error and without allowed failures.  The layout is that of
++// TestWorkerErrorsRestorePrefetch: the chunk 3 is prefetched while file1 waits for the
++// chunk 2, and its download fails only once file1 has been restored, so the failure is
++// recorded when nothing waits for the chunk any more.  FailedFiles ends with the number
++// of failed files: file3 differs from the snapshot and is not overwritten.
++func TestWorkerErrorsRestoreEarlyReturn(t *testing.T) {
++	t.Run("FailedFiles", func(t *testing.T) {
++		saveWorkerErrorsGlobals(t)
++		baseline := runtime.NumGoroutine()
++		fixture := newWorkerErrorsPrefetchFixture(t)
++		top := fixture.repository
++		// The filters hide file2 and file3 from the local listing, so the restore lists both
++		// and prefetches the chunk 3 that they share; file2 is unchanged and skipped in
++		// quick mode
++		filters := filepath.Join(top, ".duplicacy", "filters")
++		if err := os.WriteFile(filters, []byte("-file2\n-file3\n"), 0600); err != nil {
++			t.Fatalf("Failed to write the filters: %v", err)
++		}
++		if err := os.Remove(filepath.Join(top, "file1")); err != nil {
++			t.Fatalf("Failed to remove file1: %v", err)
++		}
++		modified := make([]byte, len(fixture.contents["file3"])-100)
++		rand.New(rand.NewSource(100)).Read(modified)
++		if err := os.WriteFile(filepath.Join(top, "file3"), modified, 0600); err != nil {
++			t.Fatalf("Failed to write file3: %v", err)
++		}
++		fixture.failDownloadAfterRestore(3, top, "file1")
++		setWorkerErrorsLogFunction()
++		waitForWorkerErrorsGoroutines(t, baseline)
++
++		outcome := runWorkerErrorsOperation(t, func() bool {
++			return fixture.manager.Restore(top, 1, true, true, 2, false, false, false, false,
++				nil, false) == 0
++		})
++		fixture.expectDownloadDelayed()
++		left, err := os.ReadFile(filepath.Join(top, "file3"))
++		if err != nil || string(left) != string(modified) {
++			t.Fatalf("file3 has been changed by the restore: %v", err)
++		}
++		expectWorkerErrorsException(t, outcome, "DOWNLOAD_CHUNK")
++		waitForWorkerErrorsGoroutines(t, baseline)
++	})
++}
++
++// TestWorkerErrorsCheckChunks fails the download of a chunk verified by the goroutines of CheckSnapshots.
++func TestWorkerErrorsCheckChunks(t *testing.T) {
++	for _, name := range []string{"Log", "LogFunction", "AllowFailures"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++			snapshot := fixture.revisionSnapshot(1)
++			fixture.failDownload(snapshot.ChunkHashes[len(snapshot.ChunkHashes)/2], false)
++			if name == "LogFunction" {
++				setWorkerErrorsLogFunction()
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++
++			logID := "DOWNLOAD_CHUNK"
++			if name == "AllowFailures" {
++				// The failed chunk is only counted, and the check reports the corrupted chunks at the end
++				logID = "SNAPSHOT_VERIFY"
++			}
++			expectWorkerErrorsException(t, fixture.check(false, name == "AllowFailures"), logID)
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the chunk has not been attempted")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++		})
++	}
++}
++
++// TestWorkerErrorsCheckFiles fails the download of a file chunk, done by CheckSnapshots in the goroutine calling it;
++// an operator of the snapshot manager existing before the check is kept without the failure, so a check of the
++// chunks with it afterwards doesn't report a corrupted chunk.
++func TestWorkerErrorsCheckFiles(t *testing.T) {
++	for _, name := range []string{"NewOperator", "ExistingOperator"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++			snapshot := fixture.revisionSnapshot(1)
++			fixture.failDownload(snapshot.ChunkHashes[len(snapshot.ChunkHashes)/2], false)
++			waitForWorkerErrorsGoroutines(t, baseline)
++			var operator *ChunkOperator
++			if name == "ExistingOperator" {
++				operator = fixture.existingSnapshotOperator()
++				baseline = runtime.NumGoroutine()
++			}
++
++			expectWorkerErrorsException(t, fixture.check(true, false), "DOWNLOAD_CHUNK")
++			if fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the file chunk has not been attempted")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectSnapshotOperator(operator)
++			if operator == nil {
++				return
++			}
++			fixture.storage.clearFaults()
++			outcome := fixture.check(false, false)
++			if outcome.recovered != nil || !outcome.result {
++				t.Fatalf("The check of the chunks failed: %#v (result %t)", outcome.recovered, outcome.result)
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.stopSnapshotOperator()
++		})
++	}
++}
++
++// TestWorkerErrorsDiff fails the download of a file chunk of the file compared by Diff, also with an operator of the
++// snapshot manager existing before Diff, and the local listing of a missing directory compared with a revision,
++// which makes Diff return false when LogFunction doesn't panic.
++func TestWorkerErrorsDiff(t *testing.T) {
++	for _, name := range []string{"File", "ExistingOperator", "LocalListing", "LocalListingLogFunction"} {
++		t.Run(name, func(t *testing.T) {
++			baseline := runtime.NumGoroutine()
++			fixture := newWorkerErrorsFixture(t, false)
++			fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++			listing := strings.HasPrefix(name, "LocalListing")
++			mode := "Log"
++			if name == "LocalListingLogFunction" {
++				mode = "LogFunction"
++				setWorkerErrorsLogFunction()
++			}
++			top, filePath, logID := fixture.repository, "", "LIST_FAILURE"
++			if !listing {
++				snapshot := fixture.revisionSnapshot(1)
++				entry := fixture.findFile(snapshot, "file1")
++				fixture.failDownload(snapshot.ChunkHashes[entry.StartChunk], false)
++				filePath, logID = "file1", "DOWNLOAD_CHUNK"
++			} else {
++				top = filepath.Join(fixture.repository, "missing")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			var operator *ChunkOperator
++			if name == "ExistingOperator" {
++				operator = fixture.existingSnapshotOperator()
++				baseline = runtime.NumGoroutine()
++			}
++			diff := func() workerErrorsOutcome {
++				return runWorkerErrorsOperation(t, func() bool {
++					return fixture.manager.SnapshotManager.Diff(top, "host1", []int{1}, filePath, false, "", "", false)
++				})
++			}
++
++			expectWorkerErrorsFailure(t, mode, diff(), logID)
++			if !listing && fixture.storage.injectedCount() == 0 {
++				t.Fatalf("The download of the file chunk has not been attempted")
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.expectSnapshotOperator(operator)
++			if operator == nil {
++				return
++			}
++			fixture.storage.clearFaults()
++			if outcome := diff(); outcome.recovered != nil || !outcome.result {
++				t.Fatalf("The diff failed: %#v (result %t)", outcome.recovered, outcome.result)
++			}
++			waitForWorkerErrorsGoroutines(t, baseline)
++			fixture.stopSnapshotOperator()
++		})
++	}
++}
