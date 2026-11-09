@@ -14,7 +14,7 @@ A declarative application builder for upstream projects with local patches. Go h
 - `golang/cmd/graves/` – the `prepare`, `fetch`, `build`, `upload` and `telegram` commands.
 - `.graves/` – ignored upstream clone or release asset, target downloads, published assets and release notes.
 
-The first recipes build opencode CLI and Electron desktop for Linux/Windows x64, the patched `@raven428/pi-web` and `@raven428/pi-subagents` npm tarballs, and `duplicacy` CLI binaries with a file-based GOPROXY of its Go module, and the `happ` Android APK with neutralized traps, rebuilt from a private release asset and published only to the private `megalomania428/update-bunker` repository. Heavy application builds run only in the build workflow.
+The first recipes build opencode CLI and Electron desktop for Linux/Windows x64, the patched `@raven428/pi-web` and `@raven428/pi-subagents` npm tarballs, and `duplicacy` CLI binaries with a file-based GOPROXY of its Go module, and the `happ` Android APK with neutralized traps, rebuilt from a private release asset and published only to the private `megalomania428/update-bunker` repository, and the `donut` Tauri desktop application as a Windows x64 installer, a Windows x64 portable archive and a Linux x64 AppImage, cross-built in local Podman images and published only to the same private repository. Heavy application builds run only in the build workflow.
 
 ## Recipe schema
 
@@ -105,6 +105,13 @@ Versions come only from the recipe: `upstream.version`, or else `upstream.ref` w
 A pushed `<name>-<label>` tag releases only that application, with one matrix job per target, and the release title is the tag itself. The build workflow reacts to every `*-*` tag, existing source names are matched by the `<name>-` prefix and the longest match wins, so a tag whose prefix matches no recipe fails `prepare` instead of being ignored. Release versions still come from `build.yaml` and never from the tag, so bump `upstream.ref`, `upstream.version`, `upstream.patch` or `upstream.patch_width` in the same pull request as the tag. A recipe with `upstream.release` takes its version only from `upstream.version`, `upstream.patch` and `upstream.patch_width`, so a changed release asset also needs a combination of `upstream.version` and `upstream.patch` that no earlier release of the recipe used.
 
 When a pull request changes an application's upstream ref or release asset, version, patch number or patch width in `build.yaml` or its patches, update that application's `TAG4REL` below in the same pull request.
+
+- `donut`:
+
+  ```bash
+  git checkout master && git pull; TAG4REL='donut-v0.35.5p000'
+  git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
+  ```
 
 - `duplicacy`:
 

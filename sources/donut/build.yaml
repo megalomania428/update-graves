@@ -1,0 +1,41 @@
+---
+# cspell:ignore rustup xwin
+upstream:
+  url: https://github.com/donutbrowser/donutbrowser.git
+  ref: v0.35.5
+  patch: 0
+  patch_width: 3
+release:
+  targets:
+    - type: repo
+      repo: update-bunker
+targets:
+  - name: lnx-app
+    patches: [patches/common]
+    cache: &cache
+      paths:
+        - ~/.cache/donut/cargo/registry/cache
+        - ~/.cache/donut/cargo/registry/index
+        - ~/.cache/donut/node
+        - ~/.cache/donut/pnpm-store
+        - ~/.cache/donut/rustup
+        - ~/.cache/donut/xdg/tauri
+        - .graves/upstream/src-tauri/target
+      key_files: &key-files
+        - Dockerfile
+        - scripts/**
+        - patches/common/**
+    steps: &steps
+      - bash scripts/build.sh
+  - name: win-prt
+    patches: &windows-patches [patches/common, patches/windows]
+    cache: &windows-cache
+      <<: *cache
+      key_files:
+        - *key-files
+        - patches/windows/**
+    steps: *steps
+  - name: win-set
+    patches: *windows-patches
+    cache: *windows-cache
+    steps: *steps

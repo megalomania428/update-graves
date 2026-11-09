@@ -1,0 +1,80 @@
+diff -ruN -x .git a/package.json b/package.json
+--- a/package.json	2026-11-09 08:50:45.453775889 +0000
++++ b/package.json	2026-11-09 08:52:33.156670147 +0000
+@@ -2,7 +2,7 @@
+   "name": "donutbrowser",
+   "private": true,
+   "license": "AGPL-3.0",
+-  "version": "0.35.5",
++  "version": "0.35.5-p000",
+   "type": "module",
+   "scripts": {
+     "predev": "pnpm licenses:generate",
+diff -ruN -x .git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+--- a/src-tauri/Cargo.lock	2026-11-09 08:50:45.481776649 +0000
++++ b/src-tauri/Cargo.lock	2026-11-09 08:52:42.856928330 +0000
+@@ -1787,7 +1787,7 @@
+ 
+ [[package]]
+ name = "donutbrowser"
+-version = "0.35.5"
++version = "0.35.5-p000"
+ dependencies = [
+  "aes 0.9.3",
+  "aes-gcm 0.11.1",
+diff -ruN -x .git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+--- a/src-tauri/Cargo.toml	2026-11-09 08:50:45.481776649 +0000
++++ b/src-tauri/Cargo.toml	2026-11-09 08:52:39.408836599 +0000
+@@ -1,6 +1,6 @@
+ [package]
+ name = "donutbrowser"
+-version = "0.35.5"
++version = "0.35.5-p000"
+ description = "The Most Private Anti-Detect Browser"
+ authors = ["zhom@github"]
+ edition = "2021"
+diff -ruN -x .git a/src-tauri/src/app_auto_updater.rs b/src-tauri/src/app_auto_updater.rs
+--- a/src-tauri/src/app_auto_updater.rs	2026-11-09 08:50:45.509777408 +0000
++++ b/src-tauri/src/app_auto_updater.rs	2026-11-09 08:52:55.497264198 +0000
+@@ -123,6 +123,8 @@
+ const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+ /// How long after a check the next one runs.
+ const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
++/// Self-update is disabled in this patched build: no checks and no downloads.
++const UPDATES_DISABLED: bool = true;
+ /// The next check after one that found the newest release still missing
+ /// SHA256SUMS.txt, which the release workflow uploads minutes after the builds.
+ const NOT_READY_RECHECK: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+@@ -258,6 +260,10 @@
+     &self,
+     manual: bool,
+   ) -> Result<Option<AppUpdateInfo>, Box<dyn std::error::Error + Send + Sync>> {
++    if UPDATES_DISABLED {
++      schedule_next_check(CHECK_INTERVAL);
++      return Ok(None);
++    }
+     let started = std::time::Instant::now();
+     let current_version = Self::get_current_version();
+     let channel = if Self::is_nightly_build() {
+@@ -1106,6 +1112,9 @@
+     _app_handle: &tauri::AppHandle,
+     update_info: &AppUpdateInfo,
+   ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
++    if UPDATES_DISABLED {
++      return Err("updates disabled".into());
++    }
+     let started = std::time::Instant::now();
+     let mut stage = "checksums";
+     match self.download_and_prepare(update_info, &mut stage).await {
+diff -ruN -x .git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+--- a/src-tauri/tauri.conf.json	2026-11-09 08:50:45.581779362 +0000
++++ b/src-tauri/tauri.conf.json	2026-11-09 08:52:46.197017141 +0000
+@@ -1,7 +1,7 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+   "productName": "Donut",
+-  "version": "0.35.5",
++  "version": "0.35.5-p000",
+   "identifier": "com.donutbrowser",
+   "build": {
+     "beforeDevCommand": "pnpm copy-proxy-binary && pnpm dev",

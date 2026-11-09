@@ -1,0 +1,70 @@
+diff -ruN -x .git a/src-tauri/build.rs b/src-tauri/build.rs
+--- a/src-tauri/build.rs	2026-11-09 08:50:46.429802363 +0000
++++ b/src-tauri/build.rs	2026-11-09 08:53:15.309789386 +0000
+@@ -22,6 +22,14 @@
+     winfsp::build::winfsp_link_delayload();
+   }
+ 
++  // A cross build runs this script on a non-Windows host, where the cfg(windows)
++  // winfsp build-dependency is absent, so its delay-load arguments are printed here.
++  #[cfg(not(windows))]
++  if build_target == "x86_64-pc-windows-msvc" {
++    println!("cargo:rustc-link-lib=dylib=delayimp");
++    println!("cargo:rustc-link-arg=/DELAYLOAD:winfsp-x64.dll");
++  }
++
+   // Inject build version based on environment variables set by CI
+   if let Ok(build_tag) = std::env::var("BUILD_TAG") {
+     // Custom BUILD_TAG takes highest priority (used for nightly builds)
+@@ -152,6 +160,17 @@
+     return;
+   }
+ 
++  // lld-link of a cross build rejects /MANIFESTINPUT next to the /MANIFEST:NO of bins, so
++  // the only dependency of app.manifest is passed inline on a non-Windows host.
++  if cfg!(not(windows)) {
++    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
++    println!(
++      "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
++    );
++    println!("cargo:rerun-if-changed=app.manifest");
++    return;
++  }
++
+   // Use the path directly (avoid canonicalize which adds \\?\ prefix that mt.exe rejects)
+   let manifest_str = manifest_path.to_str().unwrap().replace('/', "\\");
+   println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+diff -ruN -x .git a/src-tauri/download-xray.mjs b/src-tauri/download-xray.mjs
+--- a/src-tauri/download-xray.mjs	2026-11-09 08:50:46.429802363 +0000
++++ b/src-tauri/download-xray.mjs	2026-11-09 08:53:25.058047244 +0000
+@@ -97,7 +97,8 @@
+ }
+ 
+ function extractArchive(archive, destinationDir, windowsTarget) {
+-  if (windowsTarget) {
++  // PowerShell exists only on a Windows host; cross builds unzip the archive.
++  if (windowsTarget && process.platform === "win32") {
+     const { args, env } = windowsExtractionInvocation(archive, destinationDir);
+     const result = spawnSync("powershell", args, { stdio: "inherit", env });
+     if (result.status !== 0) {
+@@ -110,9 +111,10 @@
+     };
+   }
+ 
++  const binaryName = windowsTarget ? "xray.exe" : "xray";
+   const result = spawnSync(
+     "unzip",
+-    ["-qq", "-j", archive, "xray", "LICENSE", "-d", destinationDir],
++    ["-qq", "-j", archive, binaryName, "LICENSE", "-d", destinationDir],
+     { stdio: "inherit" },
+   );
+   if (result.status !== 0) {
+@@ -120,7 +122,7 @@
+   }
+ 
+   return {
+-    binary: join(destinationDir, "xray"),
++    binary: join(destinationDir, binaryName),
+     license: join(destinationDir, "LICENSE"),
+   };
+ }
