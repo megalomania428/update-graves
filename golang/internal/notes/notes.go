@@ -448,7 +448,7 @@ func (g *Generator) containerArgs(dir, cfg string, files []string, budget int) [
 	args = append(args, "-v", dir+":/workspace/notes:ro", "-w", "/workspace/notes",
 		"--name",
 		"graves-notes-"+ci.EnvDefault("GITHUB_RUN_ID", "local")+"-"+filepath.Base(dir),
-		ci.EnvDefault("NOTES_IMAGE", "ghcr.io/raven428/review-pi_dev:latest"), "pi",
+		ci.EnvDefault("NOTES_IMAGE", "ghcr.io/megalomania428/review-pi_dev:latest"), "pi",
 		"--mcp-config", "/home/coder/.pi/agent/mcp.json", "--no-session",
 		"--no-context-files", "--tools", "mcp",
 		"--append-system-prompt", "/workspace/notes/prompt.md", "-p", message)

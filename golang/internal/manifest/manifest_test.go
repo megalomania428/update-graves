@@ -61,6 +61,41 @@ func TestDecode(t *testing.T) {
 			"key_files: ['[bad']",
 			".cache.key_files",
 		},
+		{"cache scalar", "key_files: ['scripts/**']", "key_files: scripts/**", "sequence"},
+		{"cache map", "key_files: ['scripts/**']", "key_files: {a: b}", "sequence"},
+		{"cache map item", "key_files: ['scripts/**']", "key_files: [{a: b}]", "!!map"},
+		{"cache nested map", "key_files: ['scripts/**']", "key_files: [[{a: b}]]", "!!map"},
+		{
+			"cache null item",
+			"key_files: ['scripts/**']",
+			"key_files: [~]",
+			".cache.key_files",
+		},
+		{"cache nested empty", "key_files: ['scripts/**']", "key_files: [[], []]", ".cache"},
+		{
+			"cache nested relative",
+			"key_files: ['scripts/**']",
+			"key_files: [scripts/**, ['../scripts']]",
+			".cache.key_files",
+		},
+		{
+			"cache nested glob",
+			"key_files: ['scripts/**']",
+			"key_files: [[scripts/**, '[bad']]",
+			".cache.key_files",
+		},
+		{
+			"cache self alias",
+			"key_files: ['scripts/**']",
+			"key_files: &files [scripts/**, *files]",
+			"contains itself",
+		},
+		{
+			"cache nested self alias",
+			"key_files: ['scripts/**']",
+			"key_files: [scripts/**, &inner [patches/**, [*inner]]]",
+			"contains itself",
+		},
 		{"short sha", "  ref: v1.2.3", "  ref: abcdef1", "upstream.ref"},
 		{"upper sha", "  ref: v1.2.3", "  ref: " + strings.Repeat("A", 40), "upstream.ref"},
 		{
@@ -123,6 +158,102 @@ func TestDecode(t *testing.T) {
 	}
 	if _, err := m.TargetByName("missing"); err == nil {
 		t.Fatal("missing target")
+	}
+}
+func TestGlobsUnmarshalYAML(t *testing.T) {
+	const head = "upstream: {url: u, ref: r, patch: 0}\ntargets:\n"
+	target := func(name, cache string) string {
+		return "  - name: " + name + "\n    cache:\n      paths: [p]\n" + cache +
+			"    steps: [true]\n"
+	}
+	for _, tt := range []struct {
+		name, data string
+		want       [][]string
+	}{
+		{
+			"flat",
+			target("a", "      key_files: [Dockerfile, scripts/**]\n"),
+			[][]string{{"Dockerfile", "scripts/**"}},
+		},
+		{
+			"inline nested",
+			target("a", "      key_files: [Dockerfile, [scripts/**, [patches/**]], []]\n"),
+			[][]string{{"Dockerfile", "scripts/**", "patches/**"}},
+		},
+		{
+			"flow alias",
+			target("a", "      key_files: &files [Dockerfile, scripts/**]\n") +
+				target("b", "      key_files: [*files, patches/windows/**]\n"),
+			[][]string{
+				{"Dockerfile", "scripts/**"},
+				{"Dockerfile", "scripts/**", "patches/windows/**"},
+			},
+		},
+		{
+			"block alias first and last",
+			target("a", "      key_files: &files\n        - Dockerfile\n") +
+				target("b", "      key_files:\n        - *files\n        - scripts/**\n") +
+				target("c", "      key_files:\n        - scripts/**\n        - *files\n"),
+			[][]string{
+				{"Dockerfile"},
+				{"Dockerfile", "scripts/**"},
+				{"scripts/**", "Dockerfile"},
+			},
+		},
+		{
+			"whole list alias",
+			target("a", "      key_files: &files [Dockerfile]\n") +
+				target("b", "      key_files: *files\n"),
+			[][]string{{"Dockerfile"}, {"Dockerfile"}},
+		},
+		{
+			"chained aliases",
+			target("a", "      key_files: &base [Dockerfile]\n") +
+				target("b", "      key_files: &common [*base, patches/common/**]\n") +
+				target("c", "      key_files: [*common, patches/windows/**]\n"),
+			[][]string{
+				{"Dockerfile"},
+				{"Dockerfile", "patches/common/**"},
+				{"Dockerfile", "patches/common/**", "patches/windows/**"},
+			},
+		},
+		{
+			"repeated alias",
+			target("a", "      key_files: &files [Dockerfile]\n") +
+				target("b", "      key_files: [*files, *files]\n"),
+			[][]string{{"Dockerfile"}, {"Dockerfile", "Dockerfile"}},
+		},
+		{
+			"scalar alias",
+			target("a", "      key_files: [&file Dockerfile]\n") +
+				target("b", "      key_files: [*file, scripts/**]\n"),
+			[][]string{{"Dockerfile"}, {"Dockerfile", "scripts/**"}},
+		},
+		{
+			"merge key",
+			"  - name: a\n    cache: &cache\n      paths: [p]\n      key_files: &files\n" +
+				"        - Dockerfile\n    steps: [true]\n  - name: b\n    cache:\n" +
+				"      <<: *cache\n      key_files:\n        - *files\n" +
+				"        - patches/windows/**\n    steps: [true]\n",
+			[][]string{{"Dockerfile"}, {"Dockerfile", "patches/windows/**"}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := Decode([]byte(head+tt.data), "recipe.yaml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got [][]string
+			for _, target := range m.Targets {
+				if len(target.Cache.Paths) != 1 {
+					t.Fatalf("%s paths %v", target.Name, target.Cache.Paths)
+				}
+				got = append(got, target.Cache.KeyFiles)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 func TestDecodeRelease(t *testing.T) {

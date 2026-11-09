@@ -72,7 +72,51 @@ type Target struct {
 // Cache declares exact cache paths and the source files used to hash its key.
 type Cache struct {
 	Paths    []string `yaml:"paths"`
-	KeyFiles []string `yaml:"key_files"`
+	KeyFiles Globs    `yaml:"key_files"`
+}
+
+// Globs flattens nested sequences in order, so an alias item extends an anchored list.
+type Globs []string
+
+// UnmarshalYAML flattens nested and aliased sequences of a glob list.
+func (g *Globs) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("line %d: glob list must be a sequence", node.Line)
+	}
+	globs, err := flattenGlobs(node, map[*yaml.Node]bool{})
+	if err != nil {
+		return err
+	}
+	*g = globs
+	return nil
+}
+
+// flattenGlobs tracks the sequences being expanded to reject a list containing itself.
+func flattenGlobs(node *yaml.Node, active map[*yaml.Node]bool) ([]string, error) {
+	if node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	if node.Kind != yaml.SequenceNode {
+		var glob string
+		if err := node.Decode(&glob); err != nil {
+			return nil, err
+		}
+		return []string{glob}, nil
+	}
+	if active[node] {
+		return nil, fmt.Errorf("line %d: glob list contains itself", node.Line)
+	}
+	active[node] = true
+	defer delete(active, node)
+	globs := []string{}
+	for _, item := range node.Content {
+		nested, err := flattenGlobs(item, active)
+		if err != nil {
+			return nil, err
+		}
+		globs = append(globs, nested...)
+	}
+	return globs, nil
 }
 
 var (
