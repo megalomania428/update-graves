@@ -1,6 +1,6 @@
 # Update graves
 
-<!-- cspell:ignore LZMA pipefail GOTOOLCHAIN GOPATH GOPROXY duplicacy unpadded PKCS -->
+<!-- cspell:ignore LZMA pipefail GOTOOLCHAIN GOPATH GOPROXY duplicacy unpadded PKCS subagents -->
 <!-- markdownlint-disable MD013 -->
 
 A declarative application builder for upstream projects with local patches. Go handles source selection, cloning, patching, build steps, packaging, GitHub Releases and optional Telegram posts. Adding an application usually requires only a new `sources/<name>/build.yaml`, documentation, patches and scripts; Go changes are needed only for new builder features, such as commit SHA pins, explicit release versions and zero-padded patch numbers.
@@ -14,7 +14,7 @@ A declarative application builder for upstream projects with local patches. Go h
 - `golang/cmd/graves/` – the `prepare`, `fetch`, `build`, `upload` and `telegram` commands.
 - `.graves/` – ignored upstream clone or release asset, target downloads, published assets and release notes.
 
-The first recipes build opencode CLI and Electron desktop for Linux/Windows x64, the patched `@raven428/pi-web` npm tarball, and `duplicacy` CLI binaries with a file-based GOPROXY of its Go module, and the `happ` Android APK with neutralized traps, rebuilt from a private release asset and published only to the private `megalomania428/update-bunker` repository. Heavy application builds run only in the build workflow.
+The first recipes build opencode CLI and Electron desktop for Linux/Windows x64, the patched `@raven428/pi-web` and `@raven428/pi-subagents` npm tarballs, and `duplicacy` CLI binaries with a file-based GOPROXY of its Go module, and the `happ` Android APK with neutralized traps, rebuilt from a private release asset and published only to the private `megalomania428/update-bunker` repository. Heavy application builds run only in the build workflow.
 
 ## Recipe schema
 
@@ -124,6 +124,13 @@ When a pull request changes an application's upstream ref or release asset, vers
 
   ```bash
   git checkout master && git pull; TAG4REL='opencode-v1.15.13p0'
+  git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
+  ```
+
+- `pi-subagents`:
+
+  ```bash
+  git checkout master && git pull; TAG4REL='pi-subagents-v0.69.0p1'
   git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
   ```
 

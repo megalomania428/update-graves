@@ -1,0 +1,11 @@
+---
+upstream:
+  url: https://github.com/nicobailon/pi-subagents.git
+  ref: v0.69.0
+  patch: 1
+targets:
+  - name: npm
+    image: ghcr.io/megalomania428/node-builder:latest
+    patches: [patches]
+    steps:
+      - bash scripts/build.sh
