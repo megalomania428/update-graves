@@ -5,7 +5,7 @@ upstream:
   patch: 8
 targets:
   - name: npm
-    image: ghcr.io/raven428/node-builder:latest
+    image: ghcr.io/megalomania428/node-builder:latest
     patches: [patches]
     steps:
       - bash scripts/build.sh
