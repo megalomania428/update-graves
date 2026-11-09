@@ -1,43 +1,100 @@
 #!/usr/bin/env bash
-# Lists earlier runs of the specs repository with decisions.md or task.md, newest first
-# by the date in the run directory name, and marks runs of the given project with "*".
-# With keywords prints the case-insensitive matching lines of these files instead.
+# List past runs of the specs repository newest first with matching lines.
 set -euo pipefail
-[[ $# -ge 2 ]] || {
-  echo "usage: ${0##*/} <specs-repo> <owner>/<repo> [keyword…]" >&2
-  exit 2
+
+fail() {
+  echo "error: $1" >&2
+  exit "${2:-1}"
 }
-repo="${1%/}"
-project="${2%/}"
-shift 2
-pattern=''
-if [[ $# -gt 0 ]]; then
-  pattern="$(
-    IFS='|'
-    echo "$*"
-  )"
+
+if [[ "$#" -lt 2 ]]; then
+  echo 'usage: precedents.sh <owner/repo> <exclude-run-rel|-> [<keyword>...]' >&2
+  exit 2
 fi
-find "${repo}" -path "${repo}/.git" -prune -o -type f \
-  \( -name decisions.md -o -name task.md \) -printf '%h\n' | LC_ALL=C sort -u |
-  while read -r dir; do
-    run="$(basename "${dir}")"
-    if [[ ${run} =~ ^[0-9]{8}-[0-9]{2}- ]]; then
-      printf '%s\t%s\n' "${run:0:11}" "${dir#"${repo}"/}"
-    fi
-  done | LC_ALL=C sort -r -s -t $'\t' -k1,1 | while IFS=$'\t' read -r stamp rel; do
-  mark=' '
-  if [[ ${rel} == "${project}"/* ]]; then
-    mark='*'
+specs="${SPECS_REPO:-/workspace/vscode/raven/man4llm}"
+project="${1%/}"
+exclude="${2%/}"
+shift 2
+if [[ ! "${project}" =~ ^[^/]+/[^/]+$ ]]; then
+  fail "project must be owner/repo: ${project}" 2
+fi
+if [[ -z "${exclude}" || "${exclude}" == /* ]]; then
+  fail "exclude must be a run path relative to ${specs} or -" 2
+fi
+if [[ ! -d "${specs}" ]]; then
+  fail "no specs repository: ${specs}" 2
+fi
+patterns=()
+for keyword in "$@"; do
+  if [[ -z "${keyword}" ]]; then
+    fail 'empty keyword' 2
   fi
-  if [[ -z ${pattern} ]]; then
-    printf '%s %s %s\n' "${stamp}" "${mark}" "${rel}"
+  patterns+=(-e "${keyword}")
+done
+if ! LC_ALL=C.UTF-8 grep -qiF 'тесты' <<<'Тесты'; then
+  fail 'C.UTF-8 locale unavailable or lacks Cyrillic case folding' 2
+fi
+run_re='^[0-9]{8}-[0-9]{2}-'
+tmp="$(mktemp -d)"
+trap 'rm -rf -- "${tmp}"' EXIT
+find "${specs}" -path "${specs}/.git" -prune -o -type f \
+  \( -name task.md -o -name decisions.md \) -printf '%h\0' >"${tmp}/found"
+sort -zu "${tmp}/found" >"${tmp}/dirs"
+: >"${tmp}/runs"
+while IFS= read -r -d '' dir; do
+  rel="${dir#"${specs}/"}"
+  name="${rel##*/}"
+  if [[ "${rel}" != */* || ! "${name}" =~ ^([0-9]{8})-([0-9]{2})- ]]; then
     continue
   fi
-  matches="$(
-    cd "${repo}/${rel}"
-    grep -H -n -i -E -- "${pattern}" decisions.md task.md 2>/dev/null
-  )" || true
-  if [[ -n ${matches} ]]; then
-    printf '== %s %s %s\n%s\n' "${stamp}" "${mark}" "${rel}" "${matches}"
+  key="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+  nested=0
+  IFS=/ read -r -a parts <<<"${rel%/*}"
+  for part in "${parts[@]}"; do
+    if [[ "${part}" =~ ${run_re} ]]; then
+      nested=1
+    fi
+  done
+  if ((nested)); then
+    continue
   fi
-done
+  if [[ "${exclude}" != '-' ]]; then
+    if [[ "${rel}" == "${exclude}" || "${rel}" == "${exclude}"/* ]]; then
+      continue
+    fi
+  fi
+  mark=' '
+  if [[ "${rel}" == "${project}"/* ]]; then
+    mark='*'
+  fi
+  printf '%s\t%s\t%s\n' "${key}" "${mark}" "${rel}" >>"${tmp}/runs"
+done <"${tmp}/dirs"
+LC_ALL=C sort -t $'\t' -k1,1r -k3,3 "${tmp}/runs" >"${tmp}/sorted"
+while IFS=$'\t' read -r key mark rel; do
+  header="${mark} ${key:0:8}-${key:8:2} ${rel}"
+  if [[ "${#patterns[@]}" -eq 0 ]]; then
+    printf '%s\n' "${header}"
+    continue
+  fi
+  lines=''
+  for file in task.md decisions.md; do
+    if [[ ! -f "${specs}/${rel}/${file}" ]]; then
+      continue
+    fi
+    rc=0
+    found="$(LC_ALL=C.UTF-8 grep -a -n -i -F "${patterns[@]}" \
+      -- "${specs}/${rel}/${file}")" || rc=$?
+    if [[ "${rc}" -gt 1 ]]; then
+      fail "grep failed: ${rel}/${file}"
+    fi
+    if [[ -z "${found}" ]]; then
+      continue
+    fi
+    while IFS= read -r line; do
+      lines+="    ${file}:${line}"$'\n'
+    done <<<"${found}"
+  done
+  if [[ -n "${lines}" ]]; then
+    printf '%s\n%s' "${header}" "${lines}"
+  fi
+done <"${tmp}/sorted"

@@ -11,7 +11,22 @@ main_dir="$1"
 specs_repo="$2"
 slug="$3"
 topic="${4:-}"
+name_re='^[a-z0-9]+(-[a-z0-9]+)*$'
+[[ ${slug} =~ ${name_re} ]] || {
+  echo "error: bad short name: ${slug}" >&2
+  exit 2
+}
+[[ -z ${topic} || ${topic} =~ ${name_re} ]] || {
+  echo "error: bad topic: ${topic}" >&2
+  exit 2
+}
 top="$(git -C "${main_dir}" rev-parse --show-toplevel)"
+git_dir="$(git -C "${main_dir}" rev-parse --path-format=absolute --git-dir)"
+common="$(git -C "${main_dir}" rev-parse --path-format=absolute --git-common-dir)"
+[[ ${git_dir} == "${common}" ]] || {
+  echo "error: not the main work tree: ${main_dir}" >&2
+  exit 2
+}
 parent="$(basename "$(dirname "${top}")")/$(basename "${top}")"
 [[ -z "${topic}" ]] || parent="${parent}/${topic}"
 day="$(date +%Y%m%d)"

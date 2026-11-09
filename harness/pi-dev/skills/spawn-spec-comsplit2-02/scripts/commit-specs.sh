@@ -1,27 +1,49 @@
 #!/usr/bin/env bash
-# Commits the run directory into the specs repository as the orchestrator.
+# cspell:ignore toplevel
+# Commit only the run directory to the specs repository on behalf of the orchestrator.
 set -euo pipefail
-[[ $# -eq 2 ]] || {
-  echo "usage: ${0##*/} <specs-repo> <run-dir>" >&2
-  exit 2
+
+fail() {
+  echo "error: $1" >&2
+  exit "${2:-1}"
 }
-repo="$1"
-run_dir="$2"
+
+if [[ "$#" -ne 1 ]]; then
+  echo 'usage: commit-specs.sh <run-dir>' >&2
+  exit 2
+fi
+specs="${SPECS_REPO:-/workspace/vscode/raven/man4llm}"
+run="${1%/}"
 name="${ORCH_NAME:-Moderator}"
 email="${ORCH_EMAIL:-moderator@models.dev}"
-run_rel="$(realpath --relative-to="${repo}" "${run_dir}")"
-git -C "${repo}" add -- "${run_dir}"
-if [[ -z "$(git -C "${repo}" status --porcelain -- "${run_dir}")" ]]; then
-  echo 'nothing to commit'
+if [[ -z "${name}" || "${name}" == *$'\n'* ]]; then
+  fail 'bad author name' 2
+fi
+if [[ ! "${email}" =~ ^[^[:space:]\<\>@]+@[^[:space:]\<\>@]+$ ]]; then
+  fail "bad email: ${email}" 2
+fi
+top="$(git -C "${specs}" rev-parse --show-toplevel)" ||
+  fail "not a specs repository: ${specs}" 2
+if [[ "${top}" != "$(cd "${specs}" && pwd -P)" ]]; then
+  fail "not a specs repository root: ${specs}" 2
+fi
+if [[ "${run}" != "${specs}"/* || ! -d "${run}" || -L "${run}" ]]; then
+  fail "not a run directory in ${specs}: ${run}" 2
+fi
+rel="${run#"${specs}/"}"
+if [[ ! "${rel}" =~ ^([^/]+/){2}([^/]+/)?[0-9]{8}-[0-9]{2}-[a-z0-9-]+$ ]]; then
+  fail "not a run directory path: ${rel}" 2
+fi
+git -C "${specs}" add -- "${rel}"
+if git -C "${specs}" diff --cached --quiet -- "${rel}"; then
+  echo 'nothing to commit' >&2
   exit 0
 fi
-if [[ -z "$(git -C "${repo}" log -1 --format=%h -- "${run_dir}" 2>/dev/null)" ]]; then
-  verb='add'
-else
-  verb='update'
+kind='add'
+if [[ -n "$(git -C "${specs}" log -1 --format=%H -- "${rel}")" ]]; then
+  kind='update'
 fi
 GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
   GIT_COMMITTER_NAME="${name}" GIT_COMMITTER_EMAIL="${email}" \
-  git -C "${repo}" commit --quiet --no-gpg-sign -m "${verb} ${run_rel} spec" \
-  -- "${run_dir}"
-git -C "${repo}" log -1 --format='%h %s'
+  git -C "${specs}" commit --quiet --no-gpg-sign -m "${kind} ${rel} spec" -- "${rel}"
+git -C "${specs}" rev-parse HEAD
