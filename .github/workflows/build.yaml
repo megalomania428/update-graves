@@ -1,4 +1,4 @@
-# cspell:ignore dependabot
+# cspell:ignore dependabot gomod gocache gomodcache
 ---
 name: build
 on:
