@@ -1,0 +1,3524 @@
+diff -ruN -x .git a/docs/config.md b/docs/config.md
+--- a/docs/config.md	2026-11-10 07:23:03.578950126 +0000
++++ b/docs/config.md	2026-11-10 12:38:18.411486101 +0000
+@@ -214,7 +214,7 @@
+ 
+ `PI_WEB_DATA_DIR` sets the root for PI WEB-managed runtime state and defaults to `~/.pi-web`. Unless a more specific path override is configured, PI WEB stores its project and machine registries, locally discovered plugins, default session-daemon socket, and session archives beneath this root.
+ 
+-Each data directory is independent: after pointing PI WEB at a new root, it starts there with empty registries and no session archives. To carry session archives over, stop PI WEB, then copy `archived-sessions.json` and the `archived-sessions/` directory from the old data directory into the new one before starting it again.
++Each data directory is independent: after pointing PI WEB at a new root, it starts there with empty registries and no session archives. To carry session archives over, stop PI WEB, then copy the `archived-projects/` directory from the old data directory into the new one before starting it again. It holds a directory per project named after its working directory, with `YYYY/MM/DD` directories of session files and a `summary.json` per month.
+ 
+ One live session daemon owns each data directory. At startup the daemon records its ownership in `sessiond-owner.json` inside the data directory; a second session daemon pointed at the same directory while the first is still running fails loudly at startup with an error naming the owning process and the distinct `PI_WEB_DATA_DIR`, `PI_WEB_SESSIOND_SOCKET` (or `PI_WEB_SESSIOND_PORT` / `PI_WEB_SESSIOND_HOST`), and `PI_WEB_PORT` values a second instance needs. The web/API process of the same instance shares the data directory without claiming it, and a short startup grace covers ordinary service restarts. A marker left behind by a daemon that is no longer running is taken over automatically; if startup still refuses because of a marker whose owner is gone, delete the stale `sessiond-owner.json` as the error message suggests.
+ 
+diff -ruN -x .git a/src/client/src/api/clients.ts b/src/client/src/api/clients.ts
+--- a/src/client/src/api/clients.ts	2026-11-10 07:23:02.766932167 +0000
++++ b/src/client/src/api/clients.ts	2026-11-10 12:38:18.403485917 +0000
+@@ -33,6 +33,7 @@
+   parsePiWebStatusResponse,
+   parseProject,
+   parseReloaded,
++  parseRenamed,
+   parseRestored,
+   parseSavedAttachments,
+   parseSessionBulkArchiveResponse,
+@@ -268,6 +269,7 @@
+   archiveWithDescendants: (session: SessionRef, machineId = "local") => request(sessionPath(session, "archive-tree", machineId), parseArchived, { method: "POST", body: sessionBody(session) }),
+   restore: (session: SessionRef, machineId = "local") => request(sessionPath(session, "restore", machineId), parseRestored, { method: "POST", body: sessionBody(session) }),
+   detachParent: (session: SessionRef, machineId = "local") => request(sessionPath(session, "detach-parent", machineId), parseDetached, { method: "POST", body: sessionBody(session) }),
++  rename: (session: SessionRef, name: string, machineId = "local") => request(sessionPath(session, "rename", machineId), parseRenamed, { method: "POST", body: sessionBody(session, { name }) }),
+   reloadSession: (session: SessionRef, machineId = "local") => request(sessionPath(session, "reload", machineId), parseReloaded, { method: "POST", body: sessionBody(session) }),
+   authProviders: (options?: { mode?: "login" | "logout"; authType?: "oauth" | "api_key"; machineId?: string }) => {
+     const params = new URLSearchParams();
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-11-10 07:23:03.618951011 +0000
++++ b/src/client/src/api/parsers.ts	2026-11-10 12:38:18.403485917 +0000
+@@ -2213,6 +2213,15 @@
+   return { detached: true };
+ }
+ 
++export function parseRenamed(value: unknown): { renamed: true; name?: string } {
++  const record = requireRecord(value);
++  if (record["renamed"] !== true) throw new Error("Expected renamed response");
++  const name = record["name"];
++  if (name === undefined) return { renamed: true };
++  if (typeof name !== "string") throw new Error("Expected renamed response");
++  return { renamed: true, name };
++}
++
+ export function parseReloaded(value: unknown): { reloaded: true } {
+   const record = requireRecord(value);
+   if (record["reloaded"] !== true) throw new Error("Expected reloaded response");
+diff -ruN -x .git a/src/client/src/components/PiWebApp.ts b/src/client/src/components/PiWebApp.ts
+--- a/src/client/src/components/PiWebApp.ts	2026-11-10 07:23:03.582950215 +0000
++++ b/src/client/src/components/PiWebApp.ts	2026-11-10 12:38:18.411486101 +0000
+@@ -68,6 +68,7 @@
+ import "./ActionPalette";
+ import "./AuthDialog";
+ import "./ProjectDialog";
++import "./SessionRenameDialog";
+ import "./MachineDialog";
+ import type { MachineDialogSubmit } from "./MachineDialog";
+ import { hasRenderedModal } from "./modalLayerRegistry";
+@@ -254,6 +255,7 @@
+   @state() private activeThemeId: QualifiedContributionId = CLASSIC_THEME_ID;
+   @state() private isRefreshingApp = false;
+   @state() private sessionCleanupDialog: SessionCleanupDialogState | undefined;
++  @state() private renameSessionTarget: SessionInfo | undefined;
+   @state() private settingsSection: SettingsSection | undefined = readSettingsSection();
+   @state() private shortcutConfig: PiWebShortcutConfig = {};
+   @state() private defaultStreamingBehavior: "steer" | "followUp" = "steer";
+@@ -1246,6 +1248,13 @@
+     this.sessionCleanupDialog = undefined;
+   }
+ 
++  private async submitSessionRename(name: string): Promise<void> {
++    const session = this.renameSessionTarget;
++    if (session === undefined) return;
++    this.renameSessionTarget = undefined;
++    await this.sessions.renameSession(session, name);
++  }
++
+   private async previewSessionCleanup(request: SessionCleanupRequest): Promise<void> {
+     const machineId = selectedMachineId(this.state);
+     this.sessionCleanupDialog = { ...(this.sessionCleanupDialog ?? {}), loading: true, error: "", preview: undefined, previewRequest: undefined, result: undefined };
+@@ -1323,6 +1332,7 @@
+         .onDeleteArchivedSession=${(session: SessionInfo) => this.sessions.deleteArchivedSessions([session])}
+         .onDeleteArchivedSessions=${(sessions: SessionInfo[]) => this.sessions.deleteArchivedSessions(sessions)}
+         .onDetachParentSession=${(session: SessionInfo) => this.sessions.detachParent(session)}
++        .onRenameSession=${(session: SessionInfo) => { this.renameSessionTarget = session; }}
+         .onReloadSession=${(session: SessionInfo) => this.sessions.reloadSession(session)}
+         .onCleanupSessions=${() => { this.openSessionCleanupDialog(); }}
+         .onFocusNavigationTarget=${(target: NavigationFocusTarget) => { void this.focusNavigationTarget(target); }}
+@@ -2360,6 +2370,7 @@
+         ${state.actionPaletteOpen ? html`<action-palette .actions=${this.getActions()} .onRun=${(action: AppAction) => { this.setState({ actionPaletteOpen: false }); this.runAction(action); }} .onCancel=${() => { this.setState({ actionPaletteOpen: false }); }}></action-palette>` : null}
+         ${this.renderSessionTreeNavigator(state)}
+         ${state.projectDialogOpen ? html`<project-dialog .machineId=${selectedMachineId(state)} .onSubmit=${(path: string, create: boolean, trust: ProjectTrustChoice | undefined) => this.projects.addProject(path, create, trust)} .onCancel=${() => { this.setState({ projectDialogOpen: false }); }}></project-dialog>` : null}
++        ${this.renameSessionTarget !== undefined ? html`<session-rename-dialog .session=${this.renameSessionTarget} .onSubmit=${(name: string) => this.submitSessionRename(name)} .onCancel=${() => { this.renameSessionTarget = undefined; }}></session-rename-dialog>` : null}
+         ${state.machineDialogOpen ? html`<machine-dialog .error=${state.error} .onSubmit=${(input: MachineDialogSubmit) => this.submitMachineDialog(input)} .onCancel=${() => { this.setState({ machineDialogOpen: false }); }}></machine-dialog>` : null}
+         ${this.sessionCleanupDialog !== undefined ? html`<session-cleanup-dialog .preview=${this.sessionCleanupDialog.preview} .previewRequest=${this.sessionCleanupDialog.previewRequest} .result=${this.sessionCleanupDialog.result} .loading=${this.sessionCleanupDialog.loading === true} .running=${this.sessionCleanupDialog.running === true} .error=${this.sessionCleanupDialog.error ?? ""} .onPreview=${(request: SessionCleanupRequest) => { void this.previewSessionCleanup(request); }} .onRun=${(request: SessionCleanupRequest) => { void this.runSessionCleanup(request); }} .onClose=${() => { this.closeSessionCleanupDialog(); }}></session-cleanup-dialog>` : null}
+         ${state.themeDialog !== undefined ? html`<command-picker title=${state.themeDialog.title} .options=${state.themeDialog.options} .selectedValue=${state.themeDialog.selectedValue} .onPick=${(value: string) => { this.pickTheme(value); }} .onCancel=${() => { this.setState({ themeDialog: undefined }); }}></command-picker>` : null}
+diff -ruN -x .git a/src/client/src/components/SessionList.ts b/src/client/src/components/SessionList.ts
+--- a/src/client/src/components/SessionList.ts	2026-11-10 07:23:03.506948533 +0000
++++ b/src/client/src/components/SessionList.ts	2026-11-10 12:38:18.407486010 +0000
+@@ -2,7 +2,7 @@
+ import { customElement, property, state } from "lit/decorators.js";
+ import type { SessionActivity, SessionInfo, SessionStatus } from "../api";
+ import { isCachedNewSessionInfo } from "../cachedNewSessions";
+-import { shortSessionId } from "../sessionLabels";
++import { sessionLabel } from "../sessionLabels";
+ import { isArchivableSessionInfo, isTransientNewSessionInfo } from "../sessionPersistence";
+ import { normalizeSessionPath } from "../sessionPaths";
+ import { isSessionActive } from "../../../shared/activity";
+@@ -21,11 +21,6 @@
+ const ORPHAN_PARENT_LABEL = "parent unavailable";
+ const ORPHAN_PARENT_TITLE = "Parent session is not available in this workspace";
+ 
+-function sessionLabel(session: SessionInfo): string {
+-  if (session.name !== undefined && session.name !== "") return session.name;
+-  return session.firstMessage !== "" ? session.firstMessage : shortSessionId(session.id);
+-}
+-
+ export interface SessionRow {
+   session: SessionInfo;
+   depth: number;
+@@ -61,6 +56,7 @@
+   @property({ attribute: false }) onDeleteArchived?: (session: SessionInfo) => void | Promise<void>;
+   @property({ attribute: false }) onDeleteArchivedMany?: (sessions: SessionInfo[]) => void | Promise<void>;
+   @property({ attribute: false }) onDetachParent?: (session: SessionInfo) => void;
++  @property({ attribute: false }) onRename?: (session: SessionInfo) => void;
+   @property({ attribute: false }) onMarkRead?: (session: SessionInfo) => void;
+   @property({ attribute: false }) onMarkReadMany?: (sessions: SessionInfo[]) => void | Promise<void>;
+   @property({ attribute: false }) onReload?: (session: SessionInfo) => void;
+@@ -306,12 +302,14 @@
+             <div class="action-menu-panel" style=${this.menuStyle}>
+               ${session.archived === true
+                 ? html`
++                  <button title="Rename session" @click=${() => { this.openMenuSessionId = undefined; this.onRename?.(session); }}>Rename</button>
+                   <button title="Restore session" @click=${() => { this.openMenuSessionId = undefined; this.onRestore?.(session); }}>Restore</button>
+                   <button class="danger" title="Permanently delete archived session" @click=${() => { this.openMenuSessionId = undefined; this.confirmDeleteArchived(session); }}>Delete archived session</button>
+                 `
+                 : canDeleteTransient
+                   ? html`<button title="Delete transient new session" @click=${() => { this.openMenuSessionId = undefined; this.onDelete?.(session); }}>Delete</button>`
+                   : html`
++                    <button title="Rename session" @click=${() => { this.openMenuSessionId = undefined; this.onRename?.(session); }}>Rename</button>
+                     ${this.unreadSessionIds.has(session.id) ? html`<button title="Mark session as read" @click=${() => { this.openMenuSessionId = undefined; this.onMarkRead?.(session); }}>Mark as read</button>` : null}
+                     ${canArchive ? html`
+                       <button title="Archive session" @click=${() => { this.openMenuSessionId = undefined; this.onArchive?.(session); }}>Archive</button>
+diff -ruN -x .git a/src/client/src/components/SessionRenameDialog.ts b/src/client/src/components/SessionRenameDialog.ts
+--- a/src/client/src/components/SessionRenameDialog.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/components/SessionRenameDialog.ts	2026-11-10 12:38:08.475256880 +0000
+@@ -0,0 +1,85 @@
++import { LitElement, css, html } from "lit";
++import { customElement, property, state } from "lit/decorators.js";
++import type { SessionInfo } from "../api";
++import { sessionLabel } from "../sessionLabels";
++import "./ModalSurface";
++
++/** Name or rename a session; an empty name removes the name. */
++@customElement("session-rename-dialog")
++export class SessionRenameDialog extends LitElement {
++  @property({ attribute: false }) session?: SessionInfo;
++  @property({ attribute: false }) onSubmit?: (name: string) => void | Promise<void>;
++  @property({ attribute: false }) onCancel?: () => void;
++
++  /** The edited name; undefined until the first edit, so the current name shows. */
++  @state() private name: string | undefined;
++
++  private currentName(): string {
++    return this.name ?? this.session?.name ?? "";
++  }
++
++  private handleInput(event: InputEvent): void {
++    if (!(event.target instanceof HTMLInputElement)) return;
++    this.name = event.target.value;
++  }
++
++  private handleSubmit(event: SubmitEvent): void {
++    event.preventDefault();
++    void this.submit();
++  }
++
++  private async submit(): Promise<void> {
++    await this.onSubmit?.(this.currentName());
++  }
++
++  override render() {
++    const title = this.session === undefined ? "Rename session" : `Rename “${sessionLabel(this.session)}”`;
++    return html`
++      <modal-surface
++        .onClose=${() => this.onCancel?.()}
++        .initialFocus=${"input[name='name']"}
++        .label=${"Rename session"}
++      >
++        <form @submit=${(event: SubmitEvent) => { this.handleSubmit(event); }}>
++          <header>
++            <strong>${title}</strong>
++            <button type="button" @click=${() => { this.onCancel?.(); }} aria-label="Close">×</button>
++          </header>
++          <div class="body">
++            <label>
++              Session name
++              <input name="name" type="text" .value=${this.currentName()} @input=${(event: InputEvent) => { this.handleInput(event); }} autocomplete="off" />
++            </label>
++            <small class="hint">Leave empty to remove the name.</small>
++          </div>
++          <footer>
++            <button type="button" @click=${() => { this.onCancel?.(); }}>Cancel</button>
++            <button class="primary" type="submit">Rename</button>
++          </footer>
++        </form>
++      </modal-surface>
++    `;
++  }
++
++  static override styles = css`
++    :host { position: fixed; inset: 0; z-index: 30; color: var(--pi-text); font: 14px system-ui, sans-serif; }
++    modal-surface { --modal-surface-place-items: start center; --modal-surface-backdrop-padding: min(12vh, 90px) 0 0; --modal-surface-width: min(560px, calc(100vw - 40px)); --modal-surface-max-height: min(640px, calc(100vh - 40px)); }
++    form { display: flex; flex-direction: column; min-height: 0; }
++    header, footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px; border-bottom: 1px solid var(--pi-border); }
++    footer { border-top: 1px solid var(--pi-border); border-bottom: 0; justify-content: end; }
++    .body { display: grid; gap: 8px; padding: 12px; min-height: 0; overflow: auto; }
++    label { display: grid; gap: 6px; color: var(--pi-muted); }
++    input { box-sizing: border-box; width: 100%; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-bg); color: var(--pi-text); padding: 9px; font: var(--pi-control-font-size, 16px) system-ui, sans-serif; }
++    input:focus-visible { outline: 2px solid var(--pi-accent); outline-offset: 1px; }
++    .hint { color: var(--pi-muted); }
++    button { border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); color: var(--pi-text); padding: 7px 9px; cursor: pointer; }
++    header button { border: 0; background: transparent; color: var(--pi-muted); font-size: 22px; padding: 0 8px; }
++    .primary { border-color: var(--pi-success-border); background: var(--pi-success-border); }
++  `;
++}
++
++declare global {
++  interface HTMLElementTagNameMap {
++    "session-rename-dialog": SessionRenameDialog;
++  }
++}
+diff -ruN -x .git a/src/client/src/components/appShell/AppContextBar.ts b/src/client/src/components/appShell/AppContextBar.ts
+--- a/src/client/src/components/appShell/AppContextBar.ts	2026-11-10 07:23:03.566949861 +0000
++++ b/src/client/src/components/appShell/AppContextBar.ts	2026-11-10 12:38:18.411486101 +0000
+@@ -2,7 +2,7 @@
+ import { customElement, property, query, state } from "lit/decorators.js";
+ import type { Machine, Project, SessionInfo } from "../../api";
+ import { browserGatewayDisplayUrl, machineIconUrl } from "../../instanceIdentity";
+-import { shortSessionId } from "../../sessionLabels";
++import { sessionLabel } from "../../sessionLabels";
+ import type { NavigationSection } from "../../appShell/navigationState";
+ 
+ @customElement("app-context-bar")
+@@ -230,9 +230,7 @@
+ }
+ 
+ function sessionContextLabel(session: SessionInfo | undefined): string {
+-  const name = session?.name?.trim();
+-  const firstMessage = session?.firstMessage.trim();
+-  return name !== undefined && name !== "" ? name : firstMessage !== undefined && firstMessage !== "" ? firstMessage : session === undefined ? "No session" : shortSessionId(session.id);
++  return session === undefined ? "No session" : sessionLabel(session);
+ }
+ 
+ function sessionContextTitle(session: SessionInfo | undefined): string {
+diff -ruN -x .git a/src/client/src/components/appShell/AppNavigationPanel.ts b/src/client/src/components/appShell/AppNavigationPanel.ts
+--- a/src/client/src/components/appShell/AppNavigationPanel.ts	2026-11-10 07:23:03.566949861 +0000
++++ b/src/client/src/components/appShell/AppNavigationPanel.ts	2026-11-10 12:38:18.407486010 +0000
+@@ -56,6 +56,7 @@
+   @property({ attribute: false }) onDeleteArchivedSession?: (session: SessionInfo) => void | Promise<void>;
+   @property({ attribute: false }) onDeleteArchivedSessions?: (sessions: SessionInfo[]) => void | Promise<void>;
+   @property({ attribute: false }) onDetachParentSession?: (session: SessionInfo) => void | Promise<void>;
++  @property({ attribute: false }) onRenameSession?: (session: SessionInfo) => void | Promise<void>;
+   @property({ attribute: false }) onMarkSessionRead?: (session: SessionInfo) => void | Promise<void>;
+   @property({ attribute: false }) onMarkSessionsRead?: (sessions: SessionInfo[]) => void | Promise<void>;
+   @property({ attribute: false }) onReloadSession?: (session: SessionInfo) => void | Promise<void>;
+@@ -154,6 +155,7 @@
+         .onDeleteArchived=${(session: SessionInfo) => this.onDeleteArchivedSession?.(session)}
+         .onDeleteArchivedMany=${(sessions: SessionInfo[]) => this.onDeleteArchivedSessions?.(sessions)}
+         .onDetachParent=${(session: SessionInfo) => this.onDetachParentSession?.(session)}
++        .onRename=${(session: SessionInfo) => this.onRenameSession?.(session)}
+         .onMarkRead=${(session: SessionInfo) => this.onMarkSessionRead?.(session)}
+         .onMarkReadMany=${(sessions: SessionInfo[]) => this.onMarkSessionsRead?.(sessions)}
+         .onReload=${(session: SessionInfo) => this.onReloadSession?.(session)}
+diff -ruN -x .git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
+--- a/src/client/src/controllers/sessionController.ts	2026-11-10 07:23:03.630951276 +0000
++++ b/src/client/src/controllers/sessionController.ts	2026-11-10 12:38:18.407486010 +0000
+@@ -854,6 +854,17 @@
+     }
+   }
+ 
++  async renameSession(session: SessionInfo, name: string) {
++    const machineId = selectedMachineId(this.getState());
++    const errorOwner = this.captureSessionErrorOwner(session);
++    try {
++      const renamed = await this.api.rename(session, name, machineId);
++      this.applySessionName(session.id, renamed.name);
++    } catch (error) {
++      this.reportSessionError(session, machineId, error, errorOwner);
++    }
++  }
++
+   async listModels() {
+     const session = this.getState().selectedSession;
+     if (!session || session.archived === true) return [];
+diff -ruN -x .git a/src/client/src/sessionLabels.test.ts b/src/client/src/sessionLabels.test.ts
+--- a/src/client/src/sessionLabels.test.ts	2026-11-10 07:23:02.838933759 +0000
++++ b/src/client/src/sessionLabels.test.ts	2026-11-10 12:38:08.475256880 +0000
+@@ -1,12 +1,18 @@
+ import { describe, expect, it } from "vitest";
+-import { shortSessionId } from "./sessionLabels";
++import { sessionLabel } from "./sessionLabels";
+ 
+-describe("shortSessionId", () => {
+-  it("uses the random-looking suffix of UUIDv7 session ids", () => {
+-    expect(shortSessionId("019f22c5-d53e-7489-997f-fce1e570a202")).toBe("e570a202");
++describe("sessionLabel", () => {
++  it("uses the session name", () => {
++    expect(sessionLabel({ name: " Fix login ", created: "2026-10-22T14:05:31.123Z" })).toBe("Fix login");
+   });
+ 
+-  it("keeps short ids intact", () => {
+-    expect(shortSessionId("abc123")).toBe("abc123");
++  it("labels unnamed sessions with their local creation date and time", () => {
++    const created = new Date(2026, 9, 22, 14, 5, 31, 123).toISOString();
++    expect(sessionLabel({ created })).toBe("2026-10-22 14:05:31");
++    expect(sessionLabel({ name: "  ", created })).toBe("2026-10-22 14:05:31");
++  });
++
++  it("falls back to a fixed label when the creation time is invalid", () => {
++    expect(sessionLabel({ created: "" })).toBe("Unnamed session");
+   });
+ });
+diff -ruN -x .git a/src/client/src/sessionLabels.ts b/src/client/src/sessionLabels.ts
+--- a/src/client/src/sessionLabels.ts	2026-11-10 07:23:02.838933759 +0000
++++ b/src/client/src/sessionLabels.ts	2026-11-10 12:38:08.475256880 +0000
+@@ -1,3 +1,12 @@
+-export function shortSessionId(id: string): string {
+-  return id.slice(-8);
++import type { SessionInfo } from "./api";
++import { formatChatTimestamp } from "./chatMeta";
++
++/** Label of an unnamed session whose creation time cannot be parsed. */
++const UNNAMED_SESSION_LABEL = "Unnamed session";
++
++/** A session's display label: its name, else its local `YYYY-MM-DD HH:mm:ss` creation time. */
++export function sessionLabel(session: Pick<SessionInfo, "name" | "created">): string {
++  const name = session.name?.trim();
++  if (name !== undefined && name !== "") return name;
++  return formatChatTimestamp(session.created) ?? UNNAMED_SESSION_LABEL;
+ }
+diff -ruN -x .git a/src/server/projects/projectService.ts b/src/server/projects/projectService.ts
+--- a/src/server/projects/projectService.ts	2026-11-10 07:23:02.874934555 +0000
++++ b/src/server/projects/projectService.ts	2026-11-10 12:38:08.475256880 +0000
+@@ -1,4 +1,5 @@
+ import { mkdir, realpath, stat } from "node:fs/promises";
++import { dirname, resolve } from "node:path";
+ import type { ProjectStore } from "../storage/projectStore.js";
+ import type { Project } from "../types.js";
+ import { expandUserPath } from "./directorySuggestions.js";
+@@ -16,6 +17,7 @@
+     const requestedPath = expandUserPath(input.path.trim());
+     if (input.create === true) await mkdir(requestedPath, { recursive: true });
+     const resolved = await realpath(requestedPath);
++    if (isFilesystemRoot(resolved)) throw new Error("The filesystem root / cannot be a project");
+     const s = await stat(resolved);
+     if (!s.isDirectory()) throw new Error("Project path must be a directory");
+     return this.store.add(input.name === undefined ? { path: resolved } : { name: input.name, path: resolved });
+@@ -30,4 +32,17 @@
+     if (!project) throw new Error("Project not found");
+     return project;
+   }
++
++  /** Remove projects at the filesystem root, which cannot be projects; resolves to the removed ones. */
++  async removeRootProjects(): Promise<Project[]> {
++    const removed: Project[] = [];
++    for (const project of await this.store.list()) {
++      if (isFilesystemRoot(resolve(project.path)) && await this.store.remove(project.id)) removed.push(project);
++    }
++    return removed;
++  }
++}
++
++function isFilesystemRoot(path: string): boolean {
++  return dirname(path) === path;
+ }
+diff -ruN -x .git a/src/server/sessiond.ts b/src/server/sessiond.ts
+--- a/src/server/sessiond.ts	2026-11-10 07:23:03.526948976 +0000
++++ b/src/server/sessiond.ts	2026-11-10 12:38:18.399485824 +0000
+@@ -19,7 +19,7 @@
+ import { createPiSessionManagerGateway } from "./sessions/piSessionManagerGateway.js";
+ import { registerSessionRoutes } from "./sessions/sessionRoutes.js";
+ import { SessionNotificationStore } from "./sessions/sessionNotificationStore.js";
+-import { SessionArchiveStore, defaultSessionArchiveFilePath } from "./sessions/sessionArchiveStore.js";
++import { SessionArchiveStore, defaultSessionArchiveRootDir } from "./sessions/sessionArchiveStore.js";
+ import { FileSessionUnreadPersistence, SessionUnreadStore, defaultSessionUnreadFilePath } from "./sessions/sessionUnreadStore.js";
+ import { ProjectScopedSpawnTargetResolver } from "./sessions/spawnTargetResolver.js";
+ import { ProjectService } from "./projects/projectService.js";
+@@ -219,6 +219,23 @@
+     catalogRefresher.start();
+     auth.subscribe(() => { catalogRefresher.requestRefresh(); });
+     const projects = new ProjectService(new ProjectStore(projectStorePath(daemonEnvironment)));
++    try {
++      for (const project of await projects.removeRootProjects()) {
++        serverNotices.record({
++          severity: "warning",
++          message: `Removed project “${project.name}” from projects.json: the filesystem root ${project.path} cannot be a project.`,
++          source: "projects",
++          context: { projectId: project.id, path: project.path },
++        });
++      }
++    } catch (error: unknown) {
++      app.log.warn({ err: error }, "could not check projects.json for a filesystem root project");
++      serverNotices.record({
++        severity: "warning",
++        message: `Could not check projects.json for a filesystem root project: ${error instanceof Error ? error.message : String(error)}`,
++        source: "projects",
++      });
++    }
+     const providerHealth = await serverPlugins.inspectHealth();
+     const workspaceProviders = new WorkspaceProviderRegistry({
+       contributions: eligibleWorkspaceProviderContributions(serverPlugins.providerContributions(), providerHealth),
+@@ -255,7 +272,7 @@
+     const sessions = new PiSessionService(eventHub, sessionServiceDependencies({
+       modelRuntime: auth.runtime,
+       agentDir: activeAgentProfile.dir,
+-      archiveStore: new SessionArchiveStore(defaultSessionArchiveFilePath(daemonEnvironment)),
++      archiveStore: new SessionArchiveStore(defaultSessionArchiveRootDir(daemonEnvironment)),
+       workspaceActivity,
+       logger: app.log,
+       ...(spawnTargets === undefined ? {} : { spawnTargets }),
+diff -ruN -x .git a/src/server/sessions/piSessionService.archiveCleanup.test.ts b/src/server/sessions/piSessionService.archiveCleanup.test.ts
+--- a/src/server/sessions/piSessionService.archiveCleanup.test.ts	2026-11-10 07:23:02.890934909 +0000
++++ b/src/server/sessions/piSessionService.archiveCleanup.test.ts	2026-11-10 18:21:53.733242844 +0000
+@@ -1,6 +1,7 @@
+ import { resolve } from "node:path";
+ import { describe, expect, it, vi } from "vitest";
+ import { PiSessionService } from "./piSessionService.js";
++import type { ArchivedSessionRef } from "./sessionArchiveStore.js";
+ import { SessionNotificationStore } from "./sessionNotificationStore.js";
+ import { CapturingSessionEventHub, fakeRuntime, fakeSessionManager, resolveSessionFileFromList, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime } from "./piSessionService.testSupport.js";
+ 
+@@ -220,7 +221,7 @@
+ 
+     await service.restore(sessionRef("archived"));
+ 
+-    expect(restore).toHaveBeenCalledWith("archived");
++    expect(restore).toHaveBeenCalledWith("archived", "/workspace");
+     expect(notificationStore.catalogSnapshot().sessions).toEqual([]);
+     await service.dispose();
+   });
+@@ -323,7 +324,7 @@
+     const busyRecord = { sessionId: "busy-archived", cwd: "/workspace", archivedAt: "2026-01-02T00:00:00.000Z", archivePath: "/archive/busy.jsonl" };
+     const idleRecord = { sessionId: "idle-archived", cwd: "/workspace", archivedAt: "2026-01-02T00:00:00.000Z", archivePath: "/archive/idle.jsonl" };
+     const busy = fakeRuntime("busy-archived", { isStreaming: true });
+-    const deleteArchivedMany = vi.fn((sessionIds: readonly string[]) => Promise.resolve([...sessionIds]));
++    const deleteArchivedMany = vi.fn((refs: readonly ArchivedSessionRef[]) => Promise.resolve({ deletedSessionIds: refs.map((ref) => ref.sessionId), failures: [] }));
+     const service = new PiSessionService(new CapturingSessionEventHub(), {
+       agentDir: TEST_AGENT_DIR,
+       modelRuntime: testModelRuntime,
+@@ -352,7 +353,7 @@
+     const result = await service.deleteArchivedMany([{ id: "busy-archived", cwd: "/workspace" }, { id: "idle-archived", cwd: "/workspace" }, { id: "unarchived", cwd: "/workspace" }]);
+ 
+     expect(busy.calls.abort).toBe(0);
+-    expect(deleteArchivedMany).toHaveBeenCalledWith(["idle-archived"]);
++    expect(deleteArchivedMany).toHaveBeenCalledWith([{ sessionId: "idle-archived", cwd: "/workspace" }]);
+     expect(result.deletedSessionIds).toEqual(["idle-archived"]);
+     expect(result.failures).toEqual([
+       { sessionId: "busy-archived", error: "Stop current session activity before deleting archived session" },
+@@ -363,7 +364,7 @@
+ 
+   it("bulk delete removes records without archive files without re-archiving them", async () => {
+     const archiveMany = vi.fn(() => Promise.resolve([]));
+-    const deleteArchivedMany = vi.fn((sessionIds: readonly string[]) => Promise.resolve([...sessionIds]));
++    const deleteArchivedMany = vi.fn((refs: readonly ArchivedSessionRef[]) => Promise.resolve({ deletedSessionIds: refs.map((ref) => ref.sessionId), failures: [] }));
+     const listCalls: string[] = [];
+     const service = new PiSessionService(new CapturingSessionEventHub(), {
+       agentDir: TEST_AGENT_DIR,
+@@ -400,7 +401,7 @@
+ 
+     expect(listCalls).toEqual([]);
+     expect(archiveMany).not.toHaveBeenCalled();
+-    expect(deleteArchivedMany).toHaveBeenCalledWith(["legacy-a", "legacy-b", "moved"]);
++    expect(deleteArchivedMany).toHaveBeenCalledWith([{ sessionId: "legacy-a", cwd: "/workspace" }, { sessionId: "legacy-b", cwd: "/workspace" }, { sessionId: "moved", cwd: "/workspace" }]);
+     expect(result.deletedSessionIds).toEqual(["legacy-a", "legacy-b", "moved"]);
+     expect(result.failures).toEqual([]);
+     await service.dispose();
+@@ -433,9 +434,9 @@
+         restore: () => Promise.resolve(),
+         isArchived: () => Promise.resolve(false),
+         deleteArchived: () => Promise.reject(new Error("cleanup should use deleteArchivedMany")),
+-        deleteArchivedMany: (sessionIds) => {
+-          deletedSessionIds.push(...sessionIds);
+-          return Promise.resolve([...sessionIds]);
++        deleteArchivedMany: (refs) => {
++          deletedSessionIds.push(...refs.map((ref) => ref.sessionId));
++          return Promise.resolve({ deletedSessionIds: refs.map((ref) => ref.sessionId), failures: [] });
+         },
+       },
+       sessionManager: {
+@@ -472,10 +473,51 @@
+     await service.dispose();
+   });
+ 
++  it("leaves sessions of the filesystem root out of cleanup instead of failing it", async () => {
++    const archivedInputs: string[] = [];
++    const service = new PiSessionService(new CapturingSessionEventHub(), {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      now: () => new Date("2026-06-25T00:00:00.000Z"),
++      archiveStore: {
++        list: () => Promise.resolve([]),
++        get: () => Promise.resolve(undefined),
++        archive: () => Promise.reject(new Error("cleanup should use archiveMany")),
++        archiveMany: (inputs) => {
++          const root = inputs.find((input) => input.cwd === "/");
++          if (root !== undefined) return Promise.reject(new Error(`Sessions of the filesystem root / cannot be archived: ${root.sessionId}`));
++          archivedInputs.push(...inputs.map((input) => input.sessionId));
++          return Promise.resolve(inputs.map((input) => ({ sessionId: input.sessionId, cwd: input.cwd, archivedAt: "2026-06-25T00:00:00.000Z" })));
++        },
++        restore: () => Promise.resolve(),
++        isArchived: () => Promise.resolve(false),
++      },
++      sessionManager: {
++        create: () => fakeSessionManager(),
++        list: () => Promise.resolve([]),
++        listAll: () => Promise.resolve([sessionRecord("old-root", "/"), sessionRecord("old-project", "/old-project")]),
++        invalidateSessionFile: () => undefined,
++        resolveSessionFile: () => Promise.resolve(undefined),
++        open: () => fakeSessionManager(),
++      },
++      heartbeatIntervalMs: 60_000,
++    });
++
++    const preview = await service.cleanupPreview({ thresholds: { archiveIdleDays: 30 } });
++    expect(preview.totals).toEqual({ archiveCount: 1, deleteCount: 0 });
++    expect(preview.projects).toEqual([{ cwd: "/old-project", archiveCount: 1, deleteCount: 0 }]);
++
++    const result = await service.cleanup({ thresholds: { archiveIdleDays: 30 } });
++    expect(result.archivedSessionIds).toEqual(["old-project"]);
++    expect(archivedInputs).toEqual(["old-project"]);
++
++    await service.dispose();
++  });
++
+   it("cleanup deletes records without archive files without re-archiving them", async () => {
+     const listCalls: string[] = [];
+     const archiveMany = vi.fn(() => Promise.resolve([]));
+-    const deleteArchivedMany = vi.fn((sessionIds: readonly string[]) => Promise.resolve([...sessionIds]));
++    const deleteArchivedMany = vi.fn((refs: readonly ArchivedSessionRef[]) => Promise.resolve({ deletedSessionIds: refs.map((ref) => ref.sessionId), failures: [] }));
+     const service = new PiSessionService(new CapturingSessionEventHub(), {
+       agentDir: TEST_AGENT_DIR,
+       modelRuntime: testModelRuntime,
+@@ -511,7 +553,7 @@
+ 
+     expect(listCalls).toEqual([]);
+     expect(archiveMany).not.toHaveBeenCalled();
+-    expect(deleteArchivedMany).toHaveBeenCalledWith(["legacy-a", "legacy-b"]);
++    expect(deleteArchivedMany).toHaveBeenCalledWith([{ sessionId: "legacy-a", cwd: "/old-project" }, { sessionId: "legacy-b", cwd: "/old-project" }]);
+     expect(result.deletedSessionIds).toEqual(["legacy-a", "legacy-b"]);
+ 
+     await service.dispose();
+diff -ruN -x .git a/src/server/sessions/piSessionService.archiveDeleteSummary.test.ts b/src/server/sessions/piSessionService.archiveDeleteSummary.test.ts
+--- a/src/server/sessions/piSessionService.archiveDeleteSummary.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/server/sessions/piSessionService.archiveDeleteSummary.test.ts	2026-11-10 15:55:59.834309916 +0000
+@@ -0,0 +1,66 @@
++import * as fsPromises from "node:fs/promises";
++import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join, resolve } from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { PiSessionService } from "./piSessionService.js";
++import { CapturingSessionEventHub, sessionGateway, testModelRuntime } from "./piSessionService.testSupport.js";
++import { SessionArchiveStore } from "./sessionArchiveStore.js";
++import { SessionUnreadStore } from "./sessionUnreadStore.js";
++
++// Node's builtin namespaces are frozen; a plain copy lets vi.spyOn redefine exports.
++vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof fsPromises>()) }));
++
++const CWD = resolve("/workspace");
++const tempRoots: string[] = [];
++
++afterEach(async () => {
++  vi.restoreAllMocks();
++  await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
++});
++
++describe("PiSessionService bulk delete with a failing summary write", () => {
++  it("fails only the sessions of the summary that cannot be written and clears unread of the deleted ones", async () => {
++    const root = await mkdtemp(join(tmpdir(), "pi-web-service-delete-summary-"));
++    tempRoots.push(root);
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const created = { a: "2026-01-01T00:00:00.000Z", b: "2026-02-01T00:00:00.000Z", c: "2026-02-02T00:00:00.000Z" };
++    await mkdir(join(root, "active"), { recursive: true });
++    for (const [id, time] of Object.entries(created)) {
++      const path = join(root, "active", `2026-01-01_${id}.jsonl`);
++      await writeFile(path, `${id}\n`);
++      await store.archive({ sessionId: id, cwd: CWD, path, created: time, modified: time, messageCount: 1, firstMessage: "" });
++    }
++    const unreadStore = new SessionUnreadStore({ createCatalogId: () => "catalog-test" });
++    for (const id of ["a", "b", "c"]) {
++      unreadStore.observeActivityState(id, CWD, true);
++      unreadStore.observeActivityState(id, CWD, false);
++    }
++    const service = new PiSessionService(new CapturingSessionEventHub(), {
++      agentDir: "/tmp/pi-web-test-agent",
++      modelRuntime: testModelRuntime,
++      sessionManager: sessionGateway([]),
++      archiveStore: store,
++      heartbeatIntervalMs: 60_000,
++      unreadStore,
++    });
++    const realRename = fsPromises.rename;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(from).endsWith(".tmp") && String(to).includes(join("2026", "02"))) throw Object.assign(new Error("ENOSPC"), { code: "ENOSPC" });
++      await realRename(from, to);
++    });
++
++    try {
++      const result = await service.deleteArchivedMany([{ id: "a", cwd: CWD }, { id: "b", cwd: CWD }]);
++
++      vi.restoreAllMocks();
++      expect(result).toMatchObject({ deletedSessionIds: ["a"], failures: [{ sessionId: "b", error: "ENOSPC" }] });
++      expect((await service.unreadCatalog()).sessions.map((session) => session.sessionId).sort()).toEqual(["b", "c"]);
++      const remaining = await store.list(CWD);
++      expect(remaining.map((record) => record.sessionId)).toEqual(["b", "c"]);
++      await expect(readFile(remaining[0]?.archivePath ?? "", "utf8")).resolves.toBe("b\n");
++    } finally {
++      await service.dispose();
++    }
++  });
++});
+diff -ruN -x .git a/src/server/sessions/piSessionService.spawnSubsession.test.ts b/src/server/sessions/piSessionService.spawnSubsession.test.ts
+--- a/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-11-10 07:23:03.530949064 +0000
++++ b/src/server/sessions/piSessionService.spawnSubsession.test.ts	2026-11-10 12:47:17.643963110 +0000
+@@ -29,7 +29,10 @@
+       const archived = new Map<string, { sessionId: string; cwd: string; archivedAt: string }>();
+       const archiveStore = {
+         list: () => Promise.resolve([...archived.values()]),
+-        get: (sessionId: string) => Promise.resolve(archived.get(sessionId)),
++        get: (sessionId: string) => {
++          const record = archived.get(sessionId);
++          return Promise.resolve(record === undefined ? undefined : { ...record, archivePath: `/archive/${sessionId}.jsonl` });
++        },
+         archive: (input: { sessionId: string; cwd: string }) => {
+           const record = { sessionId: input.sessionId, cwd: input.cwd, archivedAt: "2026-01-01T00:00:00.000Z" };
+           archived.set(input.sessionId, record);
+@@ -815,7 +818,7 @@
+           },
+           archiveStore: {
+             ...emptyArchiveStore(),
+-            get: (sessionId) => Promise.resolve(sessionId === "child-1" ? { sessionId: "child-1", cwd: "/workspace-feature", archivedAt: "2026-01-01T00:00:00.000Z", parentSessionPath: parentFile } : undefined),
++            get: (sessionId) => Promise.resolve(sessionId === "child-1" ? { sessionId: "child-1", cwd: "/workspace-feature", archivePath: "/archive/child-1.jsonl", parentSessionPath: parentFile } : undefined),
+           },
+           heartbeatIntervalMs: 60_000,
+         });
+diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-11-10 07:23:03.634951365 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-11-10 15:06:11.008136853 +0000
+@@ -34,7 +34,7 @@
+ import { BUILTIN_COMMANDS } from "./builtinCommands.js";
+ import { SessionCommandService } from "./sessionCommandService.js";
+ import { projectSessionTree, type ProjectableSessionTreeNode } from "./sessionTreeProjection.js";
+-import { SessionArchiveStore, type ArchivedSessionRecord, type ArchiveSessionInput } from "./sessionArchiveStore.js";
++import { SessionArchiveStore, type ArchivedDeleteResult, type ArchivedSessionLocation, type ArchivedSessionRecord, type ArchivedSessionRef, type ArchiveSessionInput } from "./sessionArchiveStore.js";
+ import { findArchiveCandidateByIdOrPrefix, planSessionArchiveTree, type SessionArchiveTreeCandidate } from "./sessionArchiveTree.js";
+ import type { ActiveSession } from "./sessionRuntimeStore.js";
+ import { computeEditPreview, type EditPreviewResult } from "./editPreview.js";
+@@ -311,8 +311,9 @@
+ 
+ type SessionArchiveRepository = Pick<SessionArchiveStore, "list" | "get" | "archive" | "restore" | "isArchived"> & {
+   archiveMany?: (sessions: readonly ArchiveSessionInput[]) => Promise<ArchivedSessionRecord[]>;
+-  deleteArchived?: (sessionId: string) => Promise<void>;
+-  deleteArchivedMany?: (sessionIds: readonly string[]) => Promise<string[]>;
++  deleteArchived?: (sessionId: string, cwd: string) => Promise<void>;
++  deleteArchivedMany?: (refs: readonly ArchivedSessionRef[]) => Promise<ArchivedDeleteResult>;
++  rename?: (sessionId: string, cwd: string, name: string) => Promise<string | undefined>;
+ };
+ 
+ export type PiSessionRef = SessionRouteRef;
+@@ -1409,7 +1410,10 @@
+       await this.closeActive(record.sessionId, { kind: "clear", reason: "delete" });
+       readyDeleteRecords.push(record);
+     }
+-    const deletedSessionIds = new Set(await this.archiveStoreDeleteArchivedMany(readyDeleteRecords.map((record) => record.sessionId)));
++    // A session whose file could not be removed stays archived: it is logged, not reported as deleted.
++    const deleteResult = await this.archiveStoreDeleteArchivedMany(readyDeleteRecords.map((record) => ({ sessionId: record.sessionId, cwd: record.cwd })));
++    for (const failure of deleteResult.failures) this.logger.info({ sessionId: failure.sessionId, error: failure.error }, "failed to delete archived session during cleanup");
++    const deletedSessionIds = new Set(deleteResult.deletedSessionIds);
+     deleteRecords.push(...readyDeleteRecords.filter((record) => deletedSessionIds.has(record.sessionId)));
+     await this.forgetUnreadSessions(deleteRecords);
+ 
+@@ -1464,7 +1468,7 @@
+   }
+ 
+   async list(cwd: string): Promise<ClientSession[]> {
+-    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list()]);
++    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list(cwd)]);
+     const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+     const archivedForCwd = archivedRecords.filter((record) => record.cwd === cwd);
+     const archivedById = new Map(archivedForCwd.map((record) => [record.sessionId, record]));
+@@ -3085,7 +3089,7 @@
+     const archived = await this.getArchived(ref);
+     if (archived === undefined) throw new Error("Session not found");
+     await this.closeActive(archived.sessionId, { kind: "clear", reason: "restore" });
+-    await this.archiveStore.restore(archived.sessionId);
++    await this.archiveStore.restore(archived.sessionId, archived.cwd);
+     await this.forgetUnreadSessions([archived]);
+   }
+ 
+@@ -3126,7 +3130,9 @@
+ 
+     let deletedSessionIds: string[] = [];
+     try {
+-      deletedSessionIds = await this.archiveStoreDeleteArchivedMany(deleteIds);
++      const result = await this.archiveStoreDeleteArchivedMany(readyRecords.map((record) => ({ sessionId: record.sessionId, cwd: record.cwd })));
++      deletedSessionIds = result.deletedSessionIds;
++      failures.push(...result.failures);
+     } catch (error: unknown) {
+       for (const sessionId of deleteIds) failures.push({ sessionId, error: errorMessage(error) });
+     }
+@@ -3192,6 +3198,24 @@
+     await this.forgetUnreadSessions([{ sessionId: session.sessionId, cwd: session.sessionManager.getCwd() }]);
+   }
+ 
++  /** Name a session; an empty name clears it. Archived sessions are renamed in place without a restore. */
++  async rename(ref: PiSessionRef, name: string): Promise<string | undefined> {
++    const archived = await this.getArchived(ref);
++    if (archived === undefined) {
++      await this.assertWritable(ref);
++      const session = await this.getOrOpen(ref);
++      session.setSessionName(name);
++      this.publishSessionName(session);
++      return session.sessionName;
++    }
++    if (this.archiveStore.rename === undefined) throw new Error("Archive store does not support renaming");
++    // A read-only runtime opened from the archive file would keep serving the old name.
++    await this.closeActive(archived.sessionId);
++    const sessionName = await this.archiveStore.rename(archived.sessionId, archived.cwd, name);
++    this.publishSessionNameChange(archived.sessionId, sessionName);
++    return sessionName;
++  }
++
+   async clearQueue(ref: PiSessionRef): Promise<ClientSessionStatus> {
+     await this.assertWritable(ref);
+     const session = await this.getOrOpen(ref);
+@@ -3269,12 +3293,20 @@
+     return records;
+   }
+ 
+-  private async archiveStoreDeleteArchivedMany(sessionIds: readonly string[]): Promise<string[]> {
+-    if (sessionIds.length === 0) return [];
+-    if (this.archiveStore.deleteArchivedMany !== undefined) return this.archiveStore.deleteArchivedMany(sessionIds);
++  private async archiveStoreDeleteArchivedMany(refs: readonly ArchivedSessionRef[]): Promise<ArchivedDeleteResult> {
++    if (refs.length === 0) return { deletedSessionIds: [], failures: [] };
++    if (this.archiveStore.deleteArchivedMany !== undefined) return this.archiveStore.deleteArchivedMany(refs);
+     if (this.archiveStore.deleteArchived === undefined) throw new Error("Archive store does not support deletion");
+-    for (const sessionId of sessionIds) await this.archiveStore.deleteArchived(sessionId);
+-    return [...sessionIds];
++    const result: ArchivedDeleteResult = { deletedSessionIds: [], failures: [] };
++    for (const ref of refs) {
++      try {
++        await this.archiveStore.deleteArchived(ref.sessionId, ref.cwd);
++        result.deletedSessionIds.push(ref.sessionId);
++      } catch (error: unknown) {
++        result.failures.push({ sessionId: ref.sessionId, error: errorMessage(error) });
++      }
++    }
++    return result;
+   }
+ 
+   private async cleanupPlan(request: NormalizedSessionCleanupRequest) {
+@@ -3320,7 +3352,7 @@
+   }
+ 
+   private async workspaceArchiveCandidates(cwd: string): Promise<WorkspaceArchiveCandidate[]> {
+-    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list()]);
++    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list(cwd)]);
+     const candidates = new Map<string, WorkspaceArchiveCandidate>();
+     const archivedById = new Map<string, ArchivedSessionRecord>();
+ 
+@@ -3354,7 +3386,7 @@
+   }
+ 
+   private async listSessionNames(cwd: string): Promise<string[]> {
+-    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list()]);
++    const [sessions, archivedRecords] = await Promise.all([this.sessionManager.list(cwd), this.archiveStore.list(cwd)]);
+     const names = new Set<string>();
+     for (const session of sessions) addSessionName(names, session.name);
+     for (const record of archivedRecords) {
+@@ -3547,11 +3579,8 @@
+       .map((pending) => pending.promise);
+   }
+ 
+-  private async getArchived(ref: PiSessionRef): Promise<ArchivedSessionRecord | undefined> {
+-    const archived = await this.archiveStore.get(ref.id);
+-    if (archived === undefined) return undefined;
+-    if (archived.cwd !== ref.cwd) return undefined;
+-    return archived;
++  private getArchived(ref: PiSessionRef): Promise<ArchivedSessionLocation | undefined> {
++    return this.archiveStore.get(ref.id, ref.cwd);
+   }
+ 
+   private isCurrentActiveSession(session: PiAgentSession): boolean {
+@@ -4172,10 +4201,14 @@
+   }
+ 
+   private publishSessionName(session: PiAgentSession): void {
+-    const event = session.sessionName === undefined
+-      ? { type: "session.name", sessionId: session.sessionId } as const
+-      : { type: "session.name", sessionId: session.sessionId, name: session.sessionName } as const;
+-    this.events.publish(session.sessionId, event);
++    this.publishSessionNameChange(session.sessionId, session.sessionName);
++  }
++
++  private publishSessionNameChange(sessionId: string, name: string | undefined): void {
++    const event = name === undefined
++      ? { type: "session.name", sessionId } as const
++      : { type: "session.name", sessionId, name } as const;
++    this.events.publish(sessionId, event);
+     this.events.publishGlobal(event);
+   }
+ 
+@@ -4652,7 +4685,7 @@
+   const messageCount = record.messageCount ?? fallback?.messageCount;
+   const firstMessage = record.firstMessage ?? fallback?.firstMessage;
+   if (path === undefined || created === undefined || modified === undefined || messageCount === undefined || firstMessage === undefined) return undefined;
+-  const name = record.name ?? fallback?.name;
++  const name = record.name;
+   const parentSessionPath = record.parentSessionPath ?? fallback?.parentSessionPath;
+   return {
+     id: record.sessionId,
+diff -ruN -x .git a/src/server/sessions/piSessionService.unread.test.ts b/src/server/sessions/piSessionService.unread.test.ts
+--- a/src/server/sessions/piSessionService.unread.test.ts	2026-11-10 07:23:02.898935086 +0000
++++ b/src/server/sessions/piSessionService.unread.test.ts	2026-11-10 15:05:45.571478862 +0000
+@@ -734,7 +734,7 @@
+         restore: () => Promise.resolve(),
+         isArchived: () => Promise.resolve(false),
+         deleteArchived: () => Promise.reject(new Error("cleanup should use deleteArchivedMany")),
+-        deleteArchivedMany: (sessionIds: readonly string[]) => Promise.resolve([...sessionIds]),
++        deleteArchivedMany: (refs: readonly { sessionId: string }[]) => Promise.resolve({ deletedSessionIds: refs.map((ref) => ref.sessionId), failures: [] }),
+       },
+       heartbeatIntervalMs: 60_000,
+       unreadStore,
+@@ -751,6 +751,45 @@
+     }
+   });
+ 
++  it("cleanup reports as deleted, logs refused sessions and clears unread only for removed ones", async () => {
++    const unreadStore = new SessionUnreadStore({ createCatalogId: () => "catalog-test" });
++    const oldProjectCwd = resolve("/old-project");
++    completeStoreWork(unreadStore, "removed", oldProjectCwd);
++    completeStoreWork(unreadStore, "locked", oldProjectCwd);
++    const record = (sessionId: string) => ({ sessionId, cwd: oldProjectCwd, archivedAt: "2026-04-01T00:00:00.000Z", archivePath: `/archive/${sessionId}.jsonl` });
++    const logger = { info: vi.fn() };
++    const service = new PiSessionService(new CapturingSessionEventHub(), {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      now: () => new Date("2026-06-25T00:00:00.000Z"),
++      createAgentRuntime: () => Promise.reject(new Error("cleanup should not open runtimes")),
++      sessionManager: sessionGateway([]),
++      archiveStore: {
++        list: () => Promise.resolve([record("removed"), record("locked")]),
++        get: () => Promise.resolve(undefined),
++        archive: () => Promise.reject(new Error("cleanup should use archiveMany")),
++        restore: () => Promise.resolve(),
++        isArchived: () => Promise.resolve(false),
++        deleteArchived: () => Promise.reject(new Error("cleanup should use deleteArchivedMany")),
++        deleteArchivedMany: () => Promise.resolve({ deletedSessionIds: ["removed"], failures: [{ sessionId: "locked", error: "EBUSY" }] }),
++      },
++      heartbeatIntervalMs: 60_000,
++      logger,
++      unreadStore,
++    });
++
++    try {
++      const result = await service.cleanup({ thresholds: { archiveIdleDays: 30, deleteArchivedDays: 30 } });
++
++      expect(result.deletedSessionIds).toEqual(["removed"]);
++      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "locked", error: "EBUSY" }), expect.any(String));
++      expect(logger.info).not.toHaveBeenCalledWith(expect.objectContaining({ sessionId: "removed" }), expect.any(String));
++      expect((await service.unreadCatalog()).sessions).toMatchObject([{ sessionId: "locked", cwd: oldProjectCwd }]);
++    } finally {
++      await service.dispose();
++    }
++  });
++
+   it("clears unread only for archived records actually removed by bulk delete", async () => {
+     const unreadStore = new SessionUnreadStore({ createCatalogId: () => "catalog-test" });
+     completeStoreWork(unreadStore, "busy-archived", WORKSPACE_CWD);
+@@ -770,7 +809,7 @@
+         restore: () => Promise.resolve(),
+         isArchived: () => Promise.resolve(false),
+         deleteArchived: () => Promise.reject(new Error("bulk delete should use deleteArchivedMany")),
+-        deleteArchivedMany: (sessionIds: readonly string[]) => Promise.resolve([...sessionIds]),
++        deleteArchivedMany: (refs: readonly { sessionId: string }[]) => Promise.resolve({ deletedSessionIds: refs.map((ref) => ref.sessionId), failures: [] }),
+       },
+       heartbeatIntervalMs: 60_000,
+       unreadStore,
+@@ -791,6 +830,39 @@
+     } finally {
+       await service.dispose();
+     }
++  });
++
++  it("clears unread only for sessions of a bulk delete whose files were removed", async () => {
++    const unreadStore = new SessionUnreadStore({ createCatalogId: () => "catalog-test" });
++    completeStoreWork(unreadStore, "removed", WORKSPACE_CWD);
++    completeStoreWork(unreadStore, "locked", WORKSPACE_CWD);
++    const record = (sessionId: string) => ({ sessionId, cwd: "/workspace", archivedAt: "2026-01-02T00:00:00.000Z", archivePath: `/archive/${sessionId}.jsonl` });
++    const partialResult = { deletedSessionIds: ["removed"], failures: [{ sessionId: "locked", error: "EBUSY" }] };
++    const service = new PiSessionService(new CapturingSessionEventHub(), {
++      agentDir: TEST_AGENT_DIR,
++      modelRuntime: testModelRuntime,
++      sessionManager: sessionGateway([]),
++      archiveStore: {
++        list: () => Promise.resolve([record("removed"), record("locked")]),
++        get: () => Promise.resolve(undefined),
++        archive: () => Promise.reject(new Error("archive should not be called")),
++        restore: () => Promise.resolve(),
++        isArchived: () => Promise.resolve(false),
++        deleteArchived: () => Promise.reject(new Error("bulk delete should use deleteArchivedMany")),
++        deleteArchivedMany: () => Promise.resolve(partialResult),
++      },
++      heartbeatIntervalMs: 60_000,
++      unreadStore,
++    });
++
++    try {
++      const result = await service.deleteArchivedMany([{ id: "removed", cwd: "/workspace" }, { id: "locked", cwd: "/workspace" }]);
++
++      expect(result).toMatchObject({ deletedSessionIds: ["removed"], failures: [{ sessionId: "locked", error: "EBUSY" }] });
++      expect((await service.unreadCatalog()).sessions).toMatchObject([{ sessionId: "locked", cwd: WORKSPACE_CWD }]);
++    } finally {
++      await service.dispose();
++    }
+   });
+ 
+   it("does not resurrect unread when archiving an active session with a pending activity latch", async () => {
+diff -ruN -x .git a/src/server/sessions/sessionArchiveStore.test.ts b/src/server/sessions/sessionArchiveStore.test.ts
+--- a/src/server/sessions/sessionArchiveStore.test.ts	2026-11-10 07:23:02.902935174 +0000
++++ b/src/server/sessions/sessionArchiveStore.test.ts	2026-11-10 19:21:11.965717332 +0000
+@@ -1,145 +1,217 @@
+ import { constants } from "node:fs";
+-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+-import { join, resolve } from "node:path";
++import * as fsPromises from "node:fs/promises";
++import { access, appendFile, mkdtemp, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+ import { homedir, tmpdir } from "node:os";
++import { dirname, join, resolve } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { defaultSessionArchiveFilePath, SessionArchiveStore } from "./sessionArchiveStore.js";
++import { defaultSessionArchiveRootDir, SessionArchiveStore, type ArchiveSessionInput } from "./sessionArchiveStore.js";
++
++// Route node:fs/promises through a plain copy of the real module: Node's
++// builtin namespaces are frozen, so vi.spyOn cannot redefine their exports
++// directly. Tests force the copy fallback by failing `link` with EXDEV.
++vi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal<typeof fsPromises>()) }));
+ 
+ const tempRoots: string[] = [];
++// UUIDv7 of 2026-10-22T14:05:31.123Z; pi names the file a few milliseconds later.
++const SESSION_ID = "01a163ee-6873-7c4d-8e5f-0a1b2c3d4e5f";
++const SESSION_CREATED = "2026-10-22T14:05:31.123Z";
++const SESSION_FILE = `2026-10-22T14-05-31-125Z_${SESSION_ID}.jsonl`;
++const PROJECT_CWD = "/workspace/demo";
+ 
+-describe("defaultSessionArchiveFilePath", () => {
++describe("defaultSessionArchiveRootDir", () => {
+   it("uses PI_WEB_DATA_DIR when configured", () => {
+-    expect(defaultSessionArchiveFilePath({ PI_WEB_DATA_DIR: "managed-state" }, "/tmp/pi-web")).toBe(resolve("/tmp/pi-web", "managed-state", "archived-sessions.json"));
++    expect(defaultSessionArchiveRootDir({ PI_WEB_DATA_DIR: "managed-state" }, "/tmp/pi-web")).toBe(resolve("/tmp/pi-web", "managed-state", "archived-projects"));
+   });
+ 
+   it("preserves the ~/.pi-web default when PI_WEB_DATA_DIR is unset", () => {
+-    expect(defaultSessionArchiveFilePath({}, "/tmp/pi-web")).toBe(join(homedir(), ".pi-web", "archived-sessions.json"));
++    expect(defaultSessionArchiveRootDir({}, "/tmp/pi-web")).toBe(join(homedir(), ".pi-web", "archived-projects"));
+   });
+ });
+ 
+ describe("SessionArchiveStore", () => {
+   afterEach(async () => {
++    vi.restoreAllMocks();
+     vi.unstubAllEnvs();
+     await Promise.all(tempRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+   });
+ 
+-  it("stores its default index and archived files under PI_WEB_DATA_DIR", async () => {
+-    const root = await mkdtemp(join(tmpdir(), "pi-web-archive-data-dir-"));
+-    tempRoots.push(root);
++  it("stores sessions in project day directories with a monthly summary under PI_WEB_DATA_DIR", async () => {
++    const root = await tempRoot("pi-web-archive-data-dir-");
+     const dataDir = join(root, "managed-state");
+-    const activeDir = join(root, "active");
+-    await mkdir(activeDir, { recursive: true });
+-    const sourcePath = join(activeDir, "2026-01-01_managed.jsonl");
+-    await writeFile(sourcePath, "session contents\n", "utf8");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
+     vi.stubEnv("PI_WEB_DATA_DIR", dataDir);
+ 
+     const store = new SessionArchiveStore();
+-    const record = await store.archive({
+-      sessionId: "managed",
+-      cwd: "/workspace",
+-      path: sourcePath,
+-      created: "2026-01-01T00:00:00.000Z",
+-      modified: "2026-01-01T00:01:00.000Z",
+-      messageCount: 1,
+-      firstMessage: "hello",
+-    });
+-
+-    const archivePath = join(dataDir, "archived-sessions", "2026-01-01_managed.jsonl");
+-    expect(record.archivePath).toBe(archivePath);
+-    await expect(readFile(archivePath, "utf8")).resolves.toBe("session contents\n");
+-    await expect(readFile(join(dataDir, "archived-sessions.json"), "utf8")).resolves.toContain('"sessionId": "managed"');
+-  });
+-
+-  it("moves archived session files out of the active session directory and restores them", async () => {
+-    const root = await mkdtemp(join(tmpdir(), "pi-web-archive-"));
+-    tempRoots.push(root);
+-    const activeDir = join(root, "active");
+-    await mkdir(activeDir, { recursive: true });
+-    const sourcePath = join(activeDir, "2026-01-01_s1.jsonl");
+-    await writeFile(sourcePath, "session contents\n", "utf8");
+-
+-    const store = new SessionArchiveStore(join(root, "archived-sessions.json"), join(root, "archived-files"));
+-    const record = await store.archive({
+-      sessionId: "s1",
+-      cwd: "/workspace",
+-      path: sourcePath,
+-      created: "2026-01-01T00:00:00.000Z",
+-      modified: "2026-01-01T00:01:00.000Z",
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath, name: "Demo" }));
++
++    const monthDir = join(dataDir, "archived-projects", "workspace-demo--", "2026", "10");
++    const archivePath = join(monthDir, "22", SESSION_FILE);
++    expect(record).toMatchObject({
++      sessionId: SESSION_ID,
++      cwd: PROJECT_CWD,
++      originalPath: sourcePath,
++      archivePath,
++      created: SESSION_CREATED,
++      modified: record.archivedAt,
+       messageCount: 2,
+-      firstMessage: "hello",
++      firstMessage: "",
++      name: "Demo",
+     });
+-
+     expect(await exists(sourcePath)).toBe(false);
+-    expect(record.originalPath).toBe(sourcePath);
+-    expect(record.archivePath).toBeDefined();
+-    if (record.archivePath === undefined) throw new Error("Expected archive path");
+-    expect(await readFile(record.archivePath, "utf8")).toBe("session contents\n");
+-    await expect(store.list()).resolves.toMatchObject([{ sessionId: "s1", originalPath: sourcePath, archivePath: record.archivePath, messageCount: 2 }]);
+-
+-    await store.restore("s1");
++    await expect(readFile(archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    expect(JSON.parse(await readFile(join(monthDir, "summary.json"), "utf8"))).toEqual({
++      version: 1,
++      sessions: [{ sessionId: SESSION_ID, cwd: PROJECT_CWD, archivedAt: record.archivedAt, originalPath: sourcePath, messageCount: 2, name: "Demo" }],
++    });
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++    await expect(store.get(SESSION_ID, `${PROJECT_CWD}/`)).resolves.toEqual({ sessionId: SESSION_ID, cwd: PROJECT_CWD, archivePath });
++    await expect(store.get(SESSION_ID, "/workspace/other")).resolves.toBeUndefined();
++    await writeSession(join(dataDir, "archived-projects", "workspace-broken--", "2026", "10", "22", SESSION_FILE), "not a session header\n");
++    await expect(store.get(SESSION_ID, "/workspace/broken")).resolves.toBeUndefined();
++  });
+ 
+-    expect(await readFile(sourcePath, "utf8")).toBe("session contents\n");
+-    expect(await exists(record.archivePath)).toBe(false);
++  it("moves archived session files back on restore and removes empty archive directories", async () => {
++    const root = await tempRoot("pi-web-archive-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++
++    await expect(store.isArchived(SESSION_ID, PROJECT_CWD)).resolves.toBe(true);
++    await store.restore(SESSION_ID, PROJECT_CWD);
++
++    expect(await readFile(sourcePath, "utf8")).toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    expect(record.archivePath === undefined ? true : await exists(record.archivePath)).toBe(false);
++    expect(await exists(join(root, "archived-projects", "workspace-demo--"))).toBe(false);
+     await expect(store.list()).resolves.toEqual([]);
++    await expect(store.isArchived(SESSION_ID, PROJECT_CWD)).resolves.toBe(false);
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("not found");
+   });
+ 
+-  it("permanently deletes archived session files and records", async () => {
+-    const root = await mkdtemp(join(tmpdir(), "pi-web-archive-delete-"));
+-    tempRoots.push(root);
+-    const activeDir = join(root, "active");
+-    await mkdir(activeDir, { recursive: true });
+-    const sourcePath = join(activeDir, "2026-01-01_s1.jsonl");
+-    await writeFile(sourcePath, "session contents\n", "utf8");
+-
+-    const store = new SessionArchiveStore(join(root, "archived-sessions.json"), join(root, "archived-files"));
+-    const record = await store.archive({
+-      sessionId: "s1",
+-      cwd: "/workspace",
+-      path: sourcePath,
+-      created: "2026-01-01T00:00:00.000Z",
+-      modified: "2026-01-01T00:01:00.000Z",
+-      messageCount: 2,
+-      firstMessage: "hello",
++  it("keeps every session of a batch in place when a summary cannot be written", async () => {
++    const root = await tempRoot("pi-web-archive-summary-failure-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const otherPath = await writeSession(join(root, "active", "2026-09-01_other.jsonl"), "other\n");
++    const archiveRoot = join(root, "archived-projects");
++    const monthDir = join(archiveRoot, "workspace-demo--", "2026", "10");
++    const realRename = fsPromises.rename;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(to) === join(monthDir, "summary.json")) throw nodeError("EACCES");
++      await realRename(from, to);
++    });
++    const store = new SessionArchiveStore(archiveRoot);
++    await expect(store.archiveMany([
++      sessionInput({ sessionId: "other", path: otherPath, created: "2026-09-01T00:00:00.000Z" }),
++      sessionInput({ sessionId: SESSION_ID, path: sourcePath }),
++    ])).rejects.toThrow("EACCES");
++
++    vi.restoreAllMocks();
++
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(readFile(otherPath, "utf8")).resolves.toBe("other\n");
++    expect(await exists(join(monthDir, "22", SESSION_FILE))).toBe(false);
++    expect(await exists(join(archiveRoot, "workspace-demo--", "2026", "09"))).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++    await expect(store.isArchived(SESSION_ID, PROJECT_CWD)).resolves.toBe(false);
++  });
++
++  it("keeps every session of a batch in place when a source cannot be removed", async () => {
++    const root = await tempRoot("pi-web-archive-unlink-failure-");
++    const archivedPath = await writeSession(join(root, "active", "2026-01-01_b.jsonl"), "b\n");
++    const writablePath = await writeSession(join(root, "active", "2026-01-01_a.jsonl"), "a\n");
++    const lockedPath = await writeSession(join(root, "locked", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    // The batch shares the January summary with a session archived before it.
++    const archived = await store.archive(sessionInput({ sessionId: "b", path: archivedPath, created: "2026-01-01T00:00:00.000Z" }));
++    const realRename = fsPromises.rename;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(from) === lockedPath) throw nodeError("EACCES");
++      await realRename(from, to);
++    });
++    await expect(store.archiveMany([
++      sessionInput({ sessionId: "a", path: writablePath, created: "2026-01-01T00:00:00.000Z" }),
++      sessionInput({ sessionId: SESSION_ID, path: lockedPath }),
++    ])).rejects.toThrow("EACCES");
++
++    vi.restoreAllMocks();
++
++    await expect(readFile(writablePath, "utf8")).resolves.toBe("a\n");
++    await expect(readFile(lockedPath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(readdir(join(root, "active"))).resolves.toEqual(["2026-01-01_a.jsonl"]);
++    await expect(store.list()).resolves.toEqual([archived]);
++    await expect(store.isArchived(SESSION_ID, PROJECT_CWD)).resolves.toBe(false);
++    expect(await exists(join(root, "archived-projects", "workspace-demo--", "2026", "10"))).toBe(false);
++  });
++
++  it("reports an undo that fails too and keeps both copies of the session", async () => {
++    const root = await tempRoot("pi-web-archive-undo-failure-");
++    const archiveRoot = join(root, "archived-projects");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const realRename = fsPromises.rename;
++    const realUnlink = fsPromises.unlink;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(to).endsWith("summary.json")) throw nodeError("ENOSPC");
++      await realRename(from, to);
+     });
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      if (String(path).startsWith(archiveRoot)) throw nodeError("EIO");
++      await realUnlink(path);
++    });
++    const store = new SessionArchiveStore(archiveRoot);
++
++    await expect(store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }))).rejects.toThrow("--repair");
+ 
++    vi.restoreAllMocks();
++    const archivePath = join(archiveRoot, "workspace-demo--", "2026", "10", "22", SESSION_FILE);
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(readFile(archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("keeps a session archived when its archive file cannot be removed on restore", async () => {
++    const root = await tempRoot("pi-web-archive-restore-failure-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
+     if (record.archivePath === undefined) throw new Error("Expected archive path");
+-    await store.deleteArchived("s1");
++    const archivePath = record.archivePath;
++    const realRename = fsPromises.rename;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(from) === archivePath) throw nodeError("EACCES");
++      await realRename(from, to);
++    });
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("EACCES");
++
++    vi.restoreAllMocks();
+ 
+     expect(await exists(sourcePath)).toBe(false);
+-    expect(await exists(record.archivePath)).toBe(false);
+-    await expect(store.list()).resolves.toEqual([]);
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++    await expect(store.isArchived(SESSION_ID, PROJECT_CWD)).resolves.toBe(true);
++  });
++
++  it("never overwrites a session file on archive or restore", async () => {
++    const root = await tempRoot("pi-web-archive-overwrite-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++
++    await writeSession(sourcePath, "newer contents\n");
++    await expect(store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }))).rejects.toThrow();
++    expect(await readFile(sourcePath, "utf8")).toBe("newer contents\n");
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("a session already exists");
++    expect(await readFile(sourcePath, "utf8")).toBe("newer contents\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: SESSION_ID }]);
+   });
+ 
+   it("archives and permanently deletes sessions in batches", async () => {
+-    const root = await mkdtemp(join(tmpdir(), "pi-web-archive-batch-"));
+-    tempRoots.push(root);
+-    const activeDir = join(root, "active");
+-    await mkdir(activeDir, { recursive: true });
+-    const sourceA = join(activeDir, "2026-01-01_a.jsonl");
+-    const sourceB = join(activeDir, "2026-01-01_b.jsonl");
+-    await writeFile(sourceA, "a\n", "utf8");
+-    await writeFile(sourceB, "b\n", "utf8");
++    const root = await tempRoot("pi-web-archive-batch-");
++    const sourceA = await writeSession(join(root, "active", "2026-01-01_a.jsonl"), "a\n");
++    const sourceB = await writeSession(join(root, "active", "2026-01-01_b.jsonl"), "b\n");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
+ 
+-    const store = new SessionArchiveStore(join(root, "archived-sessions.json"), join(root, "archived-files"));
+     const records = await store.archiveMany([
+-      {
+-        sessionId: "a",
+-        cwd: "/workspace",
+-        path: sourceA,
+-        created: "2026-01-01T00:00:00.000Z",
+-        modified: "2026-01-01T00:01:00.000Z",
+-        messageCount: 1,
+-        firstMessage: "a",
+-      },
+-      {
+-        sessionId: "b",
+-        cwd: "/workspace",
+-        path: sourceB,
+-        created: "2026-01-01T00:00:00.000Z",
+-        modified: "2026-01-01T00:02:00.000Z",
+-        messageCount: 2,
+-        firstMessage: "b",
+-      },
++      sessionInput({ sessionId: "a", path: sourceA, created: "2026-01-01T00:00:00.000Z" }),
++      sessionInput({ sessionId: "b", path: sourceB, created: "2026-01-01T00:00:00.000Z" }),
+     ]);
+ 
+     expect(records.map((record) => record.sessionId)).toEqual(["a", "b"]);
+@@ -147,65 +219,929 @@
+     expect(await exists(sourceB)).toBe(false);
+     await expect(store.list()).resolves.toMatchObject([{ sessionId: "a" }, { sessionId: "b" }]);
+ 
+-    const archivePaths = records.map((record) => record.archivePath);
+-    if (archivePaths.some((path) => path === undefined)) throw new Error("Expected archive paths");
+-    await expect(store.deleteArchivedMany(["a", "b", "missing"])).resolves.toEqual(["a", "b"]);
+-    for (const archivePath of archivePaths) {
+-      if (archivePath === undefined) throw new Error("Expected archive path");
+-      expect(await exists(archivePath)).toBe(false);
++    const deleted = await store.deleteArchivedMany([
++      { sessionId: "a", cwd: PROJECT_CWD },
++      { sessionId: "b", cwd: PROJECT_CWD },
++      { sessionId: "missing", cwd: PROJECT_CWD },
++    ]);
++    expect(deleted.deletedSessionIds).toEqual(["a", "b"]);
++    expect(deleted.failures).toHaveLength(1);
++    expect(deleted.failures[0]).toMatchObject({ sessionId: "missing" });
++    expect(deleted.failures[0]?.error).toContain("--repair");
++    for (const record of records) {
++      expect(record.archivePath === undefined ? true : await exists(record.archivePath)).toBe(false);
+     }
+     await expect(store.list()).resolves.toEqual([]);
++    expect(await exists(join(root, "archived-projects", "workspace-demo--"))).toBe(false);
++  });
++
++  it("deletes the sessions of a batch whose files can be removed and reports the others", async () => {
++    const root = await tempRoot("pi-web-archive-delete-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const ids = ["a", "b", "c"];
++    for (const id of ids) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b, c] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined || c?.archivePath === undefined) throw new Error("Expected archive paths");
++    const realUnlink = fsPromises.unlink;
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      if (String(path).endsWith("_b.jsonl")) throw nodeError("EBUSY");
++      await realUnlink(path);
++    });
++
++    const result = await store.deleteArchivedMany(ids.map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result.deletedSessionIds).toEqual(["a", "c"]);
++    expect(result.failures).toEqual([{ sessionId: "b", error: "EBUSY" }]);
++    expect(await exists(a.archivePath)).toBe(false);
++    expect(await exists(c.archivePath)).toBe(false);
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([b]);
++    const summary: unknown = JSON.parse(await readFile(join(dirname(dirname(b.archivePath)), "summary.json"), "utf8"));
++    expect(summary).toMatchObject({ sessions: [{ sessionId: "b" }] });
++    await expect(store.deleteArchived("b", PROJECT_CWD)).resolves.toBeUndefined();
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("removes the entries of deleted sessions from their summary before their files go", async () => {
++    const root = await tempRoot("pi-web-archive-delete-order-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b", "c"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined) throw new Error("Expected archive paths");
++    const summaryPath = join(dirname(dirname(a.archivePath)), "summary.json");
++    const realUnlink = fsPromises.unlink;
++    const summaryIdsAtUnlink: Record<string, string[]> = {};
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      const name = String(path);
++      if (name.endsWith("_a.jsonl") || name.endsWith("_b.jsonl")) {
++        const summaryText = await readFile(summaryPath, "utf8");
++        summaryIdsAtUnlink[name.endsWith("_a.jsonl") ? "a" : "b"] = [...summaryText.matchAll(/"sessionId": "(\w+)"/g)].map((match) => match[1] ?? "");
++      }
++      if (name.endsWith("_b.jsonl")) throw nodeError("EBUSY");
++      await realUnlink(path);
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(summaryIdsAtUnlink).toEqual({ a: ["c"], b: ["c"] });
++    expect(result).toEqual({ deletedSessionIds: ["a"], failures: [{ sessionId: "b", error: "EBUSY" }] });
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: "b" }, { sessionId: "c" }]);
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++  });
++
++  it("keeps the sessions of a summary that cannot be written and deletes the other summaries", async () => {
++    const root = await tempRoot("pi-web-archive-delete-summary-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const created = { a: "2026-01-01T00:00:00.000Z", b: "2026-02-01T00:00:00.000Z", c: "2026-02-02T00:00:00.000Z", d: "2026-02-03T00:00:00.000Z" };
++    for (const [id, time] of Object.entries(created)) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: time }));
++    }
++    const records = await store.list(PROJECT_CWD);
++    const [a, b, c] = ["a", "b", "c"].map((id) => records.find((record) => record.sessionId === id));
++    if (a?.archivePath === undefined || b?.archivePath === undefined || c?.archivePath === undefined) throw new Error("Expected archive paths");
++    const realRename = fsPromises.rename;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(from).endsWith(".tmp") && String(to).includes(join("2026", "02"))) throw nodeError("ENOSPC");
++      await realRename(from, to);
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b", "c"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result.deletedSessionIds).toEqual(["a"]);
++    expect(result.failures).toEqual([{ sessionId: "b", error: "ENOSPC" }, { sessionId: "c", error: "ENOSPC" }]);
++    expect(await exists(a.archivePath)).toBe(false);
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(readFile(c.archivePath, "utf8")).resolves.toBe("c\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: "b" }, { sessionId: "c" }, { sessionId: "d" }]);
++  });
++
++  it("leaves a file without an entry when its entry cannot be put back after a failed removal", async () => {
++    const root = await tempRoot("pi-web-archive-delete-undo-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const records = await store.list(PROJECT_CWD);
++    const b = records.find((record) => record.sessionId === "b");
++    if (b?.archivePath === undefined) throw new Error("Expected archive path");
++    const realUnlink = fsPromises.unlink;
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      if (String(path).endsWith("_b.jsonl")) throw nodeError("EBUSY");
++      await realUnlink(path);
++    });
++    vi.spyOn(fsPromises, "rename").mockImplementation(() => Promise.reject(nodeError("ENOSPC")));
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toMatchObject({ deletedSessionIds: ["a"], failures: [{ sessionId: "b" }] });
++    expect(result.failures[0]?.error).toMatch(/^EBUSY; .*--repair$/);
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("deletes the files of sessions whose entries left a summary that then failed to flush", async () => {
++    const root = await tempRoot("pi-web-archive-delete-flush-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b", "c"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b, c] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined || c === undefined) throw new Error("Expected archive paths");
++    const monthDir = dirname(dirname(a.archivePath));
++    const realRename = fsPromises.rename;
++    const realOpen = fsPromises.open;
++    let replaced = false;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      await realRename(from, to);
++      if (String(to).endsWith("summary.json")) replaced = true;
++    });
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      if (replaced && String(path) === monthDir) throw nodeError("EIO");
++      return realOpen(path, flags, mode);
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toEqual({ deletedSessionIds: ["a", "b"], failures: [] });
++    expect(await exists(a.archivePath)).toBe(false);
++    expect(await exists(b.archivePath)).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: "c" }]);
++  });
++
++  it("deletes the files of sessions whose summary was removed before a later failure", async () => {
++    const root = await tempRoot("pi-web-archive-delete-last-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined) throw new Error("Expected archive paths");
++    const realUnlink = fsPromises.unlink;
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      await realUnlink(path);
++      if (String(path).endsWith("summary.json")) throw nodeError("EIO");
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toEqual({ deletedSessionIds: ["a", "b"], failures: [] });
++    expect(await exists(a.archivePath)).toBe(false);
++    expect(await exists(b.archivePath)).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("keeps the files and entries of sessions when the summary replacement fails", async () => {
++    const root = await tempRoot("pi-web-archive-delete-replace-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined) throw new Error("Expected archive paths");
++    vi.spyOn(fsPromises, "rename").mockImplementation(() => Promise.reject(nodeError("ENOSPC")));
++
++    const result = await store.deleteArchivedMany(["a"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toEqual({ deletedSessionIds: [], failures: [{ sessionId: "a", error: "ENOSPC" }] });
++    await expect(readFile(a.archivePath, "utf8")).resolves.toBe("a\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([a, b]);
++  });
++
++  it("keeps a file and its entry when the entry put back after a failed removal fails to flush", async () => {
++    const root = await tempRoot("pi-web-archive-delete-undo-flush-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined) throw new Error("Expected archive paths");
++    const monthDir = dirname(dirname(a.archivePath));
++    const realUnlink = fsPromises.unlink;
++    const realRename = fsPromises.rename;
++    const realOpen = fsPromises.open;
++    let summaryRenames = 0;
++    let failedFlushes = 0;
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      if (String(path).endsWith("_b.jsonl")) throw nodeError("EBUSY");
++      await realUnlink(path);
++    });
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      await realRename(from, to);
++      if (String(to).endsWith("summary.json")) summaryRenames += 1;
++    });
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      if (summaryRenames >= 1 && String(path) === monthDir) {
++        failedFlushes += 1;
++        throw nodeError("EIO");
++      }
++      return realOpen(path, flags, mode);
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(failedFlushes).toBe(1);
++    expect(result).toEqual({ deletedSessionIds: ["a"], failures: [{ sessionId: "b", error: "EBUSY" }] });
++    expect(result.failures[0]?.error).not.toContain("--repair");
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: "b" }]);
++  });
++
++  it("names --repair for every session of a batch when the summary cannot be read back", async () => {
++    const root = await tempRoot("pi-web-archive-delete-reread-failure-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b", "c"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b, c] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined || c?.archivePath === undefined) throw new Error("Expected archive paths");
++    const summaryPath = join(dirname(dirname(a.archivePath)), "summary.json");
++    const realRename = fsPromises.rename;
++    const realStat = fsPromises.stat;
++    const realUnlink = fsPromises.unlink;
++    let summaryRenames = 0;
++    let summaryUnreadable = false;
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      if (String(path).endsWith("_b.jsonl") || String(path).endsWith("_c.jsonl")) throw nodeError("EBUSY");
++      await realUnlink(path);
++    });
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(to) === summaryPath) {
++        summaryRenames += 1;
++        // The second summary write fails and leaves the summary unreadable.
++        if (summaryRenames === 2) {
++          summaryUnreadable = true;
++          throw nodeError("ENOSPC");
++        }
++      }
++      await realRename(from, to);
++    });
++    vi.spyOn(fsPromises, "stat").mockImplementation(async (path) => {
++      if (summaryUnreadable && String(path) === summaryPath) throw nodeError("EIO");
++      return realStat(path);
++    });
++
++    const result = await store.deleteArchivedMany(["b", "c"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toMatchObject({ deletedSessionIds: [], failures: [{ sessionId: "b" }, { sessionId: "c" }] });
++    for (const failure of result.failures) {
++      expect(failure.error).toMatch(/^EBUSY; .*--repair$/);
++    }
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(readFile(c.archivePath, "utf8")).resolves.toBe("c\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: "a" }]);
++  });
++
++  it("names --repair for every session of a batch when a summary write fails after its replacement and cannot be read back", async () => {
++    const root = await tempRoot("pi-web-archive-delete-replaced-reread-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b", "c"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const [a, b] = await store.list(PROJECT_CWD);
++    if (a?.archivePath === undefined || b?.archivePath === undefined) throw new Error("Expected archive paths");
++    const monthDir = dirname(dirname(a.archivePath));
++    const summaryPath = join(monthDir, "summary.json");
++    const realRename = fsPromises.rename;
++    const realOpen = fsPromises.open;
++    const realStat = fsPromises.stat;
++    let summaryReplaced = false;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      await realRename(from, to);
++      if (String(to) === summaryPath) summaryReplaced = true;
++    });
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      if (summaryReplaced && String(path) === monthDir) throw nodeError("EIO");
++      return realOpen(path, flags, mode);
++    });
++    vi.spyOn(fsPromises, "stat").mockImplementation(async (path) => {
++      if (summaryReplaced && String(path) === summaryPath) throw nodeError("EIO");
++      return realStat(path);
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toMatchObject({ deletedSessionIds: [], failures: [{ sessionId: "a" }, { sessionId: "b" }] });
++    for (const failure of result.failures) {
++      expect(failure.error).toMatch(/^EIO; .*--repair$/);
++    }
++    await expect(readFile(a.archivePath, "utf8")).resolves.toBe("a\n");
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: "c" }]);
++  });
++
++  it("names --repair for every session of a batch when a refused summary write cannot be read back", async () => {
++    const root = await tempRoot("pi-web-archive-delete-refused-reread-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    for (const id of ["a", "b", "c"]) {
++      const sourcePath = await writeSession(join(root, "active", `2026-01-01_${id}.jsonl`), `${id}\n`);
++      await store.archive(sessionInput({ sessionId: id, path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++    }
++    const records = await store.list(PROJECT_CWD);
++    const [a, b] = records;
++    if (a?.archivePath === undefined || b?.archivePath === undefined) throw new Error("Expected archive paths");
++    const summaryPath = join(dirname(dirname(a.archivePath)), "summary.json");
++    const realRename = fsPromises.rename;
++    const realStat = fsPromises.stat;
++    let summaryRefused = false;
++    vi.spyOn(fsPromises, "rename").mockImplementation((from, to) => {
++      if (String(to) !== summaryPath) return realRename(from, to);
++      summaryRefused = true;
++      return Promise.reject(nodeError("ENOSPC"));
++    });
++    vi.spyOn(fsPromises, "stat").mockImplementation(async (path) => {
++      if (summaryRefused && String(path) === summaryPath) throw nodeError("EIO");
++      return realStat(path);
++    });
++
++    const result = await store.deleteArchivedMany(["a", "b"].map((sessionId) => ({ sessionId, cwd: PROJECT_CWD })));
++
++    vi.restoreAllMocks();
++    expect(result).toMatchObject({ deletedSessionIds: [], failures: [{ sessionId: "a" }, { sessionId: "b" }] });
++    for (const failure of result.failures) {
++      expect(failure.error).toMatch(/^ENOSPC; .*--repair$/);
++    }
++    await expect(readFile(a.archivePath, "utf8")).resolves.toBe("a\n");
++    await expect(readFile(b.archivePath, "utf8")).resolves.toBe("b\n");
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual(records);
++  });
++
++  it("renames archived sessions with a pi session_info entry and mirrors the name in the summary", async () => {
++    const root = await tempRoot("pi-web-archive-rename-");
++    const message = JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: SESSION_CREATED, message: { role: "user", content: "hi" } });
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), `${sessionHeader(SESSION_ID, PROJECT_CWD)}${message}\n`);
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++
++    await expect(store.rename(SESSION_ID, PROJECT_CWD, " New\nname ")).resolves.toBe("New name");
++    const named = lastJsonLine(await readFile(record.archivePath, "utf8"));
++    expect(named).toMatchObject({ type: "session_info", parentId: "m1", name: "New name" });
++    expect(named["id"]).toMatch(/^[0-9a-f]{8}$/);
++    await expect(store.list(PROJECT_CWD)).resolves.toMatchObject([{ sessionId: SESSION_ID, name: "New name" }]);
++
++    await expect(store.rename(SESSION_ID, PROJECT_CWD, "")).resolves.toBeUndefined();
++    expect(lastJsonLine(await readFile(record.archivePath, "utf8"))).toMatchObject({ type: "session_info", parentId: named["id"], name: "" });
++    const [renamed] = await store.list(PROJECT_CWD);
++    expect(renamed?.name).toBeUndefined();
++
++    const contents = await readFile(record.archivePath, "utf8");
++    const realRename = fsPromises.rename;
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(from).endsWith(".tmp")) throw nodeError("ENOSPC");
++      await realRename(from, to);
++    });
++    await expect(store.rename(SESSION_ID, PROJECT_CWD, "Lost name")).rejects.toThrow("ENOSPC");
++    vi.restoreAllMocks();
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(contents);
++    const [unchanged] = await store.list(PROJECT_CWD);
++    expect(unchanged?.name).toBeUndefined();
++
++    // A refused append, e.g. to a read-only file: nothing to cut off, no stray summary backup.
++    vi.spyOn(fsPromises, "appendFile").mockRejectedValue(nodeError("EACCES"));
++    await expect(store.rename(SESSION_ID, PROJECT_CWD, "Lost name")).rejects.toThrow("EACCES");
++    vi.restoreAllMocks();
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(contents);
++    const [kept] = await store.list(PROJECT_CWD);
++    expect(kept?.name).toBeUndefined();
++    const monthDir = dirname(dirname(record.archivePath));
++    expect((await readdir(monthDir)).filter((name) => name.endsWith(".previous"))).toEqual([]);
++
++    const realAppendFile = fsPromises.appendFile;
++    vi.spyOn(fsPromises, "appendFile").mockImplementation(async (path, data) => {
++      await realAppendFile(path, data);
++      throw nodeError("ENOSPC");
++    });
++    vi.spyOn(fsPromises, "truncate").mockRejectedValue(nodeError("EIO"));
++    await expect(store.rename(SESSION_ID, PROJECT_CWD, "Lost name")).rejects.toThrow("--repair");
++    vi.restoreAllMocks();
++    // The appended line stays for --repair, the earlier contents are intact.
++    const partly = await readFile(record.archivePath, "utf8");
++    expect(partly.startsWith(contents)).toBe(true);
++    expect(partly.length).toBeGreaterThan(contents.length);
++  });
++
++  it("prefers exact session IDs over prefix matches and canonicalizes cwd", async () => {
++    const root = await tempRoot("pi-web-archive-prefix-");
++    const rawCwd = `${root}/workspace/../workspace`;
++    const sourceLong = await writeSession(join(root, "active", "2026-01-01_abc123.jsonl"), "long\n");
++    const sourceShort = await writeSession(join(root, "active", "2026-01-01_abc.jsonl"), "short\n");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    await store.archiveMany([
++      sessionInput({ sessionId: "abc123", cwd: rawCwd, path: sourceLong, name: "Prefix match", parentSessionPath: "/sessions/root.jsonl" }),
++      sessionInput({ sessionId: "abc", cwd: rawCwd, path: sourceShort }),
++    ]);
++
++    await expect(store.get("abc", rawCwd)).resolves.toMatchObject({ sessionId: "abc", cwd: resolve(rawCwd) });
++    await expect(store.get("abc1", rawCwd)).resolves.toMatchObject({ sessionId: "abc123", cwd: resolve(rawCwd) });
++    await expect(store.list(rawCwd)).resolves.toMatchObject([
++      { sessionId: "abc123", cwd: resolve(rawCwd), name: "Prefix match", parentSessionPath: "/sessions/root.jsonl" },
++      { sessionId: "abc", cwd: resolve(rawCwd) },
++    ]);
++    await expect(store.isArchived("abc1", rawCwd)).resolves.toBe(true);
++    await expect(store.isArchived("missing", rawCwd)).resolves.toBe(false);
++  });
++
++  it("copies session files across filesystems and keeps their times", async () => {
++    const root = await tempRoot("pi-web-archive-copy-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const mtime = new Date("2026-10-23T08:00:00.000Z");
++    await utimes(sourcePath, mtime, mtime);
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EXDEV"));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    expect((await stat(record.archivePath)).mtime.toISOString()).toBe(mtime.toISOString());
++    await expect(readdir(join(root, "active"))).resolves.toEqual([]);
++    await expect(readdir(dirname(record.archivePath))).resolves.toEqual([SESSION_FILE]);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("leaves no partial copy when copying across filesystems fails", async () => {
++    const root = await tempRoot("pi-web-archive-copy-failure-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EXDEV"));
++    const realCopyFile = fsPromises.copyFile;
++    vi.spyOn(fsPromises, "copyFile").mockImplementation(async (from, to, mode) => {
++      await realCopyFile(from, to, mode);
++      throw nodeError("ENOSPC");
++    });
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    await expect(store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }))).rejects.toThrow("ENOSPC");
++
++    vi.restoreAllMocks();
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    expect(await exists(join(root, "archived-projects", "workspace-demo--"))).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("restores session files across filesystems and keeps their times", async () => {
++    const root = await tempRoot("pi-web-archive-restore-copy-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const mtime = new Date("2026-10-23T08:00:00.000Z");
++    await utimes(sourcePath, mtime, mtime);
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EXDEV"));
++
++    await store.restore(SESSION_ID, PROJECT_CWD);
++
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    expect((await stat(sourcePath)).mtime.toISOString()).toBe(mtime.toISOString());
++    expect(await exists(join(root, "archived-projects", "workspace-demo--"))).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("keeps a session file created by another process when a restore copy is refused", async () => {
++    const root = await tempRoot("pi-web-archive-restore-foreign-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++    const realOpen = fsPromises.open;
++    const realCopyFile = fsPromises.copyFile;
++    // pi creates the session at its old path just before the read of the archived file fails.
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      if (String(path).endsWith(".copying") && flags === "r") {
++        await writeSession(sourcePath, "pi wrote this\n");
++        throw nodeError("EIO");
++      }
++      return realOpen(path, flags, mode);
++    });
++    vi.spyOn(fsPromises, "copyFile").mockImplementation(async (from, to, mode) => {
++      if (String(to) === sourcePath) {
++        await writeSession(sourcePath, "pi wrote this\n");
++        throw nodeError("EIO");
++      }
++      await realCopyFile(from, to, mode);
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("EIO");
++
++    vi.restoreAllMocks();
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe("pi wrote this\n");
++    await expect(readdir(join(root, "active"))).resolves.toEqual([SESSION_FILE]);
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("removes only the partial file it created when a restore copy fails", async () => {
++    const root = await tempRoot("pi-web-archive-restore-partial-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++    const realOpen = fsPromises.open;
++    const realCopyFile = fsPromises.copyFile;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") {
++        vi.spyOn(handle, "write").mockRejectedValue(nodeError("ENOSPC"));
++      }
++      return handle;
++    });
++    vi.spyOn(fsPromises, "copyFile").mockImplementation(async (from, to, mode) => {
++      await realCopyFile(from, to, mode);
++      if (String(to) === sourcePath) throw nodeError("ENOSPC");
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("ENOSPC");
++
++    vi.restoreAllMocks();
++    expect(await exists(sourcePath)).toBe(false);
++    await expect(readdir(join(root, "active"))).resolves.toEqual([]);
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("removes the restored copy when the descriptor of the new file cannot be inspected once", async () => {
++    const root = await tempRoot("pi-web-archive-restore-stat-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    const realOpen = fsPromises.open;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") vi.spyOn(handle, "stat").mockRejectedValueOnce(nodeError("EIO"));
++      return handle;
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("EIO");
++
++    vi.restoreAllMocks();
++    expect(await exists(sourcePath)).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++    await store.restore(SESSION_ID, PROJECT_CWD);
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++  });
++
++  it("removes the restored copy when the descriptor of the new file cannot be closed", async () => {
++    const root = await tempRoot("pi-web-archive-restore-close-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    const realOpen = fsPromises.open;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") {
++        const realClose = handle.close.bind(handle);
++        vi.spyOn(handle, "close").mockImplementationOnce(async () => {
++          await realClose();
++          throw nodeError("EIO");
++        });
++      }
++      return handle;
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("EIO");
++
++    vi.restoreAllMocks();
++    expect(await exists(sourcePath)).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++    await store.restore(SESSION_ID, PROJECT_CWD);
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
+   });
+ 
+-  it("prefers exact persisted session IDs over prefix matches and canonicalizes stored cwd", async () => {
+-    const root = await mkdtemp(join(tmpdir(), "pi-web-archive-prefix-"));
+-    tempRoots.push(root);
+-    const archiveFile = join(root, "archived-sessions.json");
+-    const rawCwd = join(root, "workspace", "..", "workspace");
+-    await writeFile(archiveFile, JSON.stringify({
+-      sessions: [
+-        {
+-          sessionId: "abc123",
+-          cwd: rawCwd,
+-          archivedAt: "2026-01-01T00:00:00.000Z",
+-          originalPath: "/sessions/abc123.jsonl",
+-          archivePath: "/archive/abc123.jsonl",
+-          messageCount: 3,
+-          firstMessage: "prefix",
+-          name: "Prefix match",
+-          parentSessionPath: "/sessions/root.jsonl",
+-        },
+-        {
+-          sessionId: "abc",
+-          cwd: rawCwd,
+-          archivedAt: "2026-01-01T00:00:00.000Z",
+-          originalPath: "/sessions/abc.jsonl",
+-          archivePath: "/archive/abc.jsonl",
+-          messageCount: 1,
+-          firstMessage: "exact",
+-        },
+-      ],
+-    }), "utf8");
+-
+-    const store = new SessionArchiveStore(archiveFile, join(root, "archived-files"));
+-
+-    await expect(store.get("abc")).resolves.toMatchObject({
+-      sessionId: "abc",
+-      cwd: resolve(rawCwd),
+-      firstMessage: "exact",
+-    });
+-    await expect(store.get("abc1")).resolves.toMatchObject({
+-      sessionId: "abc123",
+-      cwd: resolve(rawCwd),
+-      firstMessage: "prefix",
+-      name: "Prefix match",
+-      parentSessionPath: "/sessions/root.jsonl",
++  it("keeps the restored file and names its path when its owner cannot be determined", async () => {
++    const root = await tempRoot("pi-web-archive-restore-owner-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    const realOpen = fsPromises.open;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") vi.spyOn(handle, "stat").mockRejectedValue(nodeError("EIO"));
++      return handle;
+     });
+-    await expect(store.isArchived("abc1")).resolves.toBe(true);
+-    await expect(store.isArchived("missing")).resolves.toBe(false);
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow(`a file stays at ${sourcePath}`);
++
++    vi.restoreAllMocks();
++    expect(await exists(sourcePath)).toBe(true);
++    await expect(readFile(record.archivePath ?? "", "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("restores the file when only the read-only source descriptor cannot be closed", async () => {
++    const root = await tempRoot("pi-web-archive-restore-source-close-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++    const realOpen = fsPromises.open;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path).endsWith(".copying") && flags === "r") {
++        const realClose = handle.close.bind(handle);
++        vi.spyOn(handle, "close").mockImplementationOnce(async () => {
++          await realClose();
++          throw nodeError("EIO");
++        });
++      }
++      return handle;
++    });
++
++    await store.restore(SESSION_ID, PROJECT_CWD);
++
++    vi.restoreAllMocks();
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    expect(await exists(record.archivePath)).toBe(false);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("keeps the restored file and names its path when it cannot be inspected after a failed copy", async () => {
++    const root = await tempRoot("pi-web-archive-restore-cleanup-stat-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    const realOpen = fsPromises.open;
++    const realStat = fsPromises.stat;
++    let created = false;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") {
++        created = true;
++        vi.spyOn(handle, "write").mockRejectedValue(nodeError("ENOSPC"));
++      }
++      return handle;
++    });
++    vi.spyOn(fsPromises, "stat").mockImplementation(async (path) => {
++      if (created && String(path) === sourcePath) throw nodeError("EIO");
++      return realStat(path);
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow(`a file stays at ${sourcePath}`);
++
++    vi.restoreAllMocks();
++    expect(await exists(sourcePath)).toBe(true);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("keeps a partial restore copy that another process appended to", async () => {
++    const root = await tempRoot("pi-web-archive-restore-appended-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    const realOpen = fsPromises.open;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") {
++        vi.spyOn(handle, "write").mockImplementation(async () => {
++          await appendFile(sourcePath, "pi wrote this\n", "utf8");
++          throw nodeError("ENOSPC");
++        });
++      }
++      return handle;
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow(`a file stays at ${sourcePath}`);
++
++    vi.restoreAllMocks();
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe("pi wrote this\n");
++  });
++
++  it("keeps a session file that replaced the partial copy of a failed restore", async () => {
++    const root = await tempRoot("pi-web-archive-restore-replaced-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    const realOpen = fsPromises.open;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EPERM"));
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      const handle = await realOpen(path, flags, mode);
++      if (String(path) === sourcePath && flags === "wx") {
++        vi.spyOn(handle, "write").mockImplementation(async () => {
++          await fsPromises.unlink(sourcePath);
++          await writeSession(sourcePath, "pi wrote this\n");
++          throw nodeError("ENOSPC");
++        });
++      }
++      return handle;
++    });
++
++    await expect(store.restore(SESSION_ID, PROJECT_CWD)).rejects.toThrow("ENOSPC");
++
++    vi.restoreAllMocks();
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe("pi wrote this\n");
++  });
++
++  it("keeps a copied session in place when it changes before the source is removed", async () => {
++    const root = await tempRoot("pi-web-archive-copy-changed-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const realCopyFile = fsPromises.copyFile;
++    vi.spyOn(fsPromises, "link").mockRejectedValue(nodeError("EXDEV"));
++    vi.spyOn(fsPromises, "copyFile").mockImplementationOnce(async (source, destination, mode) => {
++      await realCopyFile(source, destination, mode);
++      await appendFile(sourcePath, "late entry\n", "utf8");
++    });
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    await expect(store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }))).rejects.toThrow("changed while it was being moved");
++
++    await expect(readFile(sourcePath, "utf8")).resolves.toBe(`${sessionHeader(SESSION_ID, PROJECT_CWD)}late entry\n`);
++    await expect(readdir(join(root, "active"))).resolves.toEqual([SESSION_FILE]);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++    await expect(store.isArchived(SESSION_ID, PROJECT_CWD)).resolves.toBe(false);
++  });
++
++  it("refuses to delete or rename a session that has no entry in its summary", async () => {
++    const root = await tempRoot("pi-web-archive-missing-entry-");
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    const result = await store.deleteArchivedMany([{ sessionId: SESSION_ID, cwd: PROJECT_CWD }]);
++    expect(result.deletedSessionIds).toEqual([]);
++    expect(result.failures).toHaveLength(1);
++    expect(result.failures[0]).toMatchObject({ sessionId: SESSION_ID });
++    expect(result.failures[0]?.error).toContain("--repair");
++    await expect(store.rename(SESSION_ID, PROJECT_CWD, "Name")).rejects.toThrow("--repair");
++  });
++
++  it("takes the creation time of a session without a date in its id or file name from its header", async () => {
++    const root = await tempRoot("pi-web-archive-header-created-");
++    const sourcePath = await writeSession(join(root, "active", "legacy.jsonl"), `${JSON.stringify({ type: "session", id: "legacy", timestamp: "2026-08-02T10:00:00.000Z", cwd: PROJECT_CWD })}\n`);
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    const record = await store.archive(sessionInput({ sessionId: "legacy", path: sourcePath, created: "2026-01-01T00:00:00.000Z" }));
++
++    expect(record.created).toBe("2026-08-02T10:00:00.000Z");
++    expect(record.archivePath).toContain(join("2026", "08", "02", "legacy.jsonl"));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("tells apart projects whose archive directories collide", async () => {
++    const root = await tempRoot("pi-web-archive-collision-");
++    const otherCwd = "/workspace-demo";
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, otherCwd));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, cwd: otherCwd, path: sourcePath }));
++
++    expect(record.archivePath).toBe(join(root, "archived-projects", "workspace-demo--", "2026", "10", "22", SESSION_FILE));
++    await expect(store.get(SESSION_ID, otherCwd)).resolves.toMatchObject({ sessionId: SESSION_ID, cwd: otherCwd });
++    await expect(store.get(SESSION_ID, PROJECT_CWD)).resolves.toBeUndefined();
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([]);
++  });
++
++  it("keeps the entry when a session opened from its archive file is archived again", async () => {
++    const root = await tempRoot("pi-web-archive-again-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++    const record = await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourcePath }));
++    if (record.archivePath === undefined) throw new Error("Expected archive path");
++    const summaryPath = join(dirname(dirname(record.archivePath)), "summary.json");
++    const summaryBefore = await stat(summaryPath);
++
++    await expect(store.archive(sessionInput({ sessionId: SESSION_ID, path: record.archivePath, messageCount: 7, name: "Other" }))).resolves.toEqual(record);
++
++    await expect(readFile(record.archivePath, "utf8")).resolves.toBe(sessionHeader(SESSION_ID, PROJECT_CWD));
++    const summaryAfter = await stat(summaryPath);
++    expect([summaryAfter.ino, summaryAfter.mtimeMs]).toEqual([summaryBefore.ino, summaryBefore.mtimeMs]);
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++
++    // A file in the tree without a summary entry has no known original path.
++    const strayPath = join(dirname(record.archivePath), "2026-10-22T14-05-31-123Z_other.jsonl");
++    await writeFile(strayPath, sessionHeader("other", PROJECT_CWD), "utf8");
++    await expect(store.archive(sessionInput({ sessionId: "other", path: strayPath }))).rejects.toThrow("--repair");
++    await expect(readFile(strayPath, "utf8")).resolves.toBe(sessionHeader("other", PROJECT_CWD));
++    await expect(store.list(PROJECT_CWD)).resolves.toEqual([record]);
++  });
++
++  it("flushes every placed file before any summary is replaced or removed", async () => {
++    const root = await tempRoot("pi-web-archive-flush-order-");
++    const archiveRoot = join(root, "archived-projects");
++    const sourceA = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, PROJECT_CWD));
++    const sourceB = await writeSession(join(root, "active", "2026-09-01_b.jsonl"), "b\n");
++    const store = new SessionArchiveStore(archiveRoot);
++    const archivedA = join(archiveRoot, "workspace-demo--", "2026", "10", "22", SESSION_FILE);
++    const archivedB = join(archiveRoot, "workspace-demo--", "2026", "09", "01", "2026-09-01_b.jsonl");
++    const events: string[] = [];
++    const realOpen = fsPromises.open;
++    const realRename = fsPromises.rename;
++    const realUnlink = fsPromises.unlink;
++    let placed: string[] = [];
++    vi.spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
++      if (placed.includes(String(path))) events.push("flush");
++      return realOpen(path, flags, mode);
++    });
++    vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
++      if (String(to).endsWith("summary.json")) events.push("summary");
++      await realRename(from, to);
++    });
++    vi.spyOn(fsPromises, "unlink").mockImplementation(async (path) => {
++      if (String(path).endsWith("summary.json")) events.push("summary");
++      await realUnlink(path);
++    });
++    const expectFlushedFirst = (flushes: number): void => {
++      expect(events.filter((event) => event === "flush")).toHaveLength(flushes);
++      expect(events).toContain("summary");
++      expect(events.lastIndexOf("flush")).toBeLessThan(events.indexOf("summary"));
++      events.length = 0;
++    };
++
++    placed = [archivedA];
++    await store.archive(sessionInput({ sessionId: SESSION_ID, path: sourceA }));
++    expectFlushedFirst(1);
++
++    placed = [sourceA];
++    await store.restore(SESSION_ID, PROJECT_CWD);
++    expectFlushedFirst(1);
++
++    placed = [archivedA, archivedB];
++    await store.archiveMany([
++      sessionInput({ sessionId: SESSION_ID, path: sourceA }),
++      sessionInput({ sessionId: "b", path: sourceB, created: "2026-09-01T00:00:00.000Z" }),
++    ]);
++    expectFlushedFirst(2);
++  });
++
++  it("rejects sessions of the filesystem root", async () => {
++    const root = await tempRoot("pi-web-archive-root-");
++    const sourcePath = await writeSession(join(root, "active", SESSION_FILE), sessionHeader(SESSION_ID, "/"));
++    const store = new SessionArchiveStore(join(root, "archived-projects"));
++
++    await expect(store.archive(sessionInput({ sessionId: SESSION_ID, cwd: "/", path: sourcePath }))).rejects.toThrow("filesystem root");
++    expect(await exists(sourcePath)).toBe(true);
+   });
+ });
+ 
++async function tempRoot(prefix: string): Promise<string> {
++  const root = await mkdtemp(join(tmpdir(), prefix));
++  tempRoots.push(root);
++  return root;
++}
++
++async function writeSession(path: string, contents: string): Promise<string> {
++  await mkdir(dirname(path), { recursive: true });
++  await writeFile(path, contents, "utf8");
++  return path;
++}
++
++function sessionHeader(sessionId: string, cwd: string): string {
++  return `${JSON.stringify({ type: "session", id: sessionId, timestamp: SESSION_CREATED, cwd })}\n`;
++}
++
++function sessionInput(overrides: Partial<ArchiveSessionInput> & Pick<ArchiveSessionInput, "sessionId" | "path">): ArchiveSessionInput {
++  return {
++    cwd: PROJECT_CWD,
++    created: SESSION_CREATED,
++    modified: SESSION_CREATED,
++    messageCount: 2,
++    firstMessage: "hello",
++    ...overrides,
++  };
++}
++
++function lastJsonLine(text: string): Record<string, unknown> {
++  const lines = text.trimEnd().split("\n");
++  const value: unknown = JSON.parse(lines[lines.length - 1] ?? "");
++  if (!isJsonObject(value)) throw new Error("Expected a JSON object line");
++  return value;
++}
++
++function isJsonObject(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++function nodeError(code: string): NodeJS.ErrnoException {
++  return Object.assign(new Error(code), { code });
++}
++
+ async function exists(path: string): Promise<boolean> {
+   try {
+     await access(path, constants.F_OK);
+diff -ruN -x .git a/src/server/sessions/sessionArchiveStore.ts b/src/server/sessions/sessionArchiveStore.ts
+--- a/src/server/sessions/sessionArchiveStore.ts	2026-11-10 07:23:02.902935174 +0000
++++ b/src/server/sessions/sessionArchiveStore.ts	2026-11-10 19:11:24.135476846 +0000
+@@ -1,7 +1,7 @@
+ import { randomUUID } from "node:crypto";
+-import { constants } from "node:fs";
+-import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+-import { basename, dirname, join } from "node:path";
++import { constants, type Dirent, type Stats } from "node:fs";
++import { access, appendFile, chmod, copyFile, link, mkdir, open, readdir, readFile, rename, rmdir, stat, truncate, unlink, utimes, writeFile } from "node:fs/promises";
++import { basename, dirname, join, resolve, sep } from "node:path";
+ import { piWebDataDir } from "../../config.js";
+ import { canonicalizeStoredCwd } from "../workingDirectory.js";
+ 
+@@ -31,29 +31,168 @@
+   parentSessionPath?: string;
+ }
+ 
+-export interface SessionArchiveFile {
+-  sessions: ArchivedSessionRecord[];
++/** An archived session file found from its id and cwd. */
++export interface ArchivedSessionLocation {
++  sessionId: string;
++  cwd: string;
++  archivePath: string;
++}
++
++/** Archives are laid out per project, so an archived session is identified by its id and cwd. */
++export interface ArchivedSessionRef {
++  sessionId: string;
++  cwd: string;
++}
++
++/** A session of a batch delete whose archive file could not be removed. */
++export interface ArchivedDeleteFailure {
++  sessionId: string;
++  error: string;
++}
++
++/** Outcome of a batch delete: the deleted sessions and the ones that failed. */
++export interface ArchivedDeleteResult {
++  deletedSessionIds: string[];
++  failures: ArchivedDeleteFailure[];
++}
++
++/** One session of a monthly `summary.json`; the archive file path and the API-only fields are derived. */
++interface SummaryEntry {
++  sessionId: string;
++  cwd: string;
++  archivedAt: string;
++  originalPath: string;
++  messageCount: number;
++  name?: string;
++  parentSessionPath?: string;
++}
++
++interface CachedSummary {
++  ino: number;
++  size: number;
++  mtimeMs: number;
++  entries: readonly SummaryEntry[];
++}
++
++/** A summary entry with its summary file, the summary's entries and the archived session file. */
++interface FoundSummaryEntry {
++  entry: SummaryEntry;
++  entries: readonly SummaryEntry[];
++  summaryPath: string;
++  archivePath: string;
++}
++
++/** A session file placed at its new path whose old path is not removed yet. */
++interface PendingMove {
++  source: string;
++  destination: string;
++  /** Source stats taken before copying; unset for a hard link, which shares the data. */
++  copiedFrom?: Stats;
++  /** The topmost directory created for `destination` outside the archive, whose entry must be flushed too. */
++  createdDir?: string;
++}
++
++/** The old path of a placed file renamed aside until the operation is committed. */
++interface ParkedSource {
++  move: PendingMove;
++  parkedPath: string;
++}
++
++/** One session of a batch delete. */
++interface DeleteItem {
++  sessionId: string;
++  entry: SummaryEntry;
++  archivePath: string;
+ }
+ 
+-export function defaultSessionArchiveFilePath(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
+-  return join(piWebDataDir(env, cwd), "archived-sessions.json");
++/** The sessions of a batch delete that share one summary, and that summary's entries. */
++interface DeleteGroup {
++  entries: readonly SummaryEntry[];
++  items: DeleteItem[];
+ }
+ 
++interface ArchiveDay {
++  year: string;
++  month: string;
++  day: string;
++}
++
++const SUMMARY_FILE_NAME = "summary.json";
++const SUMMARY_VERSION = 1;
++const UUID_V7_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
++const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
++/** pi names session files `<ISO time with - instead of : and .>_<session id>.jsonl`. */
++const SESSION_FILE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z_/;
++const YEAR_DIR_PATTERN = /^\d{4}$/;
++const MONTH_DIR_PATTERN = /^\d{2}$/;
++const HEADER_READ_BYTES = 64 * 1024;
++const ENTRY_ID_ATTEMPTS = 100;
++const COPY_CHUNK_BYTES = 1024 * 1024;
++/** `link()` failures meaning another filesystem or one without hard links: copy instead. */
++const LINK_FALLBACK_CODES: ReadonlySet<string> = new Set(["EXDEV", "EPERM", "ENOTSUP"]);
++const DIR_SYNC_UNSUPPORTED_CODES: ReadonlySet<string> = new Set(["EISDIR", "EPERM", "EINVAL"]);
++const REPAIR_HINT = "stop PI WEB and run the release asset pi-web-convert-session-archive-<version>.py with --repair";
++
++export function defaultSessionArchiveRootDir(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
++  return join(piWebDataDir(env, cwd), "archived-projects");
++}
++
++/**
++ * Archive tree `<root>/<project>/YYYY/MM/DD/<session file>` with one
++ * `YYYY/MM/summary.json` per project month. The project directory is the cwd
++ * encoded like pi session directories without the leading `--`, and the day is
++ * the UTC creation time of the session. Session files are only moved; renaming
++ * appends a pi `session_info` entry. A move places the file at its new path,
++ * writes the summaries next to hard-linked backups, renames the old paths
++ * aside and only then removes them, so a failure on any step undoes the whole
++ * operation with renames that need no free space.
++ */
+ export class SessionArchiveStore {
+   private operationQueue: Promise<void> = Promise.resolve();
++  private readonly summaryCache = new Map<string, CachedSummary>();
++
++  constructor(private readonly rootDir = defaultSessionArchiveRootDir()) {}
+ 
+-  constructor(
+-    private readonly filePath = defaultSessionArchiveFilePath(),
+-    private readonly archiveDir = join(dirname(filePath), "archived-sessions"),
+-  ) {}
+-
+-  async list(): Promise<ArchivedSessionRecord[]> {
+-    return (await this.read()).sessions;
++  /** Archived sessions of one project, or of every project when `cwd` is omitted. */
++  async list(cwd?: string): Promise<ArchivedSessionRecord[]> {
++    const canonicalCwd = cwd === undefined ? undefined : canonicalizeStoredCwd(cwd);
++    const projectDirs = canonicalCwd === undefined ? await this.projectDirs() : [this.projectDir(canonicalCwd)];
++    const records: ArchivedSessionRecord[] = [];
++    for (const projectDir of projectDirs) {
++      for (const summaryPath of await summaryPaths(projectDir)) {
++        for (const entry of await this.readSummary(summaryPath)) {
++          if (canonicalCwd !== undefined && entry.cwd !== canonicalCwd) continue;
++          const archivePath = await archivePathForEntry(entry, dirname(summaryPath));
++          records.push(recordFromEntry(entry, archivePath, await entryCreatedMs(entry, archivePath)));
++        }
++      }
++    }
++    return records;
+   }
+ 
+-  async get(sessionId: string): Promise<ArchivedSessionRecord | undefined> {
+-    const sessions = (await this.read()).sessions;
+-    return sessions.find((session) => session.sessionId === sessionId) ?? sessions.find((session) => session.sessionId.startsWith(sessionId));
++  /**
++   * Find an archived session by id and cwd. A full UUIDv7 id is looked up in
++   * its project day directory without reading summaries, so the frequent
++   * "is this session archived?" miss stays cheap; other ids and id prefixes
++   * are matched against the project's summaries.
++   */
++  async get(sessionId: string, cwd: string): Promise<ArchivedSessionLocation | undefined> {
++    if (sessionId === "") return undefined;
++    const canonicalCwd = canonicalizeStoredCwd(cwd);
++    const createdMs = sessionCreatedAtMs(sessionId);
++    if (createdMs !== undefined) {
++      const archivePath = await this.findArchivedFile(sessionId, canonicalCwd, createdMs);
++      return archivePath === undefined ? undefined : { sessionId, cwd: canonicalCwd, archivePath };
++    }
++    const records = await this.list(canonicalCwd);
++    const record = records.find((candidate) => candidate.sessionId === sessionId)
++      ?? (UUID_PATTERN.test(sessionId) ? undefined : records.find((candidate) => candidate.sessionId.startsWith(sessionId)));
++    if (record?.archivePath === undefined) return undefined;
++    return { sessionId: record.sessionId, cwd: record.cwd, archivePath: record.archivePath };
++  }
++
++  async isArchived(sessionId: string, cwd: string): Promise<boolean> {
++    return (await this.get(sessionId, cwd)) !== undefined;
+   }
+ 
+   async archive(session: ArchiveSessionInput): Promise<ArchivedSessionRecord> {
+@@ -64,81 +203,425 @@
+ 
+   async archiveMany(sessions: readonly ArchiveSessionInput[]): Promise<ArchivedSessionRecord[]> {
+     if (sessions.length === 0) return [];
++    for (const session of sessions) {
++      if (canonicalizeStoredCwd(session.cwd) === "/") throw new Error(`Sessions of the filesystem root / cannot be archived: ${session.sessionId}`);
++    }
+     return this.exclusive(async () => {
+-      const data = await this.read();
++      const edits = new Map<string, SummaryEntry[]>();
++      const moves: PendingMove[] = [];
+       const records: ArchivedSessionRecord[] = [];
+-      const filesToRemove: { source: string; archivePath: string }[] = [];
+-
+-      for (const session of sessions) {
+-        const existingIndex = data.sessions.findIndex((record) => record.sessionId === session.sessionId);
+-        const existing = existingIndex === -1 ? undefined : data.sessions[existingIndex];
+-        const archivePath = existing?.archivePath ?? this.archivePathFor(session);
+-        const record = archiveRecordFromInput(session, {
+-          archivedAt: existing?.archivedAt ?? new Date().toISOString(),
+-          originalPath: existing?.originalPath ?? session.path,
+-          archivePath,
+-        });
+-
+-        await copySessionFileToArchive(session.path, archivePath);
+-
+-        if (existingIndex === -1) data.sessions.push(record);
+-        else data.sessions[existingIndex] = record;
+-        records.push(record);
+-        filesToRemove.push({ source: session.path, archivePath });
++      try {
++        for (const session of sessions) records.push(await this.planArchive(session, edits, moves));
++      } catch (error: unknown) {
++        if (await this.discardMoves(moves)) throw error;
++        throw incompleteUndoError(error);
+       }
+-
+-      await this.write(data);
+-      for (const file of filesToRemove) await removeActiveSessionFile(file.source, file.archivePath);
++      await this.commitMoves(moves, edits);
+       return records;
+     });
+   }
+ 
+-  async restore(sessionId: string): Promise<void> {
++  async restore(sessionId: string, cwd: string): Promise<void> {
+     await this.exclusive(async () => {
+-      const data = await this.read();
+-      const record = data.sessions.find((session) => session.sessionId === sessionId);
+-      if (record === undefined) return;
++      const found = await this.findEntry(sessionId, cwd);
++      if (found === undefined) throw new Error(`Archived session not found in its summary; ${REPAIR_HINT}`);
++      const { entry } = found;
++      if (await pathExists(entry.originalPath)) throw new Error(`Cannot restore archived session because a session already exists at ${entry.originalPath}; ${REPAIR_HINT}`);
++      const createdDir = await mkdir(dirname(entry.originalPath), { recursive: true });
++      const move = await placeFile(found.archivePath, entry.originalPath, false);
++      if (createdDir !== undefined) move.createdDir = createdDir;
++      await this.commitMoves([move], new Map([[found.summaryPath, found.entries.filter((candidate) => candidate !== entry)]]));
++    });
++  }
++
++  async deleteArchived(sessionId: string, cwd: string): Promise<void> {
++    const [failure] = (await this.deleteArchivedMany([{ sessionId, cwd }])).failures;
++    if (failure !== undefined) throw new Error(failure.error);
++  }
+ 
+-      if (record.archivePath !== undefined && record.originalPath !== undefined) {
+-        await restoreSessionFile(record.archivePath, record.originalPath);
++  /**
++   * Delete archived sessions. Per summary the entries of the deleted sessions
++   * leave the summary first and their files go second, so a summary never
++   * names a missing file: a failed summary write keeps its sessions, and a file
++   * that cannot be removed gets its entry back. When even that fails the file
++   * stays without an entry for the conversion script `--repair`, and the
++   * session's error names it. After a failed write the summary on disk decides,
++   * as the write may have replaced it before failing: sessions it no longer
++   * lists lose their files, the others are refused.
++   */
++  async deleteArchivedMany(refs: readonly ArchivedSessionRef[]): Promise<ArchivedDeleteResult> {
++    if (refs.length === 0) return { deletedSessionIds: [], failures: [] };
++    return this.exclusive(async () => {
++      const groups = new Map<string, DeleteGroup>();
++      const deletedIds = new Set<string>();
++      const failures = new Map<string, string>();
++      for (const ref of refs) {
++        try {
++          const found = await this.findEntry(ref.sessionId, ref.cwd);
++          if (found === undefined) {
++            failures.set(ref.sessionId, `Archived session not found in its summary; ${REPAIR_HINT}`);
++            continue;
++          }
++          let group = groups.get(found.summaryPath);
++          if (group === undefined) {
++            group = { entries: [...found.entries], items: [] };
++            groups.set(found.summaryPath, group);
++          }
++          if (group.items.some((item) => item.entry === found.entry)) continue;
++          group.items.push({ sessionId: ref.sessionId, entry: found.entry, archivePath: found.archivePath });
++        } catch (error: unknown) {
++          failures.set(ref.sessionId, errorText(error));
++        }
+       }
++      const fileDirs = new Set<string>();
++      for (const [summaryPath, group] of groups) {
++        const removed = new Set<SummaryEntry>(group.items.map((item) => item.entry));
++        let items = group.items;
++        let present: DeleteItem[] = [];
++        try {
++          await this.writeSummary(summaryPath, group.entries.filter((entry) => !removed.has(entry)));
++        } catch (error: unknown) {
++          // The replacement or removal may have happened before the failure: the disk decides.
++          const onDisk = await this.summaryOnDisk(summaryPath);
++          if (onDisk === undefined) {
++            for (const item of group.items) failures.set(item.sessionId, `${errorText(error)}; ${REPAIR_HINT}`);
++            continue;
++          }
++          present = group.items.filter((item) => onDisk.some((entry) => sameSession(entry, item.entry)));
++          items = group.items.filter((item) => !present.includes(item));
++          for (const item of present) failures.set(item.sessionId, errorText(error));
++        }
++        const kept: DeleteItem[] = [];
++        for (const item of items) {
++          try {
++            await unlinkIfExists(item.archivePath);
++            deletedIds.add(item.sessionId);
++            fileDirs.add(dirname(item.archivePath));
++          } catch (error: unknown) {
++            failures.set(item.sessionId, errorText(error));
++            kept.push(item);
++          }
++        }
++        if (kept.length === 0) continue;
++        const returned = [...kept, ...present];
++        const restored = new Set<SummaryEntry>(returned.map((item) => item.entry));
++        try {
++          await this.writeSummary(summaryPath, group.entries.filter((entry) => !removed.has(entry) || restored.has(entry)));
++        } catch {
++          // The files stay without entries: `--repair` adds them back, so no data is lost.
++          const onDisk = await this.summaryOnDisk(summaryPath);
++          for (const item of returned) {
++            if (onDisk?.some((entry) => sameSession(entry, item.entry)) === true) continue;
++            failures.set(item.sessionId, `${failures.get(item.sessionId) ?? ""}; ${REPAIR_HINT}`);
++          }
++        }
++      }
++      for (const fileDir of fileDirs) await this.removeEmptyDirs(fileDir);
++      const sessionIds = uniqueStrings(refs.map((ref) => ref.sessionId));
++      return {
++        deletedSessionIds: sessionIds.filter((sessionId) => deletedIds.has(sessionId)),
++        failures: sessionIds.filter((sessionId) => failures.has(sessionId) && !deletedIds.has(sessionId)).map((sessionId) => ({ sessionId, error: failures.get(sessionId) ?? "" })),
++      };
++    });
++  }
+ 
+-      const sessions = data.sessions.filter((session) => session.sessionId !== sessionId);
+-      await this.write({ sessions });
++  /**
++   * Name an archived session the way pi does: append a `session_info` entry to
++   * its file, then mirror the name in the monthly summary. An empty name clears
++   * the session name. Resolves to the stored name.
++   */
++  async rename(sessionId: string, cwd: string, name: string): Promise<string | undefined> {
++    const sessionName = sanitizeSessionName(name);
++    return this.exclusive(async () => {
++      const found = await this.findEntry(sessionId, cwd);
++      if (found === undefined) throw new Error(`Archived session not found in its summary; ${REPAIR_HINT}`);
++      const { size } = await stat(found.archivePath);
++      const renamed: SummaryEntry = { ...found.entry };
++      delete renamed.name;
++      if (sessionName !== "") renamed.name = sessionName;
++      // An archive file has no other writer, so its undo is a truncate. The file goes first:
++      // after a crash before the summary is written `--repair` takes the name from the file.
++      const backup = await backupSummary(found.summaryPath);
++      try {
++        await appendSessionInfo(found.archivePath, sessionName);
++        await syncFile(found.archivePath);
++        await this.writeSummary(found.summaryPath, found.entries.map((entry) => entry === found.entry ? renamed : entry));
++      } catch (error: unknown) {
++        if (await this.undoRename(found.archivePath, size, found.summaryPath, backup)) throw error;
++        throw incompleteUndoError(error);
++      }
++      if (backup !== undefined) await unlinkIfExists(backup).catch(() => undefined);
++      return sessionName === "" ? undefined : sessionName;
+     });
+   }
+ 
+-  async deleteArchived(sessionId: string): Promise<void> {
+-    await this.deleteArchivedMany([sessionId]);
++  /** Cut an appended name entry off and put the previous summary back; resolves to false when that fails. */
++  private async undoRename(archivePath: string, size: number, summaryPath: string, backup: string | undefined): Promise<boolean> {
++    try {
++      // A refused append (e.g. a read-only file) left nothing to cut off.
++      if ((await stat(archivePath)).size !== size) await truncate(archivePath, size);
++      if (backup === undefined) await unlinkIfExists(summaryPath);
++      else await restoreSummary(backup, summaryPath);
++      return true;
++    } catch {
++      return false;
++    } finally {
++      this.summaryCache.delete(summaryPath);
++    }
+   }
+ 
+-  async deleteArchivedMany(sessionIds: readonly string[]): Promise<string[]> {
+-    const targetIds = uniqueStrings(sessionIds);
+-    if (targetIds.length === 0) return [];
+-    return this.exclusive(async () => {
+-      const data = await this.read();
+-      const targetIdSet = new Set(targetIds);
+-      const records = data.sessions.filter((session) => targetIdSet.has(session.sessionId));
+-      if (records.length === 0) return [];
+-
+-      for (const record of records) {
+-        if (record.archivePath !== undefined && await pathExists(record.archivePath)) await unlink(record.archivePath);
+-      }
+-      const sessions = data.sessions.filter((session) => !targetIdSet.has(session.sessionId));
+-      await this.write({ sessions });
+-      const deletedIds = new Set(records.map((record) => record.sessionId));
+-      return targetIds.filter((sessionId) => deletedIds.has(sessionId));
+-    });
++  /** Place one session file in the archive tree and stage its summary entry. */
++  private async planArchive(session: ArchiveSessionInput, edits: Map<string, SummaryEntry[]>, moves: PendingMove[]): Promise<ArchivedSessionRecord> {
++    const cwd = canonicalizeStoredCwd(session.cwd);
++    const fileName = basename(session.path);
++    if (fileName === "") throw new Error(`Session ${session.sessionId} has no session file`);
++    const createdMs = await sessionCreatedMs(session, fileName);
++    const day = archiveDay(createdMs ?? archiveFallbackTimeMs(session));
++    const monthDir = join(this.projectDir(cwd), day.year, day.month);
++    const summaryPath = join(monthDir, SUMMARY_FILE_NAME);
++    const archivePath = join(monthDir, day.day, fileName);
++    const isArchiveFile = resolve(session.path) === archivePath;
++    if (isArchiveFile) {
++      // A session opened from its archive file is archived already: nothing is written.
++      const archived = (edits.get(summaryPath) ?? await this.readSummary(summaryPath)).find((entry) => entry.sessionId === session.sessionId && entry.cwd === cwd);
++      if (archived !== undefined) return recordFromEntry(archived, archivePath, await entryCreatedMs(archived, archivePath));
++      // Its original path is unknown here: the record of such a file is what `--repair` restores.
++      throw new Error(`Cannot archive session ${session.sessionId}: ${archivePath} has no summary entry; ${REPAIR_HINT}`);
++    }
++    const entries = await this.summaryEdit(edits, summaryPath);
++    const existingIndex = entries.findIndex((entry) => entry.sessionId === session.sessionId && entry.cwd === cwd);
++    const existing = existingIndex === -1 ? undefined : entries[existingIndex];
++    await mkdir(dirname(archivePath), { recursive: true });
++    try {
++      moves.push(await placeFile(session.path, archivePath, true));
++    } catch (error: unknown) {
++      await this.removeEmptyDirs(dirname(archivePath));
++      if (!isNodeErrorWithCode(error, "EEXIST")) throw error;
++      throw new Error(`Cannot archive session ${session.sessionId}: ${archivePath} already exists; ${REPAIR_HINT}`, { cause: error });
++    }
++    const entry: SummaryEntry = {
++      sessionId: session.sessionId,
++      cwd,
++      archivedAt: existing?.archivedAt ?? new Date().toISOString(),
++      originalPath: existing?.originalPath ?? session.path,
++      messageCount: session.messageCount,
++      ...(session.name === undefined || session.name === "" ? {} : { name: session.name }),
++      ...(session.parentSessionPath === undefined ? {} : { parentSessionPath: session.parentSessionPath }),
++    };
++    if (existing === undefined) entries.push(entry);
++    else entries[existingIndex] = entry;
++    return recordFromEntry(entry, archivePath, createdMs);
++  }
++
++  private async findEntry(sessionId: string, cwd: string): Promise<FoundSummaryEntry | undefined> {
++    const canonicalCwd = canonicalizeStoredCwd(cwd);
++    const projectDir = this.projectDir(canonicalCwd);
++    const createdMs = sessionCreatedAtMs(sessionId);
++    const paths = createdMs === undefined ? await summaryPaths(projectDir) : [summaryPathFor(projectDir, createdMs)];
++    for (const summaryPath of paths) {
++      const entries = await this.readSummary(summaryPath);
++      const entry = entries.find((candidate) => candidate.sessionId === sessionId && candidate.cwd === canonicalCwd);
++      if (entry !== undefined) return { entry, entries, summaryPath, archivePath: await archivePathForEntry(entry, dirname(summaryPath)) };
++    }
++    return undefined;
++  }
++
++  private async findArchivedFile(sessionId: string, cwd: string, createdMs: number): Promise<string | undefined> {
++    const day = archiveDay(createdMs);
++    const dayDir = join(this.projectDir(cwd), day.year, day.month, day.day);
++    const standardPath = join(dayDir, `${sessionFileTimestamp(createdMs)}_${sessionId}.jsonl`);
++    if (await isSessionFileOf(standardPath, sessionId, cwd)) return standardPath;
++    // pi takes the file name time a few milliseconds after the UUIDv7 time.
++    const suffix = `_${sessionId}.jsonl`;
++    for (const name of await readFileNames(dayDir)) {
++      const candidate = join(dayDir, name);
++      if (name.endsWith(suffix) && candidate !== standardPath && await isSessionFileOf(candidate, sessionId, cwd)) return candidate;
++    }
++    return undefined;
++  }
++
++  private projectDir(cwd: string): string {
++    return join(this.rootDir, archiveProjectDirName(cwd));
++  }
++
++  private async projectDirs(): Promise<string[]> {
++    return (await readDirNames(this.rootDir)).map((name) => join(this.rootDir, name));
++  }
++
++  private async readSummary(path: string): Promise<readonly SummaryEntry[]> {
++    let stats: Stats;
++    try {
++      stats = await stat(path);
++    } catch (error: unknown) {
++      if (!isNodeErrorWithCode(error, "ENOENT")) throw error;
++      this.summaryCache.delete(path);
++      return [];
++    }
++    const cached = this.summaryCache.get(path);
++    if (cached?.ino === stats.ino && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) return cached.entries;
++    const value: unknown = JSON.parse(await readFile(path, "utf8"));
++    const entries = parseSummaryFile(value, path);
++    this.summaryCache.set(path, { ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, entries });
++    return entries;
++  }
++
++  /** The summary as it is on disk now, past the cache; undefined when it cannot be read. */
++  private async summaryOnDisk(path: string): Promise<readonly SummaryEntry[] | undefined> {
++    this.summaryCache.delete(path);
++    try {
++      return await this.readSummary(path);
++    } catch {
++      return undefined;
++    }
+   }
+ 
+-  async isArchived(sessionId: string): Promise<boolean> {
+-    return (await this.get(sessionId)) !== undefined;
++  private async summaryEdit(edits: Map<string, SummaryEntry[]>, path: string): Promise<SummaryEntry[]> {
++    const current = edits.get(path);
++    if (current !== undefined) return current;
++    const entries = [...await this.readSummary(path)];
++    edits.set(path, entries);
++    return entries;
+   }
+ 
+-  private archivePathFor(session: ArchiveSessionInput): string {
+-    const sourceName = basename(session.path);
+-    const fileName = sourceName === "" ? `${safeFileName(session.sessionId)}.jsonl` : sourceName;
+-    return join(this.archiveDir, fileName);
++  private async writeSummaries(edits: ReadonlyMap<string, readonly SummaryEntry[]>): Promise<void> {
++    for (const [path, entries] of edits) await this.writeSummary(path, entries);
++  }
++
++  /**
++   * Finish moves whose files are placed: flush them, write the summaries, then remove the
++   * old paths. A failure undoes every move, so the sessions stay where they were.
++   */
++  private async commitMoves(moves: readonly PendingMove[], edits: ReadonlyMap<string, readonly SummaryEntry[]>): Promise<void> {
++    // Summary path to its backup, or to undefined when the month had no summary.
++    const backups = new Map<string, string | undefined>();
++    const parked: ParkedSource[] = [];
++    try {
++      // A summary never names a file that a power loss could still take away.
++      await this.syncPlacedFiles(moves);
++      for (const [path, entries] of edits) {
++        backups.set(path, await backupSummary(path));
++        await this.writeSummary(path, entries);
++      }
++      for (const move of moves) parked.push({ move, parkedPath: await parkSource(move.source) });
++      for (const source of parked) await assertCopiedSourceUnchanged(source);
++    } catch (error: unknown) {
++      if (await this.undoMoves(moves, parked, backups)) throw error;
++      throw incompleteUndoError(error);
++    }
++    // Committed: a parked path left by a failed unlink is a duplicate of the placed file.
++    for (const { parkedPath } of parked) await unlink(parkedPath).catch(() => undefined);
++    for (const [path, backup] of backups) {
++      if (backup !== undefined) await unlinkIfExists(backup).catch(() => undefined);
++      await this.removeEmptyDirs(dirname(path));
++    }
++    for (const move of moves) await this.removeEmptyDirs(dirname(move.source));
++  }
++
++  /** Flush placed files and every directory up to the archive root, so they survive a power loss before the old names go. */
++  private async syncPlacedFiles(moves: readonly PendingMove[]): Promise<void> {
++    const dirs = new Set<string>();
++    for (const move of moves) {
++      // A hard link shares the inode of a file pi may have just written.
++      await syncFile(move.destination);
++      let dir = dirname(move.destination);
++      dirs.add(dir);
++      while (dir.startsWith(`${this.rootDir}${sep}`)) {
++        dir = dirname(dir);
++        dirs.add(dir);
++      }
++      if (dir === this.rootDir) dirs.add(dirname(dir));
++      if (move.createdDir !== undefined) {
++        // Directories created outside the archive, e.g. a missing pi session directory on restore.
++        for (let created = dirname(move.destination); created.startsWith(move.createdDir); created = dirname(created)) dirs.add(dirname(created));
++      }
++    }
++    for (const dir of dirs) await syncDir(dir);
++  }
++
++  /**
++   * Undo a failed commit: parked old paths go back by a hard link and removal
++   * of the parked name, which never replaces a file (on a filesystem without
++   * hard links by an exclusive copy to the old path, which needs free space),
++   * summary backups replace the summaries and the placed files are dropped.
++   * Resolves to false when a step fails: the undo then stops where every
++   * summary entry still has its file and every other file is a copy kept next
++   * to its original, which the conversion script `--repair` resolves.
++   */
++  private async undoMoves(moves: readonly PendingMove[], parked: readonly ParkedSource[], backups: ReadonlyMap<string, string | undefined>): Promise<boolean> {
++    let complete = true;
++    for (const { move, parkedPath } of parked) {
++      try {
++        await moveWithoutReplacing(parkedPath, move.source);
++      } catch {
++        complete = false;
++      }
++    }
++    if (!complete) return false;
++    for (const [path, backup] of backups) {
++      try {
++        if (backup === undefined) await unlinkIfExists(path);
++        else await restoreSummary(backup, path);
++      } catch {
++        complete = false;
++      }
++      this.summaryCache.delete(path);
++    }
++    if (!complete) return false;
++    return this.discardMoves(moves);
++  }
++
++  /** Drop placed files of moves whose old paths are in place; resolves to false when one is kept. */
++  private async discardMoves(moves: readonly PendingMove[]): Promise<boolean> {
++    let complete = true;
++    for (const move of moves) {
++      try {
++        // Without its old path the placed file is the only copy left.
++        if (!await pathExists(move.source)) throw new Error(`Session file ${move.source} is missing`);
++        await unlinkIfExists(move.destination);
++      } catch {
++        complete = false;
++        continue;
++      }
++      await this.removeEmptyDirs(dirname(move.destination));
++    }
++    return complete;
++  }
++
++  /** Atomically replace a summary; the last entry leaving a month removes the summary and empty directories. */
++  private async writeSummary(path: string, entries: readonly SummaryEntry[]): Promise<void> {
++    if (entries.length === 0) {
++      await unlinkIfExists(path);
++      this.summaryCache.delete(path);
++      await syncDir(dirname(path));
++      await this.removeEmptyDirs(dirname(path));
++      return;
++    }
++    await mkdir(dirname(path), { recursive: true });
++    const tempPath = join(dirname(path), `.${SUMMARY_FILE_NAME}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
++    try {
++      await writeFile(tempPath, `${JSON.stringify({ version: SUMMARY_VERSION, sessions: entries }, null, 2)}\n`, "utf8");
++      await syncFile(tempPath);
++      await rename(tempPath, path);
++      await syncDir(dirname(path));
++    } catch (error: unknown) {
++      await unlink(tempPath).catch(() => undefined);
++      throw error;
++    }
++    const stats = await stat(path);
++    this.summaryCache.set(path, { ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, entries: [...entries] });
++  }
++
++  /** Remove `dir` and its parents below the archive root while they are empty. */
++  private async removeEmptyDirs(dir: string): Promise<void> {
++    let current = dir;
++    while (current.startsWith(`${this.rootDir}${sep}`)) {
++      try {
++        await rmdir(current);
++      } catch (error: unknown) {
++        if (!isNodeErrorWithCode(error, "ENOENT")) return;
++      }
++      current = dirname(current);
++    }
+   }
+ 
+   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
+@@ -152,73 +635,383 @@
+       release();
+     }
+   }
++}
++
++function archiveProjectDirName(cwd: string): string {
++  return `${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
++}
++
++/** Session creation time: from a UUIDv7 id, else from a pi session file name. */
++function sessionCreatedAtMs(sessionId: string, fileName?: string): number | undefined {
++  if (UUID_V7_PATTERN.test(sessionId)) return Number.parseInt(`${sessionId.slice(0, 8)}${sessionId.slice(9, 13)}`, 16);
++  const match = fileName === undefined ? null : SESSION_FILE_TIME_PATTERN.exec(fileName);
++  if (match === null) return undefined;
++  const [, year, month, day, hour, minute, second, millisecond] = match;
++  return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(millisecond));
++}
++
++async function sessionCreatedMs(session: ArchiveSessionInput, fileName: string): Promise<number | undefined> {
++  return sessionCreatedAtMs(session.sessionId, fileName) ?? await readHeaderTimestampMs(session.path);
++}
++
++/** Creation time of an archived session: from its id or file name, else from its header. */
++async function entryCreatedMs(entry: SummaryEntry, archivePath: string): Promise<number | undefined> {
++  return sessionCreatedAtMs(entry.sessionId, basename(entry.originalPath)) ?? await readHeaderTimestampMs(archivePath);
++}
++
++function archiveFallbackTimeMs(session: ArchiveSessionInput): number {
++  const created = Date.parse(session.created);
++  return Number.isNaN(created) ? Date.now() : created;
++}
++
++function archiveDay(timeMs: number): ArchiveDay {
++  const iso = new Date(timeMs).toISOString();
++  return { year: iso.slice(0, 4), month: iso.slice(5, 7), day: iso.slice(8, 10) };
++}
++
++function sessionFileTimestamp(timeMs: number): string {
++  return new Date(timeMs).toISOString().replace(/[:.]/g, "-");
++}
++
++function summaryPathFor(projectDir: string, createdMs: number): string {
++  const day = archiveDay(createdMs);
++  return join(projectDir, day.year, day.month, SUMMARY_FILE_NAME);
++}
++
++async function summaryPaths(projectDir: string): Promise<string[]> {
++  const paths: string[] = [];
++  for (const year of await readDirNames(projectDir)) {
++    if (!YEAR_DIR_PATTERN.test(year)) continue;
++    for (const month of await readDirNames(join(projectDir, year))) {
++      if (MONTH_DIR_PATTERN.test(month)) paths.push(join(projectDir, year, month, SUMMARY_FILE_NAME));
++    }
++  }
++  return paths;
++}
++
++async function archivePathForEntry(entry: SummaryEntry, monthDir: string): Promise<string> {
++  const fileName = basename(entry.originalPath);
++  const createdMs = sessionCreatedAtMs(entry.sessionId, fileName);
++  if (createdMs !== undefined) return join(monthDir, archiveDay(createdMs).day, fileName);
++  for (const day of await readDirNames(monthDir)) {
++    const candidate = join(monthDir, day, fileName);
++    if (await pathExists(candidate)) return candidate;
++  }
++  return join(monthDir, fileName);
++}
++
++function recordFromEntry(entry: SummaryEntry, archivePath: string, createdMs: number | undefined): ArchivedSessionRecord {
++  return {
++    sessionId: entry.sessionId,
++    cwd: entry.cwd,
++    archivedAt: entry.archivedAt,
++    originalPath: entry.originalPath,
++    archivePath,
++    created: createdMs === undefined ? entry.archivedAt : new Date(createdMs).toISOString(),
++    modified: entry.archivedAt,
++    messageCount: entry.messageCount,
++    firstMessage: "",
++    ...(entry.name === undefined ? {} : { name: entry.name }),
++    ...(entry.parentSessionPath === undefined ? {} : { parentSessionPath: entry.parentSessionPath }),
++  };
++}
++
++/** Whether `path` is a session file whose header names `sessionId` and `cwd`: project directory and file names can mislead, session headers cannot. */
++async function isSessionFileOf(path: string, sessionId: string, cwd: string): Promise<boolean> {
++  let stats: Stats;
++  try {
++    stats = await stat(path);
++  } catch (error: unknown) {
++    if (isNodeErrorWithCode(error, "ENOENT") || isNodeErrorWithCode(error, "ENOTDIR")) return false;
++    throw error;
++  }
++  if (!stats.isFile()) return false;
++  const header = await readHeader(path);
++  const headerCwd = header?.["cwd"];
++  return header?.["id"] === sessionId && typeof headerCwd === "string" && canonicalizeStoredCwd(headerCwd) === cwd;
++}
+ 
+-  private async read(): Promise<SessionArchiveFile> {
++async function readHeader(path: string): Promise<Record<string, unknown> | undefined> {
++  try {
++    const handle = await open(path, "r");
+     try {
+-      const value: unknown = JSON.parse(await readFile(this.filePath, "utf8"));
+-      return parseSessionArchiveFile(value);
+-    } catch (error: unknown) {
+-      if (isNodeErrorWithCode(error, "ENOENT")) return { sessions: [] };
+-      throw error;
++      const buffer = Buffer.alloc(HEADER_READ_BYTES);
++      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
++      const text = buffer.subarray(0, bytesRead).toString("utf8");
++      const newline = text.indexOf("\n");
++      const value: unknown = JSON.parse(newline === -1 ? text : text.slice(0, newline));
++      return isRecord(value) ? value : undefined;
++    } finally {
++      await handle.close();
+     }
++  } catch {
++    return undefined;
++  }
++}
++
++async function readHeaderTimestampMs(path: string): Promise<number | undefined> {
++  const timestamp = (await readHeader(path))?.["timestamp"];
++  if (typeof timestamp !== "string") return undefined;
++  const time = Date.parse(timestamp);
++  return Number.isNaN(time) ? undefined : time;
++}
++
++/** Same normalization as pi `appendSessionInfo`. */
++function sanitizeSessionName(name: string): string {
++  return name.replace(/[\r\n]+/g, " ").trim();
++}
++
++/** Append `{"type":"session_info","id","parentId","timestamp","name"}` like pi `appendSessionInfo`. */
++async function appendSessionInfo(path: string, name: string): Promise<void> {
++  const text = await readFile(path, "utf8");
++  const ids = new Set<string>();
++  let lastId: string | null = null;
++  for (const line of text.split("\n")) {
++    const value = parseJsonLine(line);
++    if (value === undefined || value["type"] === "session") continue;
++    const id = value["id"];
++    if (typeof id !== "string") continue;
++    ids.add(id);
++    lastId = id;
++  }
++  const entry = { type: "session_info", id: uniqueEntryId(ids), parentId: lastId, timestamp: new Date().toISOString(), name };
++  const separator = text === "" || text.endsWith("\n") ? "" : "\n";
++  await appendFile(path, `${separator}${JSON.stringify(entry)}\n`, "utf8");
++}
++
++function parseJsonLine(line: string): Record<string, unknown> | undefined {
++  if (line.trim() === "") return undefined;
++  try {
++    const value: unknown = JSON.parse(line);
++    return isRecord(value) ? value : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++/** pi entry ids: the first 8 hex digits of a random UUID, unique within the file. */
++function uniqueEntryId(ids: ReadonlySet<string>): string {
++  for (let attempt = 0; attempt < ENTRY_ID_ATTEMPTS; attempt += 1) {
++    const id = randomUUID().slice(0, 8);
++    if (!ids.has(id)) return id;
+   }
++  return randomUUID();
++}
+ 
+-  private async write(data: SessionArchiveFile): Promise<void> {
+-    await mkdir(dirname(this.filePath), { recursive: true });
+-    const tempPath = join(dirname(this.filePath), `.${basename(this.filePath)}.${String(process.pid)}.${Date.now().toString()}.${randomUUID()}.tmp`);
++/** Make `destination` a hard link to `source`, or an exclusive copy keeping the file times; never overwrites. */
++async function placeFile(source: string, destination: string, insideArchive: boolean): Promise<PendingMove> {
++  try {
++    await link(source, destination);
++    return { source, destination };
++  } catch (error: unknown) {
++    if (!isLinkFallbackError(error)) throw error;
++  }
++  const copiedFrom = await stat(source);
++  // A copy appears at its path only when complete; a crash leaves a hidden `.copying` file.
++  const tempPath = join(dirname(destination), `.${basename(destination)}.${randomUUID()}.copying`);
++  try {
++    await copyFile(source, tempPath, constants.COPYFILE_EXCL);
++    await utimes(tempPath, copiedFrom.atime, copiedFrom.mtime);
++    // The source goes away once the operation commits, so the copy must be on disk first.
++    await syncFile(tempPath);
++    if (insideArchive) await renameIntoArchive(tempPath, destination);
++    else await moveWithoutReplacing(tempPath, destination);
++  } finally {
++    await unlinkIfExists(tempPath).catch(() => undefined);
++  }
++  return { source, destination, copiedFrom };
++}
++
++/** Rename the old path of a placed file aside: pi appends by path, so from then on it writes a new file instead. */
++async function parkSource(source: string): Promise<string> {
++  const parkedPath = `${source}.${randomUUID()}.moving`;
++  await rename(source, parkedPath);
++  return parkedPath;
++}
++
++/** A copied source must not have changed since the copy, or the archive would miss its newer entries. */
++async function assertCopiedSourceUnchanged({ move, parkedPath }: ParkedSource): Promise<void> {
++  if (move.copiedFrom === undefined) return;
++  const current = await stat(parkedPath);
++  if (current.size !== move.copiedFrom.size || current.mtimeMs !== move.copiedFrom.mtimeMs) throw new Error(`Session file ${move.source} changed while it was being moved`);
++}
++
++/** Like `moveWithoutReplacing`, but a rename after a check is enough without hard links: only PI WEB writes the archive, under its lock. */
++async function renameIntoArchive(from: string, to: string): Promise<void> {
++  try {
++    await link(from, to);
++  } catch (error: unknown) {
++    if (!isLinkFallbackError(error)) throw error;
++    if (await pathExists(to)) throw Object.assign(new Error(`${to} already exists`), { code: "EEXIST" });
++    await rename(from, to);
++  }
++}
++
++/** Rename `from` to `to` failing with EEXIST instead of replacing a file at `to`, e.g. one pi created meanwhile. */
++async function moveWithoutReplacing(from: string, to: string): Promise<void> {
++  try {
++    await link(from, to);
++  } catch (error: unknown) {
++    if (!isLinkFallbackError(error)) throw error;
++    // Without hard links only an exclusive copy never replaces a file; it needs free space.
++    await copyExclusively(from, to);
++  }
++  await unlink(from).catch(() => undefined);
++}
++
++/** Copy `from` into a file this call creates exclusively, keeping mode and times; on a failure only that file is removed. */
++async function copyExclusively(from: string, to: string): Promise<void> {
++  const source = await open(from, "r");
++  try {
++    const times = await source.stat();
++    const target = await open(to, "wx", times.mode & 0o777);
++    let created: Stats | undefined;
++    let copied = 0;
++    let failed = false;
++    let failure: unknown;
+     try {
+-      await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+-      await rename(tempPath, this.filePath);
++      created = await target.stat();
++      const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
++      for (;;) {
++        const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
++        if (bytesRead === 0) break;
++        let written = 0;
++        while (written < bytesRead) {
++          const { bytesWritten } = await target.write(buffer, written, bytesRead - written);
++          written += bytesWritten;
++          copied += bytesWritten;
++        }
++      }
++      await target.chmod(times.mode & 0o777);
++      await target.utimes(times.atime, times.mtime);
++      await target.sync();
+     } catch (error: unknown) {
+-      await unlink(tempPath).catch(() => undefined);
+-      throw error;
++      failed = true;
++      failure = error;
++      created ??= await target.stat().catch(() => undefined);
+     }
++    try {
++      await target.close();
++    } catch (error: unknown) {
++      if (!failed) {
++        failed = true;
++        failure = error;
++      }
++    }
++    if (failed) throw await dropOwnCopy(to, created, copied, failure);
++  } finally {
++    // A descriptor opened only for reading cannot change the copy, so its close failure is no failure of the copy.
++    await source.close().catch(() => undefined);
+   }
+ }
+ 
+-function archiveRecordFromInput(session: ArchiveSessionInput, archive: { archivedAt: string; originalPath: string; archivePath: string }): ArchivedSessionRecord {
+-  return {
+-    sessionId: session.sessionId,
+-    cwd: canonicalizeStoredCwd(session.cwd),
+-    archivedAt: archive.archivedAt,
+-    originalPath: archive.originalPath,
+-    archivePath: archive.archivePath,
+-    created: session.created,
+-    modified: session.modified,
+-    messageCount: session.messageCount,
+-    firstMessage: session.firstMessage,
+-    ...(session.name === undefined ? {} : { name: session.name }),
+-    ...(session.parentSessionPath === undefined ? {} : { parentSessionPath: session.parentSessionPath }),
++/** Remove the file a failed copy created, unless it cannot be shown to be that file untouched; resolves to the error to throw. */
++async function dropOwnCopy(path: string, created: Stats | undefined, copied: number, cause: unknown): Promise<unknown> {
++  const left = (reason: string): Error => {
++    const message = cause instanceof Error ? cause.message : String(cause);
++    return new Error(`${message}; ${reason}: a file stays at ${path}`, { cause });
+   };
++  let current: Stats | undefined;
++  try {
++    current = await stat(path);
++  } catch (error: unknown) {
++    // Only a missing file is known to be gone; any other refusal leaves a file of unknown state.
++    if (!isNodeErrorWithCode(error, "ENOENT")) return left("its state could not be determined");
++  }
++  if (created === undefined) return current === undefined ? cause : left("its owner could not be determined");
++  // The name may belong to another file by now: drop it only when it is the one created here.
++  if (current?.ino !== created.ino || current.dev !== created.dev) return cause;
++  // More bytes than this call wrote mean another process appended to the file.
++  if (current.size !== copied) return left("it holds data this copy did not write");
++  try {
++    await unlink(path);
++  } catch (error: unknown) {
++    if (!isNodeErrorWithCode(error, "ENOENT")) return left("it could not be removed");
++  }
++  return cause;
+ }
+ 
+-async function copySessionFileToArchive(source: string, archivePath: string): Promise<void> {
+-  if (source === archivePath) return;
+-  await mkdir(dirname(archivePath), { recursive: true });
+-  if (await pathExists(archivePath)) return;
+-  await copyFile(source, archivePath);
++/** Flush a file written by this process to disk before a step that relies on it. */
++async function syncFile(path: string): Promise<void> {
++  // Windows flushes only handles open for writing; nothing is written through this one.
++  const handle = await open(path, "r+").catch(async (error: unknown) => {
++    if (!isNodeErrorWithCode(error, "EISDIR") && !isNodeErrorWithCode(error, "EACCES") && !isNodeErrorWithCode(error, "EPERM")) throw error;
++    // POSIX flushes a read-only file through a read-only handle as well.
++    if (process.platform !== "win32") return open(path, "r");
++    // Windows: the read-only attribute is lifted for the open and put back.
++    const { mode } = await stat(path);
++    await chmod(path, mode | 0o200);
++    try {
++      return await open(path, "r+");
++    } finally {
++      await chmod(path, mode);
++    }
++  });
++  try {
++    await handle.sync();
++  } finally {
++    await handle.close();
++  }
+ }
+ 
+-async function removeActiveSessionFile(source: string, archivePath: string): Promise<void> {
+-  if (source === archivePath) return;
+-  if (await pathExists(source)) await unlink(source);
++/** Flush the entries of a directory; platforms that cannot open or flush a directory skip it. */
++async function syncDir(dir: string): Promise<void> {
++  try {
++    await syncFile(dir);
++  } catch (error: unknown) {
++    if (!(error instanceof Error && "code" in error && typeof error.code === "string" && DIR_SYNC_UNSUPPORTED_CODES.has(error.code))) throw error;
++  }
+ }
+ 
+-async function restoreSessionFile(archivePath: string, originalPath: string): Promise<void> {
+-  if (archivePath === originalPath) return;
+-  if (await pathExists(originalPath)) throw new Error(`Cannot restore archived session because a session already exists at ${originalPath}`);
+-  await mkdir(dirname(originalPath), { recursive: true });
+-  await moveFile(archivePath, originalPath);
++/** Put a summary backup back; a hard link to the unchanged summary is only removed, as rename onto the same file keeps both names. */
++async function restoreSummary(backup: string, path: string): Promise<void> {
++  const [backupStats, current] = await Promise.all([stat(backup), stat(path).catch(() => undefined)]);
++  if (current?.ino === backupStats.ino && current.dev === backupStats.dev) await unlink(backup);
++  else await rename(backup, path);
+ }
+ 
+-async function moveFile(source: string, destination: string): Promise<void> {
++/** Keep the current summary as a hidden hard link, or a copy without hard links, so an undo needs no free space. */
++async function backupSummary(path: string): Promise<string | undefined> {
++  const backupPath = join(dirname(path), `.${SUMMARY_FILE_NAME}.${randomUUID()}.previous`);
+   try {
+-    await rename(source, destination);
++    await link(path, backupPath);
+   } catch (error: unknown) {
+-    if (!isNodeErrorWithCode(error, "EXDEV")) throw error;
+-    await copyFile(source, destination);
+-    await unlink(source);
++    if (isNodeErrorWithCode(error, "ENOENT")) return undefined;
++    if (!isLinkFallbackError(error)) throw error;
++    try {
++      await copyFile(path, backupPath, constants.COPYFILE_EXCL);
++    } catch (copyError: unknown) {
++      if (isNodeErrorWithCode(copyError, "ENOENT")) return undefined;
++      throw copyError;
++    }
+   }
++  return backupPath;
++}
++
++function incompleteUndoError(error: unknown): Error {
++  const message = error instanceof Error ? error.message : String(error);
++  return new Error(`${message}; undoing the operation failed too, ${REPAIR_HINT}`, { cause: error });
++}
++
++function isLinkFallbackError(error: unknown): boolean {
++  return error instanceof Error && "code" in error && typeof error.code === "string" && LINK_FALLBACK_CODES.has(error.code);
++}
++
++async function readEntries(dir: string): Promise<Dirent[]> {
++  try {
++    return await readdir(dir, { withFileTypes: true });
++  } catch (error: unknown) {
++    if (isNodeErrorWithCode(error, "ENOENT") || isNodeErrorWithCode(error, "ENOTDIR")) return [];
++    throw error;
++  }
++}
++
++async function readDirNames(dir: string): Promise<string[]> {
++  return (await readEntries(dir)).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
++}
++
++async function readFileNames(dir: string): Promise<string[]> {
++  return (await readEntries(dir)).filter((entry) => entry.isFile()).map((entry) => entry.name);
+ }
+ 
+ async function pathExists(path: string): Promise<boolean> {
+@@ -231,57 +1024,55 @@
+   }
+ }
+ 
+-export function parseSessionArchiveFile(value: unknown): SessionArchiveFile {
+-  if (!isRecord(value) || !Array.isArray(value["sessions"])) throw new Error("Invalid archive file");
+-  return { sessions: value["sessions"].map(parseArchivedSessionRecord) };
++async function unlinkIfExists(path: string): Promise<void> {
++  try {
++    await unlink(path);
++  } catch (error: unknown) {
++    if (!isNodeErrorWithCode(error, "ENOENT")) throw error;
++  }
++}
++
++function parseSummaryFile(value: unknown, path: string): SummaryEntry[] {
++  if (!isRecord(value) || value["version"] !== SUMMARY_VERSION || !Array.isArray(value["sessions"])) throw new Error(`Invalid archive summary ${path}`);
++  return value["sessions"].map((entry: unknown) => parseSummaryEntry(entry, path));
+ }
+ 
+-function parseArchivedSessionRecord(value: unknown): ArchivedSessionRecord {
+-  if (!isRecord(value)) throw new Error("Invalid archived session record");
++function parseSummaryEntry(value: unknown, path: string): SummaryEntry {
++  if (!isRecord(value)) throw new Error(`Invalid archive summary ${path}`);
+   const sessionId = value["sessionId"];
+   const cwd = value["cwd"];
+   const archivedAt = value["archivedAt"];
+-  if (typeof sessionId !== "string" || typeof cwd !== "string" || typeof archivedAt !== "string") throw new Error("Invalid archived session record");
+-  const canonicalCwd = canonicalizeStoredCwd(cwd);
+-  const originalPath = optionalString(value, "originalPath");
+-  const archivePath = optionalString(value, "archivePath");
+-  const created = optionalString(value, "created");
+-  const modified = optionalString(value, "modified");
+-  const messageCount = optionalNumber(value, "messageCount");
+-  const firstMessage = optionalString(value, "firstMessage");
+-  const name = optionalString(value, "name");
+-  const parentSessionPath = optionalString(value, "parentSessionPath");
++  const originalPath = value["originalPath"];
++  const messageCount = value["messageCount"];
++  if (typeof sessionId !== "string" || typeof cwd !== "string" || typeof archivedAt !== "string" || typeof originalPath !== "string" || typeof messageCount !== "number") {
++    throw new Error(`Invalid archive summary ${path}`);
++  }
++  const name = optionalString(value, "name", path);
++  const parentSessionPath = optionalString(value, "parentSessionPath", path);
+   return {
+     sessionId,
+-    cwd: canonicalCwd,
++    cwd: canonicalizeStoredCwd(cwd),
+     archivedAt,
+-    ...(originalPath === undefined ? {} : { originalPath }),
+-    ...(archivePath === undefined ? {} : { archivePath }),
+-    ...(created === undefined ? {} : { created }),
+-    ...(modified === undefined ? {} : { modified }),
+-    ...(messageCount === undefined ? {} : { messageCount }),
+-    ...(firstMessage === undefined ? {} : { firstMessage }),
++    originalPath,
++    messageCount,
+     ...(name === undefined ? {} : { name }),
+     ...(parentSessionPath === undefined ? {} : { parentSessionPath }),
+   };
+ }
+ 
+-function optionalString(record: Record<string, unknown>, key: string): string | undefined {
++function optionalString(record: Record<string, unknown>, key: string, path: string): string | undefined {
+   const value = record[key];
+   if (value === undefined) return undefined;
+-  if (typeof value !== "string") throw new Error("Invalid archived session record");
++  if (typeof value !== "string") throw new Error(`Invalid archive summary ${path}`);
+   return value;
+ }
+ 
+-function optionalNumber(record: Record<string, unknown>, key: string): number | undefined {
+-  const value = record[key];
+-  if (value === undefined) return undefined;
+-  if (typeof value !== "number") throw new Error("Invalid archived session record");
+-  return value;
++function sameSession(a: SummaryEntry, b: SummaryEntry): boolean {
++  return a.sessionId === b.sessionId && a.cwd === b.cwd;
+ }
+ 
+-function safeFileName(value: string): string {
+-  return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "session";
++function errorText(error: unknown): string {
++  return error instanceof Error ? error.message : String(error);
+ }
+ 
+ function uniqueStrings(values: readonly string[]): string[] {
+diff -ruN -x .git a/src/server/sessions/sessionCleanup.test.ts b/src/server/sessions/sessionCleanup.test.ts
+--- a/src/server/sessions/sessionCleanup.test.ts	2026-11-10 07:23:02.902935174 +0000
++++ b/src/server/sessions/sessionCleanup.test.ts	2026-11-10 18:21:53.733242844 +0000
+@@ -54,6 +54,22 @@
+     expect(plan.totals).toEqual({ archiveCount: 1, deleteCount: 1 });
+   });
+ 
++  it("never plans sessions of the filesystem root for archiving", () => {
++    const plan = planSessionCleanup({
++      now: new Date("2026-06-25T00:00:00.000Z"),
++      thresholds: { archiveIdleDays: 30 },
++      archivedRecords: [],
++      sessions: [
++        sessionEntry("root", "/", "2026-05-01T00:00:00.000Z"),
++        sessionEntry("project", "/repo", "2026-05-01T00:00:00.000Z"),
++      ],
++    });
++
++    expect(plan.archiveInputs.map((input) => input.sessionId)).toEqual(["project"]);
++    expect(plan.projects).toEqual([{ cwd: "/repo", archiveCount: 1, deleteCount: 0 }]);
++    expect(plan.totals).toEqual({ archiveCount: 1, deleteCount: 0 });
++  });
++
+   it("skips archive and delete candidates that are busy in memory", () => {
+     const plan = planSessionCleanup({
+       now: new Date("2026-06-25T00:00:00.000Z"),
+diff -ruN -x .git a/src/server/sessions/sessionCleanup.ts b/src/server/sessions/sessionCleanup.ts
+--- a/src/server/sessions/sessionCleanup.ts	2026-11-10 07:23:02.902935174 +0000
++++ b/src/server/sessions/sessionCleanup.ts	2026-11-10 18:21:39.176891913 +0000
+@@ -1,4 +1,5 @@
+ import type { SessionCleanupExecuteResponse, SessionCleanupPreviewResponse, SessionCleanupProjectSummary, SessionCleanupThresholds } from "../../shared/apiTypes.js";
++import { canonicalizeStoredCwd } from "../workingDirectory.js";
+ import type { PiSessionListEntry } from "./piSessionService.js";
+ import type { ArchivedSessionRecord, ArchiveSessionInput } from "./sessionArchiveStore.js";
+ 
+@@ -62,6 +63,8 @@
+     for (const session of uniqueSessionsById(input.sessions)) {
+       if (archivedIds.has(session.id)) continue;
+       if (includedCwds !== undefined && !includedCwds.has(session.cwd)) continue;
++      // The archive refuses sessions of the filesystem root, which would fail the whole cleanup.
++      if (canonicalizeStoredCwd(session.cwd) === "/") continue;
+       if (!isBefore(session.modified, archiveCutoff)) continue;
+       if (busySessionIds.has(session.id)) {
+         skippedBusy.add(session.id);
+diff -ruN -x .git a/src/server/sessions/sessionRoutes.test.ts b/src/server/sessions/sessionRoutes.test.ts
+--- a/src/server/sessions/sessionRoutes.test.ts	2026-11-10 07:23:02.906935263 +0000
++++ b/src/server/sessions/sessionRoutes.test.ts	2026-11-10 12:47:22.760081734 +0000
+@@ -1457,6 +1457,7 @@
+   restore(): never { throw unusedRouteMethod("restore"); }
+ 
+   detachParent(): never { throw unusedRouteMethod("detachParent"); }
++  rename(): never { throw unusedRouteMethod("rename"); }
+ }
+ 
+ class RejectingSessionManager implements PiSessionManagerGateway {
+diff -ruN -x .git a/src/server/sessions/sessionRoutes.ts b/src/server/sessions/sessionRoutes.ts
+--- a/src/server/sessions/sessionRoutes.ts	2026-11-10 07:23:02.906935263 +0000
++++ b/src/server/sessions/sessionRoutes.ts	2026-11-10 12:38:18.399485824 +0000
+@@ -478,6 +478,16 @@
+     }
+   });
+ 
++  app.post<{ Params: { sessionId: string }; Body: { cwd?: unknown; name?: unknown } | undefined }>(`${prefix}/sessions/:sessionId/rename`, async (request, reply) => {
++    try {
++      const body = optionalRecord(request.body);
++      const name = await sessions.rename(sessionRefFromBody(request.params.sessionId, body), requireString(body, "name"));
++      return name === undefined ? { renamed: true } : { renamed: true, name };
++    } catch (error) {
++      return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });
++    }
++  });
++
+   app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
+     // Only the id matters for event subscription; cwd is intentionally ignored
+     // so a malformed value cannot throw inside the websocket handler.
+diff -ruN -x .git a/src/server/sessions/sessionService.ts b/src/server/sessions/sessionService.ts
+--- a/src/server/sessions/sessionService.ts	2026-11-10 07:23:02.906935263 +0000
++++ b/src/server/sessions/sessionService.ts	2026-11-10 12:38:18.399485824 +0000
+@@ -99,4 +99,5 @@
+   restore(ref: SessionRouteRef): Promise<void>;
+   reload(ref: SessionRouteRef): Promise<void>;
+   detachParent(ref: SessionRouteRef): Promise<void>;
++  rename(ref: SessionRouteRef, name: string): Promise<string | undefined>;
+ }
+diff -ruN -x .git a/src/shared/federatedRoutes.ts b/src/shared/federatedRoutes.ts
+--- a/src/shared/federatedRoutes.ts	2026-11-10 07:23:02.926935706 +0000
++++ b/src/shared/federatedRoutes.ts	2026-11-10 12:38:18.403485917 +0000
+@@ -132,6 +132,7 @@
+   { method: "POST", path: "/sessions/:sessionId/restore" },
+   { method: "POST", path: "/sessions/:sessionId/reload" },
+   { method: "POST", path: "/sessions/:sessionId/detach-parent" },
++  { method: "POST", path: "/sessions/:sessionId/rename" },
+   { method: "GET", path: "/auth/providers" },
+   { method: "POST", path: "/auth/api-key/interactive" },
+   { method: "POST", path: "/auth/logout" },
