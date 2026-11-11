@@ -2,7 +2,7 @@
 upstream:
   url: https://github.com/jmfederico/pi-web.git
   ref: v1.202609.0
-  patch: 8
+  patch: 9
 targets:
   - name: npm
     image: ghcr.io/megalomania428/node-builder:latest
