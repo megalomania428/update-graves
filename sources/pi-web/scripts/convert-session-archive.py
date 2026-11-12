@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # Convert the pi-web session archive between the flat layout (archived-sessions.json
-# with archived-sessions/) and the archived-projects/ tree with monthly summaries.
+# with archived-sessions/) and the archived-projects/ tree with monthly summaries, or
+# import the sessions of an opencode database into the tree.
 
 # cspell:ignore jsonl nosec noqa errno EXDEV EPERM ENOTSUP copyfileobj copystat getpid
 # cspell:ignore fromisoformat fromtimestamp rmdir iterdir mtime
 # cspell:ignore ERRNOS unflushed RDWR RDONLY NTFS EINVAL EISDIR
+# cspell:ignore devnull sqlite udfff ufffd
 from __future__ import annotations
 
 import argparse
@@ -14,18 +16,20 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess  # ruff: ignore[suspicious-subprocess-import]  # nosec B404
 import sys
 import time
 import uuid
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
+from urllib.parse import unquote_to_bytes
 
 if TYPE_CHECKING:
   from collections.abc import Generator, Iterator
@@ -56,6 +60,22 @@ NAME_LENGTH_LIMIT = 60
 ENTRY_ID_ATTEMPTS = 100
 ELLIPSIS = '\u2026'
 PLACED = frozenset({'moved', 'present'})
+PROGRESS_SECONDS = 5.0
+PROJECTS_NAME = 'projects.json'
+PI_SESSION_VERSION = 3
+OPENCODE_API = 'opencode'
+PI_IMAGE_TYPES = frozenset({'image/jpeg', 'image/png', 'image/gif', 'image/webp'})
+OPENCODE_DEFAULT_TITLE = re.compile(
+  r'^(?:New|Child) session - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$',
+)
+OPENCODE_STOP_REASONS = {
+  'tool-calls': 'toolUse',
+  'length': 'length',
+  'error': 'error',
+}
+UNFINISHED_TOOL = '[no result: the tool call did not finish]'
+LONE_SURROGATE = re.compile(r'[\ud800-\udfff]')
+REPLACEMENT_CHARACTER = '\ufffd'
 
 
 def say(message: str) -> None:
@@ -293,18 +313,23 @@ def copy_exclusive(source: Path, target: Path) -> None:
       # The source is removed next, so the copy must be on disk first.
       os.fsync(writer.fileno())
     shutil.copystat(source, temp)
-    try:
-      os.link(temp, target)
-    except OSError as error:
-      if error.errno not in LINK_FALLBACK_ERRNOS:
-        raise
-      # Without hard links nothing else creates the target while PI WEB is stopped.
-      if target.exists():
-        message = f'target already exists: {target}'
-        raise FileExistsError(message) from error
-      temp.rename(target)
+    link_exclusive(temp, target)
   finally:
     remove_file(temp, missing_ok=True, keep=target)
+
+
+def link_exclusive(temp: Path, target: Path) -> None:
+  # A complete hidden file gets the target name, an existing target is never replaced.
+  try:
+    os.link(temp, target)
+  except OSError as error:
+    if error.errno not in LINK_FALLBACK_ERRNOS:
+      raise
+    # Without hard links nothing else creates the target while PI WEB is stopped.
+    if target.exists():
+      message = f'target already exists: {target}'
+      raise FileExistsError(message) from error
+    temp.rename(target)
 
 
 def move_file(source: Path, target: Path) -> None:
@@ -829,6 +854,7 @@ class Namer:
     self.used += 1
     if len(text) > NAME_INPUT_LIMIT:
       text = text[:NAME_INPUT_LIMIT] + ELLIPSIS
+    say(f'naming {session.path.name}{ELLIPSIS}')
     command = [
       self.options.pi,
       '-p',
@@ -849,6 +875,7 @@ class Namer:
         capture_output=True,
         text=True,
         encoding='utf-8',
+        errors='replace',
         timeout=self.options.timeout,
         check=False,
       )  # nosec B603
@@ -862,12 +889,669 @@ class Namer:
     return name or None
 
 
+class Progress:
+  # A line with the processed count and the counters so far, once in a while.
+  def __init__(self, counts: Counter[str]) -> None:
+    self.counts = counts
+    self.total: int | None = None
+    self.done = 0
+    self.shown = time.monotonic()
+
+  def start(self, total: int | None) -> None:
+    self.total = total
+    self.done = 0
+    self.shown = time.monotonic()
+
+  def step(self) -> None:
+    self.done += 1
+    self.show()
+
+  def show(self) -> None:
+    now = time.monotonic()
+    if now - self.shown < PROGRESS_SECONDS:
+      return
+    self.shown = now
+    total = '' if self.total is None else f'/{self.total}'
+    counts = ''.join(f', {key}: {value}' for key, value in sorted(self.counts.items()))
+    say(f'processed {self.done}{total}{counts}')
+
+
+def whole(value: object) -> int:
+  return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def object_of(value: object) -> dict[str, object]:
+  return value if isinstance(value, dict) else {}
+
+
+def without_surrogates(value: object) -> object:
+  # A lone surrogate of a cut text in the database becomes a replacement character.
+  if isinstance(value, str):
+    return LONE_SURROGATE.sub(REPLACEMENT_CHARACTER, value)
+  if isinstance(value, list):
+    return [without_surrogates(item) for item in value]
+  if isinstance(value, dict):
+    return {
+      without_surrogates(key): without_surrogates(item)
+      for key, item in value.items()
+    }
+  return value
+
+
+def load_object(text: object) -> dict[str, object]:
+  if not isinstance(text, str):
+    return {}
+  try:
+    value = json.loads(text)
+  except ValueError:
+    return {}
+  return object_of(without_surrogates(value))
+
+
+def decode_text(raw: bytes) -> str:
+  return raw.decode('utf-8', 'replace')
+
+
+def projects_path(data_dir: Path) -> Path:
+  configured = os.environ.get('PI_WEB_PROJECTS_FILE', '')
+  return absolute(Path(configured)) if configured else data_dir / PROJECTS_NAME
+
+
+def registered_projects(data_dir: Path) -> set[str]:
+  projects = read_json_object(projects_path(data_dir)).get('projects')
+  paths: set[str] = set()
+  for project in projects if isinstance(projects, list) else []:
+    path = text_of(object_of(project).get('path'))
+    if path:
+      paths.add(canonical_cwd(path))
+  return paths
+
+
+def amount(value: object) -> float:
+  return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def opencode_usage(
+  data: dict[str, object],
+  parts: list[dict[str, object]],
+) -> dict[str, object]:
+  # The message keeps the tokens of its last step only, so its steps are summed.
+  steps = [part for part in parts if part.get('type') == 'step-finish'] or [data]
+  sums: Counter[str] = Counter()
+  cost = 0.0
+  for step in steps:
+    tokens = object_of(step.get('tokens'))
+    cache = object_of(tokens.get('cache'))
+    counts = {
+      'input': whole(tokens.get('input')),
+      # pi counts reasoning as a part of the output.
+      'output': whole(tokens.get('output')) + whole(tokens.get('reasoning')),
+      'reasoning': whole(tokens.get('reasoning')),
+      'cacheRead': whole(cache.get('read')),
+      'cacheWrite': whole(cache.get('write')),
+    }
+    sums.update(counts)
+    sums['totalTokens'] += whole(tokens.get('total')) or sum(
+      counts[key] for key in ('input', 'output', 'cacheRead', 'cacheWrite')
+    )
+    cost += amount(step.get('cost'))
+  keys = ('input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens')
+  usage: dict[str, object] = {
+    key: sums[key]
+    for key in keys
+  }
+  usage['cost'] = {
+    'input': 0,
+    'output': 0,
+    'cacheRead': 0,
+    'cacheWrite': 0,
+    'total': cost,
+  }
+  if sums['reasoning']:
+    usage['reasoning'] = sums['reasoning']
+  return usage
+
+
+def has_opencode_usage(data: dict[str, object], parts: list[dict[str, object]]) -> bool:
+  if any(part.get('type') == 'step-finish' for part in parts):
+    return True
+  usage = opencode_usage(data, [])
+  keys = ('input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens')
+  cost = amount(object_of(usage['cost']).get('total'))
+  return bool(cost) or any(whole(usage[key]) for key in keys)
+
+
+def opencode_stop_reason(data: dict[str, object]) -> str:
+  error = data.get('error')
+  if isinstance(error, dict):
+    return 'aborted' if error.get('name') == 'MessageAbortedError' else 'error'
+  return OPENCODE_STOP_REASONS.get(text_of(data.get('finish')) or '', 'stop')
+
+
+def opencode_error(data: dict[str, object]) -> str | None:
+  error = data.get('error')
+  if not isinstance(error, dict):
+    return None
+  name = text_of(error.get('name')) or 'error'
+  message = text_of(object_of(error.get('data')).get('message'))
+  return f'{name}: {message}' if message else name
+
+
+def assistant_block(part: dict[str, object]) -> dict[str, object] | None:
+  kind = part.get('type')
+  text = text_of(part.get('text'))
+  if kind == 'text' and text:
+    return {
+      'type': 'text',
+      'text': text,
+    }
+  if kind == 'reasoning' and text:
+    return {
+      'type': 'thinking',
+      'thinking': text,
+    }
+  if kind != 'tool':
+    return None
+  # The tool result refers to the call by this id.
+  call_id = text_of(part.get('callID')) or uuid.uuid4().hex
+  part['callID'] = call_id
+  return {
+    'type': 'toolCall',
+    'id': call_id,
+    'name': text_of(part.get('tool')) or '',
+    'arguments': object_of(object_of(part.get('state')).get('input')),
+  }
+
+
+@dataclass(frozen=True)
+class Attachment:
+  mime: str
+  url: str
+
+  @classmethod
+  def of(cls, part: dict[str, object]) -> Attachment:
+    return cls(
+      mime=text_of(part.get('mime')) or 'application/octet-stream',
+      url=text_of(part.get('url')) or '',
+    )
+
+  def block(self) -> dict[str, object]:
+    # Images stay images; any other file becomes a note with its type and size.
+    header, comma, payload = self.url.partition(',')
+    if not comma or not header.startswith('data:'):
+      return {
+        'type': 'text',
+        'text': f'[attachment {self.mime}, linked file omitted]',
+      }
+    mime = header[len('data:'):].split(';', 1)[0] or self.mime
+    if header.endswith(';base64'):
+      if mime.strip().lower() in PI_IMAGE_TYPES:
+        # Providers compare the type as is, so it goes in lower case.
+        return {
+          'type': 'image',
+          'data': payload,
+          'mimeType': mime.strip().lower(),
+        }
+      size = len(payload.rstrip('=')) * 3 // 4
+    else:
+      size = len(unquote_to_bytes(payload))
+    return {
+      'type': 'text',
+      'text': f'[attachment {mime}, {size} bytes omitted]',
+    }
+
+
+@dataclass(frozen=True)
+class OpencodeSession:
+  session_id: str
+  parent_id: str | None
+  directory: str
+  title: str
+  created: int
+  updated: int
+  archived: int | None
+
+  @property
+  def file_name(self) -> str:
+    stamp = iso_ms(self.created).replace(':', '-').replace('.', '-')
+    return f'{stamp}_{self.session_id}.jsonl'
+
+  @property
+  def name(self) -> str | None:
+    # The title opencode gives a new session is a time, not a name.
+    title = self.title.strip()
+    return None if not title or OPENCODE_DEFAULT_TITLE.match(title) else title
+
+
+@dataclass(frozen=True)
+class OpencodeMessage:
+  message_id: str
+  created: int
+  data: dict[str, object]
+
+  @property
+  def finished(self) -> int:
+    return whole(object_of(self.data.get('time')).get('completed')) or self.created
+
+
+@dataclass(frozen=True)
+class OpencodePlace:
+  session: OpencodeSession
+  cwd: str
+  slot: TreeSlot
+  original: Path
+  parent_path: str | None
+
+  @property
+  def target(self) -> Path:
+    return self.slot.day_dir / self.session.file_name
+
+  def header(self) -> dict[str, object]:
+    header: dict[str, object] = {
+      'type': 'session',
+      'version': PI_SESSION_VERSION,
+      'id': self.session.session_id,
+      'timestamp': iso_ms(self.session.created),
+      'cwd': self.cwd,
+    }
+    if self.parent_path is not None:
+      header['parentSession'] = self.parent_path
+    return header
+
+  def entry(self, message_count: int, name: str | None) -> ArchiveEntry:
+    archived = self.session.archived
+    return ArchiveEntry(
+      session_id=self.session.session_id,
+      cwd=self.cwd,
+      archived_at=iso_ms(self.session.updated if archived is None else archived),
+      original_path=str(self.original),
+      message_count=message_count,
+      name=name,
+      parent_session_path=self.parent_path,
+    )
+
+
+def opencode_root(
+  session: OpencodeSession,
+  by_id: dict[str, OpencodeSession],
+) -> OpencodeSession:
+  root = session
+  seen = {root.session_id}
+  parent = by_id.get(root.parent_id or '')
+  while parent is not None and parent.session_id not in seen:
+    root = parent
+    seen.add(root.session_id)
+    parent = by_id.get(root.parent_id or '')
+  return root
+
+
+def ancestors_first(
+  sessions: list[OpencodeSession],
+  by_id: dict[str, OpencodeSession],
+) -> list[OpencodeSession]:
+  # A child refers to the file of its parent, so the parent is handled first.
+  ordered: list[OpencodeSession] = []
+  done: set[str] = set()
+  for session in sessions:
+    chain: list[OpencodeSession] = []
+    current: OpencodeSession | None = session
+    while current is not None and current.session_id not in done:
+      done.add(current.session_id)
+      chain.append(current)
+      current = by_id.get(current.parent_id or '')
+    ordered.extend(reversed(chain))
+  return ordered
+
+
+class OpencodeReader:
+  # Only reads: the database stays exactly as opencode left it.
+  def __init__(self, path: Path) -> None:
+    if not path.is_file():
+      message = f'opencode database {path} is not a file'
+      raise FileNotFoundError(message)
+    # The journal lies next to the file a symlink leads to, not next to the link.
+    path = path.resolve()
+    wal = path.with_name(f'{path.name}-wal')
+    if wal.exists() and wal.stat().st_size:
+      # An immutable database is read without its write-ahead log.
+      message = f'{wal} is not empty, quit opencode first'
+      raise ValueError(message)
+    self.connection = sqlite3.connect(f'{path.as_uri()}?mode=ro&immutable=1', uri=True)
+    self.connection.text_factory = decode_text
+    self.connection.execute('PRAGMA query_only=ON')
+
+  def close(self) -> None:
+    self.connection.close()
+
+  def sessions(self) -> list[OpencodeSession]:
+    rows = self.connection.execute(
+      'SELECT id, parent_id, directory, title, time_created, time_updated, '
+      'time_archived FROM session ORDER BY time_created, id',
+    )
+    return [
+      OpencodeSession(
+        session_id=row[0],
+        parent_id=row[1],
+        directory=row[2] or '',
+        title=row[3] or '',
+        created=whole(row[4]),
+        updated=whole(row[5]),
+        archived=row[6] if isinstance(row[6], int) else None,
+      ) for row in rows
+    ]
+
+  def has_messages(self, session_id: str) -> bool:
+    rows = self.connection.execute(
+      'SELECT 1 FROM message WHERE session_id = ? LIMIT 1',
+      (session_id, ),
+    )
+    return rows.fetchone() is not None
+
+  def messages(self, session_id: str) -> Iterator[OpencodeMessage]:
+    # The order of opencode itself: creation time, then id.
+    rows = self.connection.execute(
+      'SELECT id, time_created, data FROM message WHERE session_id = ? '
+      'ORDER BY time_created, id',
+      (session_id, ),
+    )
+    for row in rows:
+      yield OpencodeMessage(
+        message_id=row[0],
+        created=whole(row[1]),
+        data=load_object(row[2]),
+      )
+
+  def parts(self, message_id: str) -> list[dict[str, object]]:
+    rows = self.connection.execute(
+      'SELECT data FROM part WHERE message_id = ? ORDER BY id',
+      (message_id, ),
+    )
+    return [load_object(row[0]) for row in rows]
+
+
+class PiSessionWriter:
+  # Writes a pi session file entry by entry, each entry continuing the previous one.
+  def __init__(self, handle: BinaryIO, header: dict[str, object]) -> None:
+    self.handle = handle
+    self.ids: set[str] = set()
+    self.last_id: str | None = None
+    self.message_count = 0
+    # A compaction that keeps no earlier entry waits for the entry after it.
+    self.held: dict[str, object] | None = None
+    self.write(header)
+
+  def write(self, data: dict[str, object]) -> None:
+    line = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+    # The written file stays strict UTF-8 whatever text reaches it.
+    line = LONE_SURROGATE.sub(REPLACEMENT_CHARACTER, line)
+    self.handle.write(line.encode() + b'\n')
+
+  def add(self, kind: str, moment_ms: int, fields: dict[str, object]) -> str:
+    entry_id = unique_entry_id(self.ids)
+    self.ids.add(entry_id)
+    self._release(entry_id)
+    entry: dict[str, object] = {
+      'type': kind,
+      'id': entry_id,
+      'parentId': self.last_id,
+      'timestamp': iso_ms(moment_ms),
+      **fields,
+    }
+    self.last_id = entry_id
+    if kind == 'message':
+      self.message_count += 1
+    if kind == 'compaction' and not entry.get('firstKeptEntryId'):
+      self.held = entry
+    else:
+      self.write(entry)
+    return entry_id
+
+  def close(self) -> None:
+    # A compaction at the end keeps nothing before it: it points to itself.
+    if self.held is not None:
+      self._release(str(self.held['id']))
+
+  def _release(self, first_kept: str) -> None:
+    if self.held is None:
+      return
+    self.held['firstKeptEntryId'] = first_kept
+    self.write(self.held)
+    self.held = None
+
+
+class OpencodeTranscript:
+  # Turns opencode messages with their parts into the entries of one pi session.
+  def __init__(self, writer: PiSessionWriter) -> None:
+    self.writer = writer
+    self.provider: str | None = None
+    self.model_id: str | None = None
+    self.entries: dict[str, str] = {}
+    self.order: list[str] = []
+    self.compaction: dict[str, object] | None = None
+
+  def add(self, message: OpencodeMessage, parts: list[dict[str, object]]) -> None:
+    role = message.data.get('role')
+    if role == 'user':
+      self._user(message, parts)
+    elif role == 'assistant':
+      summary = message.data.get('summary') is True
+      if not (summary and self._compact(message, parts)):
+        self._assistant(message, parts)
+    self.order.append(message.message_id)
+
+  def _first_kept(self, tail: str | None) -> str:
+    # The tail starts at the first message from tail_start_id that left entries.
+    if not tail or tail not in self.order:
+      return ''
+    for message_id in self.order[self.order.index(tail):]:
+      if message_id in self.entries:
+        return self.entries[message_id]
+    return ''
+
+  def _add(
+    self,
+    message_id: str,
+    kind: str,
+    moment_ms: int,
+    fields: dict[str, object],
+  ) -> None:
+    entry_id = self.writer.add(kind, moment_ms, fields)
+    self.entries.setdefault(message_id, entry_id)
+
+  def _model(self, message: OpencodeMessage, provider: object, model_id: object) -> None:
+    if not isinstance(provider, str) or not isinstance(model_id, str):
+      return
+    if not provider or not model_id:
+      return
+    if provider == self.provider and model_id == self.model_id:
+      return
+    self.provider = provider
+    self.model_id = model_id
+    self._add(
+      message.message_id,
+      'model_change',
+      message.created,
+      {
+        'provider': provider,
+        'modelId': model_id,
+      },
+    )
+
+  def _user(self, message: OpencodeMessage, parts: list[dict[str, object]]) -> None:
+    model = object_of(message.data.get('model'))
+    self._model(message, model.get('providerID'), model.get('modelID'))
+    content: list[dict[str, object]] = []
+    for part in parts:
+      kind = part.get('type')
+      text = text_of(part.get('text'))
+      if kind == 'text' and text:
+        content.append({
+          'type': 'text',
+          'text': text,
+        })
+      elif kind == 'file':
+        content.append(Attachment.of(part).block())
+      elif kind == 'compaction':
+        # The summary comes with the next assistant message.
+        self.compaction = part
+    if not content:
+      return
+    self._add(
+      message.message_id,
+      'message',
+      message.created,
+      {
+        'message': {
+          'role': 'user',
+          'content': content,
+          'timestamp': message.created,
+        },
+      },
+    )
+
+  def _assistant(self, message: OpencodeMessage, parts: list[dict[str, object]]) -> None:
+    data = message.data
+    self._model(message, data.get('providerID'), data.get('modelID'))
+    content: list[dict[str, object]] = []
+    calls: list[dict[str, object]] = []
+    for part in parts:
+      block = assistant_block(part)
+      if block is None:
+        continue
+      content.append(block)
+      if block['type'] == 'toolCall':
+        calls.append(part)
+    error = opencode_error(data)
+    # An empty message still keeps its usage: pi drops it from the model context.
+    if not content and error is None and not has_opencode_usage(data, parts):
+      return
+    reply: dict[str, object] = {
+      'role': 'assistant',
+      'content': content,
+      'api': OPENCODE_API,
+      'provider': text_of(data.get('providerID')) or '',
+      'model': text_of(data.get('modelID')) or '',
+      'usage': opencode_usage(data, parts),
+      'stopReason': opencode_stop_reason(data),
+      'timestamp': message.created,
+    }
+    if error is not None:
+      reply['errorMessage'] = error
+    self._add(message.message_id, 'message', message.created, {
+      'message': reply,
+    })
+    for part in calls:
+      self._tool_result(message, part)
+
+  def _tool_result(self, message: OpencodeMessage, part: dict[str, object]) -> None:
+    state = object_of(part.get('state'))
+    status = state.get('status')
+    content: list[dict[str, object]]
+    if status == 'completed':
+      output = state.get('output')
+      content = [{
+        'type': 'text',
+        'text': output if isinstance(output, str) else '',
+      }]
+      attachments = state.get('attachments')
+      if isinstance(attachments, list):
+        content.extend(
+          Attachment.of(item).block() for item in attachments if isinstance(item, dict)
+        )
+    elif status == 'error':
+      content = [{
+        'type': 'text',
+        'text': text_of(state.get('error')) or 'error',
+      }]
+    else:
+      content = [{
+        'type': 'text',
+        'text': UNFINISHED_TOOL,
+      }]
+    times = object_of(state.get('time'))
+    finished = whole(times.get('end')) or whole(times.get('start')) or message.finished
+    self._add(
+      message.message_id,
+      'message',
+      finished,
+      {
+        'message': {
+          'role': 'toolResult',
+          'toolCallId': part.get('callID'),
+          'toolName': text_of(part.get('tool')) or '',
+          'content': content,
+          'isError': status != 'completed',
+          'timestamp': finished,
+        },
+      },
+    )
+
+  def _compact(self, message: OpencodeMessage, parts: list[dict[str, object]]) -> bool:
+    texts = [
+      text_of(part.get('text')) or '' for part in parts if part.get('type') == 'text'
+    ]
+    summary = '\n\n'.join(text for text in texts if text)
+    pending = object_of(self.compaction)
+    self.compaction = None
+    if not summary:
+      # A failed compaction stays an ordinary message with its error.
+      return False
+    data = message.data
+    self._model(message, data.get('providerID'), data.get('modelID'))
+    tail = text_of(pending.get('tail_start_id'))
+    usage = opencode_usage(data, parts)
+    before = sum(whole(usage[key]) for key in ('input', 'cacheRead', 'cacheWrite'))
+    fields: dict[str, object] = {
+      'summary': summary,
+      'firstKeptEntryId': self._first_kept(tail),
+      'tokensBefore': before,
+      'usage': usage,
+    }
+    # The rest of the summarizing message stays with the compaction.
+    details: dict[str, object] = {}
+    thoughts = [
+      text_of(part.get('text')) or '' for part in parts if part.get('type') == 'reasoning'
+    ]
+    reasoning = '\n\n'.join(text for text in thoughts if text)
+    if reasoning:
+      details['reasoning'] = reasoning
+    error = opencode_error(data)
+    if error is not None:
+      details['errorMessage'] = error
+    if details:
+      fields['details'] = details
+    self._add(message.message_id, 'compaction', message.created, fields)
+    return True
+
+
+def transcribe(
+  reader: OpencodeReader,
+  place: OpencodePlace,
+  handle: BinaryIO,
+  progress: Progress,
+) -> int:
+  writer = PiSessionWriter(handle, place.header())
+  session = place.session
+  if session.name:
+    writer.add('session_info', session.created, {
+      'name': session.name,
+    })
+  transcript = OpencodeTranscript(writer)
+  for message in reader.messages(session.session_id):
+    transcript.add(message, reader.parts(message.message_id))
+    # A long session keeps the progress going.
+    progress.show()
+  writer.close()
+  return writer.message_count
+
+
 @dataclass
 class Options:
   data_dir: Path
   mode: str
   dry_run: bool
   naming: NamingOptions | None
+  opencode: Path | None = None
 
 
 class Converter:
@@ -878,9 +1562,12 @@ class Converter:
     naming = options.naming
     self.namer = None if naming is None or options.dry_run else Namer(naming)
     self.counts: Counter[str] = Counter()
+    self.progress = Progress(self.counts)
     self.cleanup: set[Path] = set()
     self.parked: dict[Path, list[Path]] = {}
     self.known_dirs: list[Path] = []
+    # The originalPath of every opencode session that has a file in the archive.
+    self.origins: dict[str, str] = {}
     self.unplaced_parked: list[Path] = []
 
   def run(self) -> None:
@@ -889,6 +1576,8 @@ class Converter:
         self.reverse()
       elif self.options.mode == 'repair':
         self.repair()
+      elif self.options.mode == 'opencode':
+        self.import_opencode()
       else:
         self.forward()
     finally:
@@ -995,14 +1684,21 @@ class Converter:
     flat_dir = self.options.data_dir / FLAT_DIR_NAME
     records = read_index(index_path)
     session_dirs = original_dirs(records)
-    remaining = [
-      record for record in records if not self.forward_record(record, flat_dir)
-    ]
     referenced = {record_file_name(record)
                   for record in records}
-    for path in sorted(flat_dir.glob('*.jsonl')):
-      if path.is_file() and path.name not in referenced:
-        self.forward_orphan(path, session_dirs)
+    orphans = [
+      path for path in sorted(flat_dir.glob('*.jsonl'))
+      if path.is_file() and path.name not in referenced
+    ]
+    self.progress.start(len(records) + len(orphans))
+    remaining: list[dict[str, object]] = []
+    for record in records:
+      if not self.forward_record(record, flat_dir):
+        remaining.append(record)
+      self.progress.step()
+    for path in orphans:
+      self.forward_orphan(path, session_dirs)
+      self.progress.step()
     self.flush()
     self._finish_index(index_path, remaining)
 
@@ -1103,9 +1799,11 @@ class Converter:
     }
     count = len(index)
     try:
-      for project_dir in child_dirs(self.tree_root):
-        for month_dir in month_dirs(project_dir):
-          self.reverse_month(month_dir, index, known)
+      months = list(self._months())
+      total = sum(len(self.summaries.entries(month / SUMMARY_NAME)) for month in months)
+      self.progress.start(total)
+      for month_dir in months:
+        self.reverse_month(month_dir, index, known)
     finally:
       # Records of files moved before an error or Ctrl+C are kept.
       if len(index) > count:
@@ -1129,6 +1827,7 @@ class Converter:
     summary = month_dir / SUMMARY_NAME
     flat_dir = self.options.data_dir / FLAT_DIR_NAME
     for entry in list(self.summaries.entries(summary)):
+      self.progress.step()
       source = entry_file(month_dir, entry)
       target = flat_dir / source.name
       existing = known.get(entry.session_id)
@@ -1148,6 +1847,7 @@ class Converter:
       yield from month_dirs(project_dir)
 
   def repair(self) -> None:
+    self.progress.start(None)
     # Summaries come back from backups before anything reads them.
     for month_dir in self._months():
       self._clean_leftovers(month_dir)
@@ -1164,6 +1864,7 @@ class Converter:
       for path in list(session_files(month_dir)):
         if path not in claimed:
           self.repair_orphan(path, session_dirs, claimed)
+          self.progress.step()
 
   def _clean_leftovers(self, month_dir: Path) -> None:
     summary = month_dir / SUMMARY_NAME
@@ -1281,6 +1982,7 @@ class Converter:
   def repair_month(self, month_dir: Path, claimed: set[Path]) -> None:
     summary = month_dir / SUMMARY_NAME
     for entry in list(self.summaries.entries(summary)):
+      self.progress.step()
       path = self.repair_entry(entry, summary, month_dir)
       if path is not None:
         claimed.add(path)
@@ -1431,11 +2133,171 @@ class Converter:
     say(self._past(f'added a record of {target}', f'add a record of {target}'))
     self.counts['repaired'] += 1
 
+  def import_opencode(self) -> None:
+    database = self.options.opencode
+    if database is None:
+      return
+    placed: Counter[str] = Counter()
+    with closing(OpencodeReader(database)) as reader:
+      sessions = reader.sessions()
+      by_id = {
+        session.session_id: session
+        for session in sessions
+      }
+      self.progress.start(len(sessions))
+      for session in ancestors_first(sessions, by_id):
+        cwd = self.import_session(reader, session, by_id)
+        if cwd is not None:
+          placed[cwd] += 1
+        self.progress.step()
+    self._warn_unregistered(placed)
+
+  def import_session(
+    self,
+    reader: OpencodeReader,
+    session: OpencodeSession,
+    by_id: dict[str, OpencodeSession],
+  ) -> str | None:
+    # A child session goes into the project of its root session to lie under it.
+    cwd = canonical_cwd(opencode_root(session, by_id).directory)
+    if cwd in {'', '/'}:
+      self._problem(
+        f'opencode session {session.session_id} has no directory other than /',
+      )
+      return None
+    session_dir = default_session_dir(cwd)
+    place = OpencodePlace(
+      session=session,
+      cwd=cwd,
+      slot=TreeSlot.at(self.tree_root, cwd, session.created),
+      original=session_dir / session.file_name,
+      # A parent without a file in the archive (skipped, problem) has no origin.
+      parent_path=self.origins.get(session.parent_id or ''),
+    )
+    status = self._import_present(place)
+    if status == 'absent':
+      status = self._import_new(reader, place)
+    if status == 'imported':
+      self.origins[session.session_id] = str(place.original)
+    return cwd if status in {'present', 'imported'} else None
+
+  def _import_present(self, place: OpencodePlace) -> str:
+    session_id = place.session.session_id
+    target = place.target
+    # The archive file decides first: another session under its name is a conflict.
+    if read_header(target).get('id') == session_id:
+      self.origins[session_id] = self._import_archived(place)
+      self.counts['present'] += 1
+      return 'present'
+    if target.exists():
+      self._problem(f'{target} exists but is not a file of session {session_id}')
+      return 'conflict'
+    # Restored into pi or moved back into the flat archive by --reverse.
+    flat = self.options.data_dir / FLAT_DIR_NAME / place.session.file_name
+    recorded = self._recorded_origin(place)
+    if recorded is not None:
+      self.origins[session_id] = recorded
+    elif read_header(place.original).get('id') == session_id:
+      self.origins[session_id] = str(place.original)
+    elif read_header(flat).get('id') == session_id:
+      self.origins[session_id] = self._flat_origin(session_id, flat)
+    else:
+      # A record without its file is replaced along with the file.
+      return 'absent'
+    self.counts['present'] += 1
+    return 'present'
+
+  def _recorded_origin(self, place: OpencodePlace) -> str | None:
+    # A session restored under another session directory stays where its record says.
+    for item in self.summaries.entries(place.slot.summary):
+      if item.session_id != place.session.session_id or item.cwd != place.cwd:
+        continue
+      if read_header(Path(item.original_path)).get('id') == item.session_id:
+        return item.original_path
+    return None
+
+  def _flat_origin(self, session_id: str, flat: Path) -> str:
+    # The record of archived-sessions.json knows where the session came from.
+    try:
+      records = read_index(self.options.data_dir / INDEX_NAME)
+    except (OSError, TypeError, ValueError):
+      return str(flat)
+    for record in records:
+      original = text_of(record.get('originalPath'))
+      if record.get('sessionId') == session_id and original:
+        return original
+    return str(flat)
+
+  def _import_archived(self, place: OpencodePlace) -> str:
+    target = place.target
+    entry = next(
+      (
+        item for item in self.summaries.entries(place.slot.summary)
+        if item.session_id == place.session.session_id and item.cwd == place.cwd
+      ),
+      None,
+    )
+    if entry is None:
+      # Written by a run stopped before its summary record.
+      stored = SessionFile(target)
+      entry = place.entry(stored.message_count, stored.name)
+      self.summaries.upsert(place.slot.summary, entry)
+    elif entry.name is None and self.options.naming is not None:
+      # The name of an unnamed session goes into its record too.
+      self.summaries.upsert(place.slot.summary, entry)
+    self.name_entry(entry, target)
+    return entry.original_path
+
+  def _import_new(self, reader: OpencodeReader, place: OpencodePlace) -> str:
+    if not reader.has_messages(place.session.session_id):
+      self.counts['skipped'] += 1
+      return 'skipped'
+    count = self._write_session(reader, place)
+    entry = place.entry(count, place.session.name)
+    self.summaries.upsert(place.slot.summary, entry)
+    self.name_entry(entry, place.target)
+    self.counts['imported'] += 1
+    return 'imported'
+
+  def _write_session(self, reader: OpencodeReader, place: OpencodePlace) -> int:
+    target = place.target
+    if self.options.dry_run:
+      with Path(os.devnull).open('wb') as sink:
+        count = transcribe(reader, place, sink, self.progress)
+      say(f'would import {place.session.session_id} -> {target}')
+      return count
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # A failed write leaves its new day directory empty for the cleanup.
+    self.cleanup.add(target.parent)
+    temp = target.with_name(f'.{target.name}.{uuid.uuid4()}.copying')
+    try:
+      with temp.open('xb') as writer:
+        count = transcribe(reader, place, writer, self.progress)
+        writer.flush()
+        os.fsync(writer.fileno())
+      link_exclusive(temp, target)
+      make_durable(target, list(target.parents))
+    finally:
+      remove_file(temp, missing_ok=True, keep=target)
+    return count
+
+  def _warn_unregistered(self, placed: Counter[str]) -> None:
+    # PI WEB shows archived sessions only in the project of their cwd.
+    projects = registered_projects(self.options.data_dir)
+    for cwd, count in sorted(placed.items()):
+      if cwd not in projects:
+        say(
+          f'warning: {cwd} is not a pi-web project, add it to see its {count} '
+          'archived sessions',
+        )
+        self.counts['warnings'] += 1
+
 
 def parse_options(argv: list[str]) -> Options:
   parser = argparse.ArgumentParser(
     description='Convert the pi-web session archive between archived-sessions.json '
-    'with archived-sessions/ and the archived-projects/ tree; stop pi-web first.',
+    'with archived-sessions/ and the archived-projects/ tree or import the sessions '
+    'of an opencode database into the tree; stop pi-web first.',
   )
   modes = parser.add_mutually_exclusive_group()
   modes.add_argument(
@@ -1448,6 +2310,12 @@ def parse_options(argv: list[str]) -> Options:
     action='store_true',
     help='reconcile archived-projects/ summaries with session files',
   )
+  modes.add_argument(
+    '--opencode',
+    type=Path,
+    metavar='DB',
+    help='import the sessions of an opencode.db into archived-projects/',
+  )
   parser.add_argument(
     '--data-dir',
     type=Path,
@@ -1457,7 +2325,7 @@ def parse_options(argv: list[str]) -> Options:
   parser.add_argument(
     '--name-unnamed',
     action='store_true',
-    help='forward mode: name unnamed sessions with pi -p',
+    help='forward and --opencode modes: name unnamed sessions with pi -p',
   )
   parser.add_argument('--pi', default='pi', help='pi executable, default: pi')
   parser.add_argument('--model', help='pi --model for naming')
@@ -1470,8 +2338,10 @@ def parse_options(argv: list[str]) -> Options:
   )
   args = parser.parse_args(argv)
   mode = 'reverse' if args.reverse else 'repair' if args.repair else 'forward'
-  if args.name_unnamed and mode != 'forward':
-    parser.error('--name-unnamed works only in the forward mode')
+  if args.opencode is not None:
+    mode = 'opencode'
+  if args.name_unnamed and mode not in {'forward', 'opencode'}:
+    parser.error('--name-unnamed works only in the forward and --opencode modes')
   naming = None
   if args.name_unnamed:
     naming = NamingOptions(
@@ -1481,7 +2351,14 @@ def parse_options(argv: list[str]) -> Options:
       timeout=args.name_timeout,
     )
   data_dir = default_data_dir() if args.data_dir is None else absolute(args.data_dir)
-  return Options(data_dir=data_dir, mode=mode, dry_run=args.dry_run, naming=naming)
+  opencode = None if args.opencode is None else absolute(args.opencode)
+  return Options(
+    data_dir=data_dir,
+    mode=mode,
+    dry_run=args.dry_run,
+    naming=naming,
+    opencode=opencode,
+  )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1489,7 +2366,7 @@ def main(argv: list[str] | None = None) -> int:
   converter = Converter(options)
   try:
     converter.run()
-  except (OSError, TypeError, ValueError) as error:
+  except (OSError, TypeError, ValueError, sqlite3.Error) as error:
     say(f'error: {error}')
     converter.report()
     return 2
