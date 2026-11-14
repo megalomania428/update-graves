@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-13 16:41:14.726080512 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-13 16:41:21.678255044 +0000
+--- a/src/duplicacy_backupmanager.go	2026-11-13 20:50:27.992894331 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-13 20:50:33.873034947 +0000
 @@ -131,6 +131,11 @@
  func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
  	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
@@ -30,21 +30,22 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	// If the listing operation is fast and this is an initial backup, list all chunks and
  	// put them in the cache.
-@@ -365,6 +380,13 @@
+@@ -365,6 +380,14 @@
  	var remoteEntry *Entry
  	remoteListingOK := true
  	for {
-+		// No upload has been queued yet, so a cancellation stops here without saving an incomplete snapshot; a
-+		// failure already recorded by a listing goroutine or by the operator of the snapshot manager is raised
-+		// instead.  This check has no test of its own: without it the backup stops at the next check, before the
-+		// first file is packed
++		// No upload has been queued yet, so a cancellation stops here without saving an incomplete snapshot, and the
++		// deferred stopListing stops the local listing; a failure already recorded by a listing goroutine or by the
++		// operator of the snapshot manager is raised instead.  Without this check the backup would report its start
++		// and stop at the first check of the packing, which the case IncompleteLoaded of
++		// TestBackupManager_Backup_Cancel catches
 +		if IsCancelRequested() {
 +			raiseCancelAfterFailures(chunkOperator, manager.SnapshotManager.chunkOperator)
 +		}
  		localEntry := readLocalEntry()
  		if localEntry == nil {
  			break
-@@ -485,6 +507,9 @@
+@@ -485,6 +508,9 @@
  	}
  
  	var once sync.Once
@@ -54,7 +55,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	if hashMode && !manager.config.dryRun {
  		// In case an error occurs during a hash mode backup, save the incomplete snapshot
  		savedAtError = true
-@@ -493,6 +518,22 @@
+@@ -493,6 +519,22 @@
  				localEntryList.SaveIncompleteSnapshot()
  			})
  		}
@@ -77,7 +78,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	}
  
  	startUploadingTime := time.Now().Unix()
-@@ -551,6 +592,11 @@
+@@ -551,6 +593,11 @@
  	chunkIndex := -1
  	// This function is called when the chunk maker generates a new chunk
  	uploadChunkFunc := func(chunk *Chunk) {
@@ -89,7 +90,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		chunkID := chunk.GetID()
  		chunkSize := chunk.GetLength()
  
-@@ -580,6 +626,10 @@
+@@ -580,6 +627,10 @@
  
  	// These are files to be uploaded; directories and links are excluded
  	for i := range localEntryList.ModifiedEntries {
@@ -100,7 +101,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		entry := &localEntryList.ModifiedEntries[i]
  		LOG_TRACE("PACK_START", "Packing %s", entry.Path)
  		fullPath := joinPath(shadowTop, entry.Path)
-@@ -603,6 +653,11 @@
+@@ -603,6 +654,11 @@
  	// This flushes the chunk maker (forcing all remaining data to be sent in chunks)
  	fileChunkMaker.AddData(nil, uploadChunkFunc)
  	chunkOperator.WaitForCompletion()
@@ -112,7 +113,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	localSnapshot.EndTime = time.Now().Unix()
  
-@@ -754,6 +809,11 @@
+@@ -754,6 +810,11 @@
  func (manager *BackupManager) Restore(top string, revision int, inPlace bool, quickMode bool, threads int, overwrite bool,
  	deleteMode bool, setOwner bool, showStatistics bool, patterns []string, allowFailures bool) int {
  
@@ -124,7 +125,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	startTime := time.Now().Unix()
  
  	LOG_DEBUG("RESTORE_PARAMETERS", "top: %s, revision: %d, in-place: %t, quick: %t, delete: %t",
-@@ -903,6 +963,12 @@
+@@ -903,6 +964,12 @@
  	localListingOK := true
  
  	for {
@@ -137,7 +138,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		remoteEntry, remoteListingOK := readRemoteEntry()
  		if !remoteListingOK {
  			break
-@@ -1045,6 +1111,14 @@
+@@ -1045,6 +1112,14 @@
  
  	// Now download files one by one
  	for _, file := range fileEntries {
@@ -152,7 +153,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		fullPath := joinPath(top, file.Path)
  		stat, _ := os.Stat(fullPath)
-@@ -1114,6 +1188,12 @@
+@@ -1114,6 +1189,12 @@
  		file.RestoreMetadata(fullPath, nil, setOwner)
  	}
  
@@ -165,7 +166,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	if deleteMode && len(patterns) == 0 {
  		// Reverse the order to make sure directories are empty before being deleted
  		for i := range extraFiles {
-@@ -1727,6 +1807,12 @@
+@@ -1727,6 +1808,12 @@
  			}
  
  			if !hasLocalCopy {
@@ -178,7 +179,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  				chunk := chunkDownloader.WaitForChunk(i)
  				if chunk.isBroken {
  					return false, fmt.Errorf("chunk %s is corrupted", manager.config.GetChunkIDFromHash(hash))
-@@ -1791,6 +1877,11 @@
+@@ -1791,6 +1878,11 @@
  func (manager *BackupManager) CopySnapshots(otherManager *BackupManager, snapshotID string,
  	revisionsToBeCopied []int, uploadingThreads int, downloadingThreads int) bool {
  
@@ -190,7 +191,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	// The snapshot sequences are downloaded through the operator of the snapshot manager
  	defer manager.SnapshotManager.useOperator(1, false)()
  
-@@ -2018,6 +2109,13 @@
+@@ -2018,6 +2110,13 @@
  		// one check covers both.  This check has no test of its own: the operators skip the queued tasks after a
  		// failure, so without it the copy only adds the skipped tasks
  		chunkDownloader.failures.raise()
@@ -204,7 +205,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		chunkID := manager.config.GetChunkIDFromHash(chunkHash)
  		newChunkID := otherManager.config.GetChunkIDFromHash(chunkHash)
  
-@@ -2040,6 +2138,13 @@
+@@ -2040,6 +2139,13 @@
  	LOG_INFO("SNAPSHOT_COPY", "Copied %d new chunks and skipped %d existing chunks", numberOfCopiedChunks,
  		len(chunks)-numberOfCopiedChunks)
  
@@ -220,8 +221,8 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			continue
 diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 --- a/src/duplicacy_cancel.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel.go	2026-11-13 16:41:21.678255044 +0000
-@@ -0,0 +1,132 @@
++++ b/src/duplicacy_cancel.go	2026-11-13 20:50:33.873034947 +0000
+@@ -0,0 +1,145 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -255,6 +256,19 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +// ResetCancel before the next operation.  A request made after the last check of an
 +// operation doesn't stop it: the operation completes as usual and the request stays
 +// set.
++//
++// Backup checks the request while it compares the local and the remote files, before
++// each file and each chunk that it packs and, after the queued chunks have been
++// uploaded, before it uploads the snapshot; no revision is created.  A cancellation
++// raised by a check of the comparison of Backup or Restore stops the listing of the
++// local files, so the operation returns without listing the rest of the tree; a backup
++// canceled there saves nothing.  A hash backup, the first one or one with -hash,
++// canceled at a later check tries to save its incomplete snapshot unless it is a dry
++// run, and the next hash backup resumes it; a request made after the last check of the
++// comparison, from the start event of ProgressFunction for example, is raised by the
++// first check of the packing, where a hash backup that isn't a dry run tries to save it
++// too.  CopySnapshots checks it before it adds each chunk and before it writes the
++// revisions, so a canceled copy writes no revision.
 +//
 +// Restore checks the request while it compares the local and the remote files, before
 +// each file and before it deletes the extra files and restores the metadata of the
@@ -356,8 +370,8 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +}
 diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 --- a/src/duplicacy_cancel_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel_test.go	2026-11-13 16:41:21.678255044 +0000
-@@ -0,0 +1,2453 @@
++++ b/src/duplicacy_cancel_test.go	2026-11-13 20:50:33.877035043 +0000
+@@ -0,0 +1,2692 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -582,6 +596,26 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	storage     map[string]int64  // The sizes of the files of the storage before the call
 +	// rerun calls the operation of the case again with the same arguments
 +	rerun func() workerErrorsOutcome
++	// The directories that the log function has counted as listed, and the number that
++	// the whole listing of the case has: the table runners record the count at the return
++	listed         *int64
++	listedTotal    int64
++	listedAtReturn int64
++	runAtError     atomic.Int64 // The calls of the RunAtError of the case
++}
++
++// expectListingStopped checks that the listing of the local files has stopped before it
++// listed all the directories, and that it has listed no more after the operation returned.
++func (run *cancelRun) expectListingStopped(t *testing.T) {
++	t.Helper()
++	if run.listedAtReturn >= run.listedTotal {
++		t.Fatalf("The listing has listed %d of %d directories at the return",
++			run.listedAtReturn, run.listedTotal)
++	}
++	if after := atomic.LoadInt64(run.listed); after != run.listedAtReturn {
++		t.Fatalf("The listing has gone on after the return: %d directories instead of %d",
++			after, run.listedAtReturn)
++	}
 +}
 +
 +// expectNoEvents checks that the hook has not been called.
@@ -649,6 +683,10 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +		maximumInMemoryEntries: 1024}
 +	quick := hash
 +	quick.quickMode = true
++	spill := quick
++	spill.maximumInMemoryEntries = 0
++	hashSingle := hash
++	hashSingle.threads = 1
 +	// prepareBeforeStart requests the cancellation before the first backup of the fixture
 +	prepareBeforeStart := func(t *testing.T) *cancelRun {
 +		run := &cancelRun{fixture: newWorkerErrorsFixture(t, false)}
@@ -684,6 +722,49 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	}
 +	prepareBeforeUploadSnapshot := func(t *testing.T) *cancelRun {
 +		return prepareCancelFixture(t, 0, false, 3, 5)
++	}
++	// prepareQuick backs up the revision 1 and changes the sizes of the files, so that a
++	// quick backup packs them again; the cancellation is requested at the step 3
++	prepareQuick := func(t *testing.T) *cancelRun {
++		fixture := newWorkerErrorsFixture(t, false)
++		fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++		for _, file := range []string{"file1", "file2", "dir1/file3"} {
++			// The new sizes are at least 1000000 bytes, the old ones are smaller
++			createRandomFile(filepath.Join(fixture.repository, file), 2000000)
++		}
++		return &cancelRun{fixture: fixture, recorder: cancelAtStep(t, 3)}
++	}
++	// checkQuick checks that the canceled quick backup has created nothing and that the
++	// next one succeeds; with spilled it checks that incomplete_files is not open
++	checkQuick := func(t *testing.T, run *cancelRun, spilled bool) {
++		fixture := run.fixture
++		expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
++		if fixture.revisionExists(2) {
++			t.Fatalf("The revision 2 has been created despite the cancellation")
++		}
++		for _, name := range []string{"incomplete_snapshot", "incomplete_chunks"} {
++			if cacheFileExists(t, fixture.manager, name) {
++				t.Fatalf("The quick backup has saved %s", name)
++			}
++		}
++		haveProc := true
++		if spilled {
++			cache, err := filepath.EvalSymlinks(fixture.manager.cachePath)
++			if err != nil {
++				t.Fatalf("Failed to resolve the cache: %v", err)
++			}
++			var open []string
++			open, haveProc = openFilesOf(t)
++			for _, path := range open {
++				if strings.TrimSuffix(path, " (deleted)") == filepath.Join(cache, "incomplete_files") {
++					t.Errorf("The file %s is still open after the cancellation", path)
++				}
++			}
++		}
++		fixture.expectSuccess(fixture.backup(fixture.repository, true), 2)
++		if !haveProc {
++			t.Skip("/proc/self/fd is not available to check the open files")
++		}
 +	}
 +	checkBeforeUploadSnapshot := func(t *testing.T, run *cancelRun) {
 +		expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
@@ -856,27 +937,81 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +			// A quick backup after the revision 1 is not a hash backup and saves no
 +			// incomplete snapshot; the files change their sizes, so they are packed again
 +			name: "Quick", args: quick, wantLogID: CancelLogID,
++			prepare: prepareQuick,
++			check:   func(t *testing.T, run *cancelRun) { checkQuick(t, run, false) },
++		},
++		{
++			// The same with the list of the entries written to incomplete_files, which the
++			// canceled backup has to close
++			name: "QuickSpill", args: spill, wantLogID: CancelLogID,
++			prepare: prepareQuick,
++			check:   func(t *testing.T, run *cancelRun) { checkQuick(t, run, true) },
++		},
++		{
++			// A quick backup doesn't set RunAtError, which the test has set: the
++			// cancellation clears it, as a success does
++			name: "QuickRunAtError", args: quick, wantLogID: CancelLogID,
 +			prepare: func(t *testing.T) *cancelRun {
-+				fixture := newWorkerErrorsFixture(t, false)
-+				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
-+				for _, file := range []string{"file1", "file2", "dir1/file3"} {
-+					// The new sizes are at least 1000000 bytes, the old ones are smaller
-+					createRandomFile(filepath.Join(fixture.repository, file), 2000000)
-+				}
-+				return &cancelRun{fixture: fixture, recorder: cancelAtStep(t, 3)}
++				run := prepareQuick(t)
++				RunAtError = func() { run.runAtError.Add(1) }
++				return run
 +			},
 +			check: func(t *testing.T, run *cancelRun) {
-+				fixture := run.fixture
-+				expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
-+				if fixture.revisionExists(2) {
-+					t.Fatalf("The revision 2 has been created despite the cancellation")
++				RunAtError()
++				if calls := run.runAtError.Load(); calls != 0 {
++					t.Fatalf("RunAtError of the case has been called %d times", calls)
 +				}
-+				for _, name := range []string{"incomplete_snapshot", "incomplete_chunks"} {
-+					if cacheFileExists(t, fixture.manager, name) {
-+						t.Fatalf("The quick backup has saved %s", name)
++				if cacheFileExists(t, run.fixture.manager, "incomplete_snapshot") {
++					t.Fatalf("The quick backup has saved incomplete_snapshot")
++				}
++			},
++		},
++		{
++			// The upload of the first file chunk requests the cancellation and fails in the
++			// same call: the failure is raised instead of the cancellation
++			name: "UploadFailureBeforeCancel", args: hashSingle, wantLogID: "UPLOAD_CHUNK",
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareCancelFixture(t, 1, false, 3, 5)
++				run.fixture.storage.fail("UploadFile", "chunks/")
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				if run.fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has been created despite the failure")
++				}
++			},
++		},
++		{
++			// The listing of the 3000 directories is stopped by the cancellation that the
++			// log function requests on BACKUP_INDEXING, which the comparison sees first
++			name: "ComparisonStopsListing", args: hash, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				fixture := newWorkerErrorsFixture(t, false)
++				createWorkerErrorsDirectories(t, fixture.repository, 3000)
++				run := &cancelRun{fixture: fixture, listed: countListedEntries()}
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				run.listedTotal = atomic.LoadInt64(run.listed)
++				if run.listedTotal < 3000 {
++					t.Fatalf("The backup has listed %d directories instead of 3000", run.listedTotal)
++				}
++				atomic.StoreInt64(run.listed, 0)
++				LogFunction = func(level int, logID string, message string) {
++					switch logID {
++					case "LIST_ENTRIES":
++						atomic.AddInt64(run.listed, 1)
++					case "BACKUP_INDEXING":
++						RequestCancel()
 +					}
 +				}
-+				fixture.expectSuccess(fixture.backup(fixture.repository, true), 2)
++				run.recorder = recordProgress(t)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectListingStopped(t)
++				run.expectNoEvents(t)
++				if run.fixture.revisionExists(2) {
++					t.Fatalf("The revision 2 has been created despite the cancellation")
++				}
 +			},
 +		},
 +	}
@@ -915,6 +1050,9 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +					tt.args.shadowCopyTimeout, tt.args.enumOnly, tt.args.metadataChunkSize,
 +					tt.args.maximumInMemoryEntries)
 +			})
++			if run.listed != nil {
++				run.listedAtReturn = atomic.LoadInt64(run.listed)
++			}
 +			// The request stays set after the cancellation; it is cleared before the next
 +			// operation of the check
 +			ResetCancel()
@@ -1532,6 +1670,42 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +				}
 +			},
 +		},
++		{
++			// The listing of the 3000 directories of the target is stopped by the
++			// cancellation that the log function requests on RESTORE_INDEXING, which the
++			// comparison sees first
++			name: "ComparisonStopsListing", args: inPlace, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				fixture := newWorkerErrorsFixture(t, false)
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				run := &cancelRun{fixture: fixture, listed: countListedEntries()}
++				whole := filepath.Join(t.TempDir(), "whole")
++				createWorkerErrorsDirectories(t, whole, 3000)
++				fixture.expectRestored(fixture.restore(whole, false, false))
++				run.listedTotal = atomic.LoadInt64(run.listed)
++				if run.listedTotal < 3000 {
++					t.Fatalf("The restore has listed %d directories instead of 3000", run.listedTotal)
++				}
++				run.top = filepath.Join(t.TempDir(), "restored")
++				createWorkerErrorsDirectories(t, run.top, 3000)
++				atomic.StoreInt64(run.listed, 0)
++				LogFunction = func(level int, logID string, message string) {
++					switch logID {
++					case "LIST_ENTRIES":
++						atomic.AddInt64(run.listed, 1)
++					case "RESTORE_INDEXING":
++						RequestCancel()
++					}
++				}
++				run.recorder = recordProgress(t)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectListingStopped(t)
++				run.expectNoEvents(t)
++				run.expectMissing(t, "file1")
++			},
++		},
 +	}
 +	for _, tt := range tests {
 +		t.Run(tt.name, func(t *testing.T) {
@@ -1572,6 +1746,9 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +					tt.args.patterns, tt.args.allowFailures)
 +				return got == 0
 +			})
++			if run.listed != nil {
++				run.listedAtReturn = atomic.LoadInt64(run.listed)
++			}
 +			// The request stays set after the cancellation; it is cleared before the next
 +			// operation of the check
 +			ResetCancel()
@@ -1688,6 +1865,8 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	chunks := args{snapshotID: "host1", revisionsToCheck: []int{1}, checkChunks: true,
 +		threads: 2}
 +	all := args{threads: 2}
++	chunksSingle := chunks
++	chunksSingle.threads = 1
 +	// prepareBeforeStart requests the cancellation before the check
 +	prepareBeforeStart := func(t *testing.T) *cancelRun {
 +		fixture := newCancelFixture(t, 2)
@@ -1839,6 +2018,34 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +			},
 +		},
 +		{
++			// The download of the first file chunk to be verified requests the cancellation
++			// and fails in the same call: the failure is raised instead of the cancellation.
++			// The chunks are verified in the order of a map, so all the file chunks fail: the
++			// first of them is among the first few verified, as the metadata chunks are few
++			name: "DownloadFailureBeforeCancel", args: chunksSingle, wantLogID: "DOWNLOAD_CHUNK",
++			prepare: func(t *testing.T) *cancelRun {
++				fixture := newCancelFixture(t, 16)
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				run := &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel}
++				var paths []string
++				for _, hash := range run.fixture.revisionSnapshot(1).ChunkHashes {
++					path := run.fixture.chunkPath(hash, false)
++					run.fixture.storage.fail("DownloadFile", path)
++					paths = append(paths, path)
++				}
++				run.armDownloads(matchPaths(paths...), 1, false)
++				run.recorder = recordProgress(t)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				for _, event := range run.recorder.take() {
++					if event.Kind == ProgressKindEnd {
++						t.Fatalf("The check has reported its end: %+v", event)
++					}
++				}
++			},
++		},
++		{
 +			// The download of the file of the revision 2 requests the cancellation, which the
 +			// check sees before it downloads the file of the revision 3
 +			name: "RevisionFiles", args: all, wantLogID: CancelLogID,
@@ -1926,6 +2133,15 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	calls    []pruneCall
 +	cancelOn func(call pruneCall) bool
 +	fired    bool
++	// The directories that GetChunkDirectories returns, unless nil
++	chunkDirectories []string
++}
++
++func (storage *pruneCancelStorage) GetChunkDirectories() []string {
++	if storage.chunkDirectories != nil {
++		return storage.chunkDirectories
++	}
++	return storage.faultStorage.GetChunkDirectories()
 +}
 +
 +func (storage *pruneCancelStorage) record(operation string, filePath string) {
@@ -2619,6 +2835,43 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +			},
 +		},
 +		{
++			// The cancellation requested by the first fossilization in chunks/ is not raised
++			// when the scan goes on to the second directory of chunks
++			name: "ExhaustiveActedTwoDirs", args: exhaustiveActed, want: true, recover: "partial",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				run.storage.chunkDirectories = []string{chunkDir, metadataDir}
++				if err := os.MkdirAll(filepath.Join(run.fixture.raw.storageDir, metadataDir),
++					0700); err != nil {
++					t.Fatalf("Failed to create the metadata directory: %v", err)
++				}
++				for _, hash := range newChunks(run, 4) {
++					run.paths = append(run.paths, run.fixture.chunkPath(hash))
++				}
++				run.arm(t, cancelOnFirst("MoveFile", "chunks/"), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				if moves := run.storage.count("MoveFile", "chunks/"); moves < len(run.paths) {
++					t.Fatalf("The scan has moved %d files, want at least %d", moves,
++						len(run.paths))
++				}
++				if lists := run.storage.count("ListFiles", metadataDir); lists == 0 {
++					t.Fatalf("The scan has not listed the second directory")
++				}
++				for _, chunkPath := range run.paths {
++					if !run.fossilExists(t, chunkPath+".fsl") {
++						t.Fatalf("The chunk %s has not been fossilized", chunkPath)
++					}
++				}
++				run.fixture.expectRevisions([]int{2}, []int{1})
++				if !run.fixture.collectionSaved() {
++					t.Fatalf("No fossil collection has been saved")
++				}
++				run.expectEvents(t, "completed")
++			},
++		},
++		{
 +			name: "Indivisible", args: delete3Single, want: true, recover: "partial",
 +			prepare: prepareFossilize, check: expectFossilized,
 +		},
@@ -2812,34 +3065,42 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	}
 +}
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
---- a/src/duplicacy_progress.go	2026-11-13 16:41:14.730080611 +0000
-+++ b/src/duplicacy_progress.go	2026-11-13 16:41:21.678255044 +0000
-@@ -97,13 +97,14 @@
+--- a/src/duplicacy_progress.go	2026-11-13 20:50:27.992894331 +0000
++++ b/src/duplicacy_progress.go	2026-11-13 20:50:33.877035043 +0000
+@@ -100,16 +100,17 @@
  // goroutines and the goroutine that runs the operation.  Set it before an operation and
  // don't change it while the operation runs.  It must return without waiting for the
  // operation, which waits for its worker goroutines to finish their calls.  An operation
--// that an error or a panic interrupts before its end doesn't report the end, nor does a
--// backup or a copy that returns false, so a start without an end means a failure.  An
--// end doesn't mean a success, though: a restore and a check of chunks report their
--// failures in the end, after which a check of corrupted chunks fails with an error, and
--// a prune with no revision to delete reports its end and returns false.  An error
--// before the start, such as an empty repository of a backup, reports no events at all,
--// and so does a copy with no revisions to copy.  A panic of ProgressFunction is raised
+-// that an error or a panic interrupts before its end doesn't report the end, so a start
+-// without an end means a failure: a check of files that finds chunks of size 0, for
+-// example, fails with SNAPSHOT_CHECK before its end.  An end doesn't mean a success,
+-// though: a restore and a check of chunks report their failures in the end, after which
+-// a check of corrupted chunks fails with an error, a check of files reports the files
+-// that failed to verify in Failed of its end and returns true, and a prune with no
+-// revision to delete reports its end and returns false.  An error before the start,
+-// such as an empty repository of a backup, reports no events at all, and so does a
+-// copy with no revisions to copy.  A panic of ProgressFunction is raised by the
+-// operation in the goroutine that called it, like any other panic of the operation;
+-// the worker goroutines may still call ProgressFunction after the panic until the
+-// operation returns, but not after that.
 +// that an error, a panic or a cancellation (RequestCancel) interrupts before its end
-+// doesn't report the end, nor does a backup or a copy that returns false, so a start
-+// without an end means a failure or a cancellation.  An end doesn't mean a success,
-+// though: a restore and a check of chunks report their failures in the end, after which
-+// a check of corrupted chunks fails with an error, and a prune with no revision to
-+// delete reports its end and returns false.  An error or a cancellation before the
-+// start, such as an empty repository of a backup, reports no events at all, and so does
-+// a copy with no revisions to copy.  A panic of ProgressFunction is raised
- // by the operation in the goroutine that called it, like any other panic of the
- // operation; the worker goroutines may still call ProgressFunction after the panic
- // until the operation returns, but not after that.
++// doesn't report the end, so a start without an end means a failure or a cancellation:
++// a check of files that finds chunks of size 0, for example, fails with SNAPSHOT_CHECK
++// before its end.  An end doesn't mean a success, though: a restore and a check of
++// chunks report their failures in the end, after which a check of corrupted chunks
++// fails with an error, a check of files reports the files that failed to verify in
++// Failed of its end and returns true, and a prune with no revision to delete reports
++// its end and returns false.  An error or a cancellation before the start, such as an
++// empty repository of a backup, reports no events at all, and so does a copy with no
++// revisions to copy.  A panic of ProgressFunction is raised by the operation in the
++// goroutine that called it, like any other panic of the operation; the worker
++// goroutines may still call ProgressFunction after the panic until the operation
++// returns, but not after that.
+ var ProgressFunction func(event ProgressEvent)
 diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
---- a/src/duplicacy_snapshotmanager.go	2026-11-13 16:41:14.734080712 +0000
-+++ b/src/duplicacy_snapshotmanager.go	2026-11-13 16:41:21.682255144 +0000
-@@ -873,6 +873,11 @@
+--- a/src/duplicacy_snapshotmanager.go	2026-11-13 20:50:27.996894426 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-13 20:50:33.881035138 +0000
+@@ -875,6 +875,11 @@
  func (manager *SnapshotManager) CheckSnapshots(snapshotID string, revisionsToCheck []int, tag string, showStatistics bool, showTabular bool,
  	checkFiles bool, checkChunks, searchFossils bool, resurrect bool, rewriteChunks bool, threads int, allowFailures bool) bool {
  
@@ -2851,7 +3112,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	// Failed downloads are raised in the goroutine waiting for them
  	defer manager.catchOperatorDownloads(resurrect, rewriteChunks, threads, allowFailures)()
  	manager.numberOfCorruptedFiles = 0
-@@ -946,6 +951,11 @@
+@@ -948,6 +953,11 @@
  		}
  
  		for _, revision := range revisions {
@@ -2863,7 +3124,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			snapshot := manager.DownloadSnapshot(snapshotID, revision)
  			if tag != "" && snapshot.Tag != tag {
  				continue
-@@ -984,6 +994,11 @@
+@@ -986,6 +996,11 @@
  	for snapshotID = range snapshotMap {
  
  		for _, snapshot := range snapshotMap[snapshotID] {
@@ -2875,15 +3136,14 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  			if checkFiles {
  				manager.DownloadSnapshotSequences(snapshot)
-@@ -1236,7 +1251,22 @@
+@@ -1238,7 +1253,21 @@
  		} ()
  	}
  
 +	// cancelVerify stops the verification on a cancellation.  The channel has no deferred close, so it is closed
 +	// here and the verifying goroutines finish the chunks already queued; the deferred saveVerifiedChunks saves
 +	// only the intact ones, so that the next check skips only them.  A failure recorded by a verifying goroutine
-+	// is raised by WaitForCompletion instead of the cancellation.  This is the only wait for workers on a
-+	// cancellation path
++	// is raised by WaitForCompletion instead of the cancellation, as cancelUpload of Backup raises a failed upload
 +	cancelVerify := func() {
 +		close(chunkChannel)
 +		wg.Wait()
@@ -2898,7 +3158,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		chunkChannel <- chunkIndex
  	}
  
-@@ -1995,6 +2025,12 @@
+@@ -1997,6 +2026,12 @@
  
  	defer manager.useOperator(threads, true)()
  
@@ -2911,7 +3171,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	// The chunks to fossilize or delete come as a stream, so the totals are unknown
  	if ProgressFunction != nil {
  		ProgressFunction(ProgressEvent{Operation: ProgressOperationPrune, Kind: ProgressKindStart, TotalBytes: -1,
-@@ -2097,6 +2133,10 @@
+@@ -2099,6 +2134,10 @@
  	}
  
  	for _, id := range snapshotIDs {
@@ -2922,7 +3182,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		var revisions []int
  		revisions, err = manager.ListSnapshotRevisions(id)
  		if err != nil {
-@@ -2107,6 +2147,9 @@
+@@ -2109,6 +2148,9 @@
  		sort.Ints(revisions)
  		var snapshots []*Snapshot
  		for _, revision := range revisions {
@@ -2932,7 +3192,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			snapshot := manager.DownloadSnapshot(id, revision)
  			if snapshot != nil {
  				snapshots = append(snapshots, snapshot)
-@@ -2139,6 +2182,16 @@
+@@ -2141,6 +2183,16 @@
  	// Find fossil collections previously created, and delete fossils and temporary files in them if they are
  	// deletable.
  	for _, collectionName := range collections {
@@ -2949,7 +3209,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  		matched := collectionRegex.FindStringSubmatch(collectionName)
  		if matched == nil {
-@@ -2274,6 +2327,13 @@
+@@ -2276,6 +2328,13 @@
  		return true
  	}
  
@@ -2963,7 +3223,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	toBeDeleted := 0
  
  	revisionMap := make(map[int]bool)
-@@ -2288,6 +2348,9 @@
+@@ -2290,6 +2349,9 @@
  
  	// Find the snapshots that need to be deleted
  	for id, snapshots := range allSnapshots {
@@ -2973,7 +3233,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  		if len(snapshotID) > 0 && id != snapshotID {
  			continue
-@@ -2506,6 +2569,11 @@
+@@ -2508,6 +2570,11 @@
  		}
  
  		for _, snapshot := range snapshots {
@@ -2985,7 +3245,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			if !snapshot.Flag {
  				continue
  			}
-@@ -2523,6 +2591,9 @@
+@@ -2525,6 +2592,9 @@
  
  	for _, snapshots := range allSnapshots {
  		for _, snapshot := range snapshots {
@@ -2995,7 +3255,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			if snapshot.Flag {
  				continue
  			}
-@@ -2537,6 +2608,12 @@
+@@ -2539,6 +2609,12 @@
  		}
  	}
  
@@ -3008,7 +3268,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	for chunk, value := range targetChunks {
  		if value {
  			continue
-@@ -2579,6 +2656,11 @@
+@@ -2581,6 +2657,11 @@
  		}
  
  		for _, snapshot := range snapshots {
@@ -3020,7 +3280,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			if snapshot.Flag {
  				LOG_INFO("SNAPSHOT_DELETE", "Deleting snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
  				continue
-@@ -2592,7 +2674,14 @@
+@@ -2594,7 +2675,14 @@
  		}
  	}
  
@@ -3035,7 +3295,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  		isMetadata := dir == metadataDir
  
-@@ -2601,6 +2690,9 @@
+@@ -2603,6 +2691,9 @@
  		foundChunks := make(map[string]bool)
  
  		allFiles, _ := manager.ListAllFiles(manager.storage, dir)
@@ -3045,7 +3305,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		uniqueFiles := make(map[string]bool)
  		for _, file := range allFiles {
  			if _, found := uniqueFiles[file]; found {
-@@ -2623,6 +2715,7 @@
+@@ -2625,6 +2716,7 @@
  				if exclusive {
  					// In exclusive mode, we assume no other restore operation is running concurrently.
  					manager.chunkOperator.Delete("", dir+file, isMetadata)
@@ -3053,7 +3313,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  					fmt.Fprintf(logFile, "Deleted temporary %s\n", dir+file)
  				} else {
  					collection.AddTemporary(dir + file)
-@@ -2644,6 +2737,7 @@
+@@ -2646,6 +2738,7 @@
  						}
  
  						manager.chunkOperator.Resurrect(chunk, dir+file)
@@ -3061,7 +3321,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  						fmt.Fprintf(logFile, "Found referenced fossil %s\n", dir+file)
  
  					} else {
-@@ -2655,6 +2749,7 @@
+@@ -2657,6 +2750,7 @@
  
  						if exclusive {
  							manager.chunkOperator.Delete(chunk, dir+file, isMetadata)
@@ -3069,7 +3329,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  						} else {
  							collection.AddFossil(dir + file)
  							LOG_DEBUG("FOSSIL_FIND", "Found unreferenced fossil %s", dir+file)
-@@ -2680,6 +2775,7 @@
+@@ -2682,6 +2776,7 @@
  				}
  
  				manager.fossilizeChunk(chunk, dir+file, isMetadata, exclusive)
@@ -3077,7 +3337,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  				if exclusive {
  					fmt.Fprintf(logFile, "Deleted chunk %s (exclusive mode)\n", chunk)
  				} else {
-@@ -2695,6 +2791,7 @@
+@@ -2697,6 +2792,7 @@
  
  				// This is a redundant chunk file (for instance D3/495A8D and D3/49/5A8D )
  				manager.chunkOperator.Delete(chunk, dir+file, isMetadata)
