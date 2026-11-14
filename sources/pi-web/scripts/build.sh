@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# cspell:ignore PYTHONDONTWRITEBYTECODE
 cd "${GRAVES_UPSTREAM_DIR:?}"
+# The tests of the session archive conversion script need neither node_modules nor
+# the network, so a broken script stops the build before npm does anything.
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s "${GRAVES_SOURCE_DIR:?}/tests" -p 'test_*.py' -v
 npm ci --include=dev
 # Run the whole upstream suite on the patched sources before the package metadata
 # changes, so a failing test stops the build before anything is built.
@@ -16,3 +21,6 @@ mkdir -p "${GRAVES_OUT_DIR:?}"
 tarball="$(npm pack --ignore-scripts --pack-destination "${GRAVES_OUT_DIR}" | tail -n1)"
 mv -v "${GRAVES_OUT_DIR}/${tarball}" \
   "${GRAVES_OUT_DIR}/pi-web-${GRAVES_FILE_VERSION:?}.tgz"
+# The session archive conversion script is a separate release asset.
+cp -v "${GRAVES_SOURCE_DIR:?}/scripts/convert-session-archive.py" \
+  "${GRAVES_OUT_DIR}/pi-web-convert-session-archive-${GRAVES_FILE_VERSION}.py"
