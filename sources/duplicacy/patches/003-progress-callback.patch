@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-05 13:13:53.493917354 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-06 04:52:52.077128525 +0000
+--- a/src/duplicacy_backupmanager.go	2026-11-06 14:02:48.325502527 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-06 14:02:48.397504399 +0000
 @@ -227,6 +227,9 @@
  	var totalModifiedFileSize int64    // total size of modified files
  	var uploadedModifiedFileSize int64 // portions that have been uploaded (including cache hits)
@@ -138,7 +138,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  }
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 --- a/src/duplicacy_progress.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_progress.go	2026-11-06 05:19:50.947678897 +0000
++++ b/src/duplicacy_progress.go	2026-11-06 14:03:11.826113074 +0000
 @@ -0,0 +1,81 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -187,8 +187,8 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 +	Action    ProgressAction // The action of a prune step; empty otherwise
 +	// The totals known at the start, or -1 if unknown.  TotalBytes of a backup start is
 +	// the size of the modified files to be split into chunks, as listed; the steps don't
-+	// add up to it if a file changes before its chunks are made or, with a LogFunction
-+	// that doesn't panic, can't be read to the end, and a file that can't be opened has
++	// add up to it if a file changes before its chunks are made or, with the read error
++	// hidden by SuppressLog, can't be read to the end, and a file that can't be opened has
 +	// no steps.  At the end of a backup the totals are the number and the length of the
 +	// new file and metadata chunks; at the end of a copy, the number of copied chunks and
 +	// their length.
@@ -223,8 +223,8 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 +var ProgressFunction func(event ProgressEvent)
 diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test.go
 --- a/src/duplicacy_progress_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_progress_test.go	2026-11-06 07:17:34.412989242 +0000
-@@ -0,0 +1,1266 @@
++++ b/src/duplicacy_progress_test.go	2026-11-06 14:03:06.625978018 +0000
+@@ -0,0 +1,1271 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -929,8 +929,10 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +		},
 +		{
 +			// A backup that fails before the start, as that of an empty repository does,
-+			// reports no events
++			// reports no events; the error is raised also through a log function
 +			name: "EmptyRepository", args: hash, want: false,
++			wantPanic: Exception{Level: ERROR, LogID: "SNAPSHOT_EMPTY",
++				Message: "No files under the repository to be backed up"},
 +			prepare: func(t *testing.T) *progressRun {
 +				run := prepareProgressBackup(t)
 +				for _, file := range []string{"file1", "file2", "dir1"} {
@@ -1017,10 +1019,12 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +			},
 +		},
 +		{
-+			// The upload of the snapshot file fails with a log function that doesn't
-+			// panic, so that the backup returns false: there is a start and there are
-+			// steps, but no end
++			// The upload of the snapshot file fails, which is raised also through a log
++			// function: there is a start and there are steps, but no end
 +			name: "FailedSnapshotFile", args: hash, want: false,
++			wantPanic: Exception{Level: ERROR, LogID: "UPLOAD_File",
++				Message: "Failed to upload the file snapshots/host1/1: " +
++					"injected UploadFile failure for snapshots/host1/1"},
 +			prepare: func(t *testing.T) *progressRun {
 +				run := prepareProgressBackup(t)
 +				run.fixture.storage.fail("UploadFile", "snapshots/host1/1")
@@ -1308,9 +1312,9 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +			},
 +		},
 +		{
-+			// The chunks of the destination are missing from its listing, which fails
-+			// with a log function that doesn't panic, so the copy uploads every chunk of
-+			// the revision again and finds each of them at the destination
++			// The chunks of the destination are missing from its listing, so the copy
++			// uploads every chunk of the revision again and finds each of them at the
++			// destination
 +			name: "DestinationDuplicates", args: revision1, want: true,
 +			prepare: func(t *testing.T) *progressRun {
 +				run := prepareProgressCopy(t, true)
@@ -1319,16 +1323,15 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +					t.Fatalf("Failed to delete the copied revision: %v", err)
 +				}
 +				run.storedCount, run.storedSize = storedChunks(t, fixture.destinationRaw)
-+				fixture.destinationStorage.fail("ListFiles", "chunks/")
-+				setWorkerErrorsLogFunction()
++				fixture.destinationStorage.hideListing("chunks/")
 +				run.recorder.take()
 +				return run
 +			},
 +			check: func(t *testing.T, run *progressRun) {
 +				fixture := run.copyFixture
 +				events := run.recorder.take()
-+				if fixture.destinationStorage.injectedCount() == 0 {
-+					t.Fatalf("The listing of the destination chunks has not failed")
++				if fixture.destinationStorage.hiddenCount() == 0 {
++					t.Fatalf("The listing of the destination chunks has not been hidden")
 +				}
 +				fixture.expectCopied(workerErrorsOutcome{result: true})
 +				summary := summarizeProgress(t, events, ProgressOperationCopy)
@@ -1368,10 +1371,12 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +			check: func(t *testing.T, run *progressRun) { run.expectNoEvents(t) },
 +		},
 +		{
-+			// The upload of the snapshot file fails with a log function that doesn't
-+			// panic, so that the copy returns false: there is a start and there are steps,
-+			// but no end
++			// The upload of the snapshot file fails, which is raised also through a log
++			// function: there is a start and there are steps, but no end
 +			name: "FailedSnapshotFile", args: revision1, want: false,
++			wantPanic: Exception{Level: ERROR, LogID: "UPLOAD_File",
++				Message: "Failed to upload the file snapshots/host1/1: " +
++					"injected UploadFile failure for snapshots/host1/1"},
 +			prepare: func(t *testing.T) *progressRun {
 +				run := prepareProgressCopy(t, false)
 +				run.copyFixture.destinationStorage.fail("UploadFile", "snapshots/host1/1")
