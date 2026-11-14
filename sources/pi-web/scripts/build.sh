@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# cspell:ignore PYTHONDONTWRITEBYTECODE
 cd "${GRAVES_UPSTREAM_DIR:?}"
+# The tests of the session archive conversion script need neither node_modules nor
+# the network, so a broken script stops the build before npm does anything.
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s "${GRAVES_SOURCE_DIR:?}/tests" -p 'test_*.py' -v
 npm ci --include=dev
 # Run the whole upstream suite on the patched sources before the package metadata
 # changes, so a failing test stops the build before anything is built.
