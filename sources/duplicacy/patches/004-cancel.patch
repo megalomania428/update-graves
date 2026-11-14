@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-10 07:27:41.637165353 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-10 08:54:10.643945563 +0000
+--- a/src/duplicacy_backupmanager.go	2026-11-10 09:11:16.533255101 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-10 10:28:25.633663865 +0000
 @@ -131,6 +131,11 @@
  func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
  	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
@@ -112,7 +112,73 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	localSnapshot.EndTime = time.Now().Unix()
  
-@@ -1772,6 +1827,11 @@
+@@ -735,6 +790,11 @@
+ func (manager *BackupManager) Restore(top string, revision int, inPlace bool, quickMode bool, threads int, overwrite bool,
+ 	deleteMode bool, setOwner bool, showStatistics bool, patterns []string, allowFailures bool) int {
+ 
++	// A cancellation requested before the restore is raised before anything is changed
++	if IsCancelRequested() {
++		raiseCancel()
++	}
++
+ 	startTime := time.Now().Unix()
+ 
+ 	LOG_DEBUG("RESTORE_PARAMETERS", "top: %s, revision: %d, in-place: %t, quick: %t, delete: %t",
+@@ -884,6 +944,12 @@
+ 	localListingOK := true
+ 
+ 	for {
++		// No file has been restored yet: a cancellation stops the comparison and leaves the directories and the
++		// links already created; a failure already recorded by a listing goroutine or by the operator of the
++		// snapshot manager is raised instead
++		if IsCancelRequested() {
++			raiseCancelAfterFailures(chunkOperator, manager.SnapshotManager.chunkOperator)
++		}
+ 		remoteEntry, remoteListingOK := readRemoteEntry()
+ 		if !remoteListingOK {
+ 			break
+@@ -1026,6 +1092,14 @@
+ 
+ 	// Now download files one by one
+ 	for _, file := range fileEntries {
++		// A cancellation stops between files and the files already restored stay.  The chunks already requested
++		// are completed by the operator, and the deferred chunkDownloader.Stop releases their senders; that
++		// release is covered by the prefetch tests of the worker errors, not by a cancellation test.  A failure
++		// already recorded by a worker or by the operator of the snapshot manager is raised instead; a failure
++		// recorded before this check can't be ordered without a test point, so this precedence has no test
++		if IsCancelRequested() {
++			raiseCancelAfterFailures(chunkOperator, manager.SnapshotManager.chunkOperator)
++		}
+ 
+ 		fullPath := joinPath(top, file.Path)
+ 		stat, _ := os.Stat(fullPath)
+@@ -1095,6 +1169,12 @@
+ 		file.RestoreMetadata(fullPath, nil, setOwner)
+ 	}
+ 
++	// A cancellation after the last file neither deletes the extra files nor restores the metadata of the
++	// directories
++	if IsCancelRequested() {
++		raiseCancelAfterFailures(chunkOperator, manager.SnapshotManager.chunkOperator)
++	}
++
+ 	if deleteMode && len(patterns) == 0 {
+ 		// Reverse the order to make sure directories are empty before being deleted
+ 		for i := range extraFiles {
+@@ -1708,6 +1788,12 @@
+ 			}
+ 
+ 			if !hasLocalCopy {
++				// The target is replaced only at the end and the deferred cleanup removes the temporary file, so
++				// a cancellation between the chunks leaves the target as it was.  The chunks copied from the
++				// existing file and the in-place branch above don't check the request
++				if IsCancelRequested() {
++					raiseCancelAfterFailures(chunkDownloader.operator, manager.SnapshotManager.chunkOperator)
++				}
+ 				chunk := chunkDownloader.WaitForChunk(i)
+ 				if chunk.isBroken {
+ 					return false, fmt.Errorf("chunk %s is corrupted", manager.config.GetChunkIDFromHash(hash))
+@@ -1772,6 +1858,11 @@
  func (manager *BackupManager) CopySnapshots(otherManager *BackupManager, snapshotID string,
  	revisionsToBeCopied []int, uploadingThreads int, downloadingThreads int) bool {
  
@@ -124,7 +190,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	// The snapshot sequences are downloaded through the operator of the snapshot manager
  	defer manager.SnapshotManager.useOperator(1, false)()
  
-@@ -1999,6 +2059,13 @@
+@@ -1999,6 +2090,13 @@
  		// one check covers both.  This check has no test of its own: the operators skip the queued tasks after a
  		// failure, so without it the copy only adds the skipped tasks
  		chunkDownloader.failures.raise()
@@ -138,7 +204,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		chunkID := manager.config.GetChunkIDFromHash(chunkHash)
  		newChunkID := otherManager.config.GetChunkIDFromHash(chunkHash)
  
-@@ -2021,6 +2088,13 @@
+@@ -2021,6 +2119,13 @@
  	LOG_INFO("SNAPSHOT_COPY", "Copied %d new chunks and skipped %d existing chunks", numberOfCopiedChunks,
  		len(chunks) - numberOfCopiedChunks)
  
@@ -154,8 +220,8 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			continue
 diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 --- a/src/duplicacy_cancel.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel.go	2026-11-10 08:06:22.154774584 +0000
-@@ -0,0 +1,71 @@
++++ b/src/duplicacy_cancel.go	2026-11-10 11:18:24.008935520 +0000
+@@ -0,0 +1,87 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -186,8 +252,24 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +// lost; such an operation panics before it changes anything.  The consumer calls
 +// ResetCancel before the next operation.  A request made after the last check of an
 +// operation doesn't stop it: the operation completes as usual and the request stays
-+// set.  An in-place restore stops only between files.  ListSnapshots, ShowHistory,
-+// PrintFile, Diff, DownloadSequence and Benchmark ignore the request.
++// set.
++//
++// Restore checks the request while it compares the local and the remote files, before
++// each file and before it deletes the extra files and restores the metadata of the
++// directories; the files restored before stay, and so do the directories and the symbolic
++// links that the comparison has already created.  A restore through a temporary file also
++// checks it before it writes each chunk downloaded from the storage, while the chunks
++// already prefetched are still downloaded: the target is replaced only at the end and the
++// temporary file is removed, so the target stays as it was; the chunks copied from the
++// existing file don't check it.  An in-place restore, whether explicit or forced by
++// Restore even with inPlace false when GetDuplicacyPreferencePath() doesn't start with
++// top, writes into the target and stops only between files, so a large file is completed
++// first.  CheckSnapshots checks it before it downloads each revision file, before it
++// checks each revision and, with checkChunks, before it queues each chunk; the chunks
++// already queued are verified, and only the intact ones are saved to the list of verified
++// chunks.  With checkFiles a revision is verified as a whole, so the check stops only
++// between revisions.  ListSnapshots, ShowHistory, PrintFile, Diff, DownloadSequence,
++// Benchmark and PruneSnapshots ignore the request.
 +func RequestCancel() {
 +	cancelRequested.Store(true)
 +}
@@ -229,8 +311,8 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +}
 diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 --- a/src/duplicacy_cancel_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel_test.go	2026-11-10 08:55:45.618324937 +0000
-@@ -0,0 +1,691 @@
++++ b/src/duplicacy_cancel_test.go	2026-11-10 10:54:10.565697068 +0000
+@@ -0,0 +1,1568 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -238,12 +320,15 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +package duplicacy
 +
 +import (
++	"encoding/json"
 +	"fmt"
 +	"math/rand"
 +	"os"
 +	"path/filepath"
++	"reflect"
 +	"runtime"
 +	"strings"
++	"sync"
 +	"sync/atomic"
 +	"testing"
 +	"time"
@@ -269,6 +354,13 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	hold     bool         // Delay the chunk uploads made after the request
 +	calls    atomic.Int64 // The calls of UploadFile on chunk files
 +	uploads  atomic.Int64 // The successful uploads of chunk files
++	// downloadMatch selects the downloads that count for downloadCancelAt; nil disables it
++	downloadMatch    func(filePath string) bool
++	downloadCancelAt int64        // The number of the matching download that requests it
++	downloadHold     bool         // Delay the matching downloads made after the request
++	downloadCalls    atomic.Int64 // The calls of DownloadFile that match downloadMatch
++	downloadsLock    sync.Mutex
++	downloads        []string // The paths of all the calls of DownloadFile
 +}
 +
 +// newCancelStorage wraps the storage and, like newFaultStorage, points its
@@ -295,6 +387,37 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +		storage.uploads.Add(1)
 +	}
 +	return err
++}
++
++// DownloadFile records the path and, for a download selected by downloadMatch, requests a
++// cancellation at the call with the number downloadCancelAt, before the download.  With
++// downloadHold every selected download after the request waits 100 ms.
++func (storage *cancelStorage) DownloadFile(threadIndex int, filePath string,
++	chunk *Chunk) error {
++	storage.downloadsLock.Lock()
++	storage.downloads = append(storage.downloads, filePath)
++	storage.downloadsLock.Unlock()
++	if storage.downloadMatch != nil && storage.downloadMatch(filePath) {
++		if storage.downloadHold && IsCancelRequested() {
++			time.Sleep(100 * time.Millisecond)
++		}
++		if storage.downloadCalls.Add(1) == storage.downloadCancelAt {
++			RequestCancel()
++		}
++	}
++	return storage.faultStorage.DownloadFile(threadIndex, filePath, chunk)
++}
++
++// downloaded reports whether DownloadFile has been called with the path.
++func (storage *cancelStorage) downloaded(filePath string) bool {
++	storage.downloadsLock.Lock()
++	defer storage.downloadsLock.Unlock()
++	for _, path := range storage.downloads {
++		if path == filePath {
++			return true
++		}
++	}
++	return false
 +}
 +
 +// cancelAtStep records the progress events like recordProgress and requests a
@@ -408,6 +531,12 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	baseline    int               // The number of goroutines before the preparation
 +	storedCount int64             // The number of chunks in the storage before the call
 +	storedSize  int64             // The size of the chunks in the storage before the call
++	top         string            // The directory that Restore restores to
++	path        string            // The storage path that the check expects not to be downloaded
++	hashes      map[string]string // The hashes of the files of the repository by path
++	storage     map[string]int64  // The sizes of the files of the storage before the call
++	// rerun calls the operation of the case again with the same arguments
++	rerun func() workerErrorsOutcome
 +}
 +
 +// expectNoEvents checks that the hook has not been called.
@@ -922,9 +1051,839 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +		})
 +	}
 +}
++
++// storageFiles returns the sizes of the regular files under the directory of the file
++// storage by their paths relative to it.
++func storageFiles(t *testing.T, storage *FileStorage) map[string]int64 {
++	t.Helper()
++	files := map[string]int64{}
++	err := filepath.Walk(storage.storageDir, func(path string, info os.FileInfo, err error) error {
++		if err == nil && info.Mode().IsRegular() {
++			relative, _ := filepath.Rel(storage.storageDir, path)
++			files[relative] = info.Size()
++		}
++		return err
++	})
++	if err != nil {
++		t.Fatalf("Failed to list the storage: %v", err)
++	}
++	return files
++}
++
++// expectStorageUnchanged checks that the files of the storage are those of the run.
++func (run *cancelRun) expectStorageUnchanged(t *testing.T) {
++	t.Helper()
++	if got := storageFiles(t, run.fixture.raw); !reflect.DeepEqual(got, run.storage) {
++		t.Fatalf("The storage has changed: %v instead of %v", got, run.storage)
++	}
++}
++
++// expectNoDownloads checks that DownloadFile of the storage has not been called.
++func (run *cancelRun) expectNoDownloads(t *testing.T) {
++	t.Helper()
++	run.cancel.downloadsLock.Lock()
++	defer run.cancel.downloadsLock.Unlock()
++	if len(run.cancel.downloads) != 0 {
++		t.Fatalf("The storage has been asked for %v", run.cancel.downloads)
++	}
++}
++
++// expectOnlyCancelLog checks that the log function received the entry of the
++// cancellation and nothing else.
++func (run *cancelRun) expectOnlyCancelLog(t *testing.T) {
++	t.Helper()
++	entry := "ERROR " + CancelLogID + " The operation has been canceled"
++	if got := run.logs.String(); got != entry {
++		t.Fatalf("The log function has received %q instead of %q", got, entry)
++	}
++}
++
++// armDownloads clears the record of the downloads and sets the download that requests
++// the cancellation: the call number at of the downloads selected by match.
++func (run *cancelRun) armDownloads(match func(filePath string) bool, at int64, hold bool) {
++	storage := run.cancel
++	storage.downloadsLock.Lock()
++	storage.downloads = nil
++	storage.downloadsLock.Unlock()
++	storage.downloadCalls.Store(0)
++	storage.downloadMatch, storage.downloadCancelAt, storage.downloadHold = match, at, hold
++}
++
++// matchPaths selects the downloads of the given paths.
++func matchPaths(paths ...string) func(filePath string) bool {
++	return func(filePath string) bool {
++		for _, path := range paths {
++			if path == filePath {
++				return true
++			}
++		}
++		return false
++	}
++}
++
++// fileChunkPaths returns the storage paths of the chunks of the file in the revision 1.
++func (run *cancelRun) fileChunkPaths(t *testing.T, file string) []string {
++	t.Helper()
++	snapshot := run.fixture.revisionSnapshot(1)
++	entry := run.fixture.findFile(snapshot, file)
++	var paths []string
++	for index := entry.StartChunk; index <= entry.EndChunk; index++ {
++		paths = append(paths, run.fixture.chunkPath(snapshot.ChunkHashes[index], false))
++	}
++	return paths
++}
++
++// recordHashes records the hashes of the files of the repository.
++func (run *cancelRun) recordHashes(t *testing.T) {
++	t.Helper()
++	run.hashes = map[string]string{}
++	repository := run.fixture.repository
++	err := filepath.Walk(repository, func(path string, info os.FileInfo, err error) error {
++		if err != nil {
++			return err
++		}
++		relative, _ := filepath.Rel(repository, path)
++		if relative == ".duplicacy" {
++			return filepath.SkipDir
++		}
++		if info.Mode().IsRegular() {
++			run.hashes[filepath.ToSlash(relative)] = getFileHash(path)
++		}
++		return nil
++	})
++	if err != nil {
++		t.Fatalf("Failed to hash the repository: %v", err)
++	}
++}
++
++// expectFileRestored checks that the file under top has the hash recorded before the
++// backup.
++func (run *cancelRun) expectFileRestored(t *testing.T, file string) {
++	t.Helper()
++	if got := getFileHash(filepath.Join(run.top, file)); got == "" || got != run.hashes[file] {
++		t.Fatalf("The file %s has the hash %q instead of %q", file, got, run.hashes[file])
++	}
++}
++
++// expectMissing checks that none of the paths under top exists, symbolic links included.
++func (run *cancelRun) expectMissing(t *testing.T, names ...string) {
++	t.Helper()
++	for _, name := range names {
++		if _, err := os.Lstat(filepath.Join(run.top, name)); !os.IsNotExist(err) {
++			t.Fatalf("The path %s exists (%v)", name, err)
++		}
++	}
++}
++
++// expectExists checks that every path under top exists.
++func (run *cancelRun) expectExists(t *testing.T, names ...string) {
++	t.Helper()
++	for _, name := range names {
++		if _, err := os.Lstat(filepath.Join(run.top, name)); err != nil {
++			t.Fatalf("The path %s is missing: %v", name, err)
++		}
++	}
++}
++
++// removeFiles removes the paths under the directory.
++func removeFiles(t *testing.T, directory string, names ...string) {
++	t.Helper()
++	for _, name := range names {
++		if err := os.RemoveAll(filepath.Join(directory, name)); err != nil {
++			t.Fatalf("Failed to remove %s: %v", name, err)
++		}
++	}
++}
++
++// clearSnapshotCache removes the cached chunks of the manager, so that the metadata
++// chunks are downloaded from the storage; the directory, snapshots/ and verified_chunks
++// stay.
++func clearSnapshotCache(t *testing.T, manager *BackupManager) {
++	t.Helper()
++	chunks := filepath.Join(manager.cachePath, "chunks")
++	entries, err := os.ReadDir(chunks)
++	if err != nil {
++		t.Fatalf("Failed to list the cached chunks: %v", err)
++	}
++	for _, entry := range entries {
++		if err := os.RemoveAll(filepath.Join(chunks, entry.Name())); err != nil {
++			t.Fatalf("Failed to clear the cache: %v", err)
++		}
++	}
++}
++
++// prepareCancelRestore backs up the files of the given numbers of chunks as the
++// revision 1 and records their hashes; the restore goes to the repository.
++func prepareCancelRestore(t *testing.T, chunks ...int) *cancelRun {
++	fixture := newCancelFixture(t, chunks...)
++	fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++	run := &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel,
++		fileChunks: fixture.fileChunks, top: fixture.repository}
++	run.recordHashes(t)
++	return run
++}
++
++// TestBackupManager_Restore_Cancel checks the cancellation of Restore.  The cases are
++// added to the skeleton generated by gotests: the fields come from the manager of the
++// case, the top directory from its run.
++func TestBackupManager_Restore_Cancel(t *testing.T) {
++	type fields struct {
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
++	}
++	type args struct {
++		top            string
++		revision       int
++		inPlace        bool
++		quickMode      bool
++		threads        int
++		overwrite      bool
++		deleteMode     bool
++		setOwner       bool
++		showStatistics bool
++		patterns       []string
++		allowFailures  bool
++	}
++	// The arguments of the restores of the revision 1 to the repository: with 2 threads
++	// through a temporary file, in place, and in place with 1 thread and deleteMode
++	temporary := args{revision: 1, threads: 2, overwrite: true}
++	inPlace := temporary
++	inPlace.inPlace = true
++	deleting := inPlace
++	deleting.deleteMode = true
++	single := deleting
++	single.threads = 1
++	past := time.Unix(1000000000, 0)
++	// prepareBeforeStart requests the cancellation before the restore to a new directory
++	prepareBeforeStart := func(t *testing.T) *cancelRun {
++		run := prepareCancelRestore(t, 2, 2)
++		run.top = filepath.Join(t.TempDir(), "restored")
++		run.storage = storageFiles(t, run.fixture.raw)
++		run.armDownloads(nil, 0, false)
++		run.recorder = recordProgress(t)
++		return run
++	}
++	checkBeforeStart := func(t *testing.T, run *cancelRun) {
++		run.expectNoEvents(t)
++		run.expectNoDownloads(t)
++		run.expectStorageUnchanged(t)
++		run.expectMissing(t, "")
++	}
++	// prepareLoss restores 2 files of 4 and 1 chunks that the repository has lost, with
++	// the cancellation requested by the download number at of the chunks of the file1
++	// that match
++	prepareLoss := func(t *testing.T, at int64, hold bool, chunk int) *cancelRun {
++		run := prepareCancelRestore(t, 4, 1)
++		removeFiles(t, run.top, "file1", "file2")
++		match := matchPaths(run.fileChunkPaths(t, "file1")...)
++		if chunk > 0 {
++			match = matchPaths(run.fixture.chunkPath(run.fixture.fileChunkHash("file1", chunk),
++				false))
++		}
++		run.armDownloads(match, at, hold)
++		run.recorder = recordProgress(t)
++		return run
++	}
++	// prepareExtra is prepareLoss with a file that the snapshot doesn't have
++	prepareExtra := func(t *testing.T, cancel bool) *cancelRun {
++		run := prepareLoss(t, 1, false, 1)
++		if !cancel {
++			run.armDownloads(nil, 0, false)
++		}
++		if err := os.WriteFile(filepath.Join(run.top, "extra"), []byte("extra"), 0600); err != nil {
++			t.Fatalf("Failed to write the extra file: %v", err)
++		}
++		return run
++	}
++	// prepareAfterFiles creates the directory dir1 with a file of 2 chunks, a mode and a
++	// time that the restore sets last, and 2 files of 2 chunks, then loses all of them
++	prepareAfterFiles := func(t *testing.T, cancel bool) *cancelRun {
++		fixture := newCancelFixture(t, 2, 2)
++		dir1 := filepath.Join(fixture.repository, "dir1")
++		if err := os.MkdirAll(dir1, 0700); err != nil {
++			t.Fatalf("Failed to create dir1: %v", err)
++		}
++		content := make([]byte, 2*cancelChunkSize)
++		rand.New(rand.NewSource(99)).Read(content)
++		if err := os.WriteFile(filepath.Join(dir1, "file3"), content, 0600); err != nil {
++			t.Fatalf("Failed to write dir1/file3: %v", err)
++		}
++		if err := os.Chmod(dir1, 0750); err != nil {
++			t.Fatalf("Failed to change the mode of dir1: %v", err)
++		}
++		if err := os.Chtimes(dir1, past, past); err != nil {
++			t.Fatalf("Failed to change the time of dir1: %v", err)
++		}
++		fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++		run := &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel,
++			top: fixture.repository}
++		run.recordHashes(t)
++		snapshot := run.fixture.revisionSnapshot(1)
++		var last *Entry
++		for _, file := range []string{"file1", "file2", "dir1/file3"} {
++			if entry := run.fixture.findFile(snapshot, file); last == nil ||
++				entry.StartChunk > last.StartChunk {
++				last = entry
++			}
++		}
++		if last.EndChunk <= last.StartChunk {
++			t.Fatalf("The last file has the chunks %d to %d", last.StartChunk, last.EndChunk)
++		}
++		removeFiles(t, run.top, "file1", "file2", "dir1")
++		if err := os.WriteFile(filepath.Join(run.top, "extra"), []byte("extra"), 0600); err != nil {
++			t.Fatalf("Failed to write the extra file: %v", err)
++		}
++		if cancel {
++			run.armDownloads(matchPaths(run.fixture.chunkPath(snapshot.ChunkHashes[last.EndChunk],
++				false)), 1, false)
++		} else {
++			run.armDownloads(nil, 0, false)
++		}
++		run.recorder = recordProgress(t)
++		return run
++	}
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		want      int
++		wantLogID string // The log id of the Exception that the restore panics with
++		prepare   func(t *testing.T) *cancelRun
++		check     func(t *testing.T, run *cancelRun)
++	}{
++		{
++			name: "BeforeStartLog", args: temporary, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareBeforeStart(t)
++				RequestCancel()
++				return run
++			},
++			check: checkBeforeStart,
++		},
++		{
++			// The log function returns, and the cancellation is raised after it
++			name: "BeforeStartLogFunction", args: temporary, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareBeforeStart(t)
++				SetLoggingLevel(DEBUG)
++				run.logs = collectWorkerErrorsLogs()
++				RequestCancel()
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				checkBeforeStart(t, run)
++				run.expectOnlyCancelLog(t)
++			},
++		},
++		{
++			// The download 2 of the chunks of the file1 requests the cancellation, which the
++			// restore sees before it writes a chunk of the file1 that follows
++			name: "TempFileLog", args: temporary, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun { return prepareLoss(t, 2, true, 0) },
++			check: func(t *testing.T, run *cancelRun) {
++				expectNoEnd(t, run.recorder.take(), ProgressOperationRestore)
++				run.expectMissing(t, "file1", "file2", filepath.Join(".duplicacy", "temporary"))
++			},
++		},
++		{
++			name: "TempFileLogFunction", args: temporary, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareLoss(t, 2, true, 0)
++				run.logs = collectWorkerErrorsLogs()
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				expectNoEnd(t, run.recorder.take(), ProgressOperationRestore)
++				run.expectMissing(t, "file1", "file2", filepath.Join(".duplicacy", "temporary"))
++				entry := "ERROR " + CancelLogID + " The operation has been canceled"
++				if !strings.Contains(run.logs.String(), entry) {
++					t.Fatalf("The log function has not received %q:\n%s", entry, run.logs)
++				}
++			},
++		},
++		{
++			// An in-place restore completes the file1 whose second chunk requests the
++			// cancellation and stops before the file2
++			name: "InPlace", args: inPlace, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun { return prepareLoss(t, 1, false, 1) },
++			check: func(t *testing.T, run *cancelRun) {
++				expectNoEnd(t, run.recorder.take(), ProgressOperationRestore)
++				run.expectFileRestored(t, "file1")
++				run.expectMissing(t, "file2", filepath.Join(".duplicacy", "temporary"))
++			},
++		},
++		{
++			name: "DeleteMode", args: deleting, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun { return prepareExtra(t, true) },
++			check: func(t *testing.T, run *cancelRun) {
++				expectNoEnd(t, run.recorder.take(), ProgressOperationRestore)
++				run.expectFileRestored(t, "file1")
++				run.expectMissing(t, "file2", filepath.Join(".duplicacy", "temporary"))
++				run.expectExists(t, "extra")
++			},
++		},
++		{
++			name: "DeleteModeNoCancel", args: deleting, want: 0,
++			prepare: func(t *testing.T) *cancelRun { return prepareExtra(t, false) },
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectFileRestored(t, "file1")
++				run.expectFileRestored(t, "file2")
++				run.expectMissing(t, "extra")
++			},
++		},
++		{
++			// The cancellation is requested by the download of the chunk of the file listing,
++			// before the comparison has seen the last directory and link
++			name: "Listing", args: inPlace, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				if runtime.GOOS == "windows" {
++					t.Skip("creating symbolic links needs a privilege on Windows")
++				}
++				fixture := newCancelFixture(t, 1)
++				repository := fixture.repository
++				if err := os.MkdirAll(filepath.Join(repository, "dir1"), 0700); err != nil {
++					t.Fatalf("Failed to create dir1: %v", err)
++				}
++				if err := os.MkdirAll(filepath.Join(repository, "zdir"), 0700); err != nil {
++					t.Fatalf("Failed to create zdir: %v", err)
++				}
++				createRandomFile(filepath.Join(repository, "dir1", "file3"), cancelChunkSize)
++				if err := os.Symlink("file1", filepath.Join(repository, "zlink")); err != nil {
++					t.Skipf("Failed to create a symbolic link: %v", err)
++				}
++				fixture.expectSuccess(fixture.backup(repository, false), 1)
++				run := &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel,
++					top: repository}
++				snapshot := run.fixture.revisionSnapshot(1)
++				path := run.fixture.chunkPath(snapshot.FileSequence[0], true)
++				removeFiles(t, repository, "dir1", "zdir", "zlink", "file1")
++				clearSnapshotCache(t, run.fixture.manager)
++				run.armDownloads(matchPaths(path), 1, false)
++				run.recorder = recordProgress(t)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectNoEvents(t)
++				run.expectMissing(t, "zdir", "zlink")
++			},
++		},
++		{
++			// The download of the last chunk of the last file, queued only when the restore
++			// waits for it, requests the cancellation after the check before the file
++			name: "AfterFiles", args: single, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun { return prepareAfterFiles(t, true) },
++			check: func(t *testing.T, run *cancelRun) {
++				expectNoEnd(t, run.recorder.take(), ProgressOperationRestore)
++				for _, file := range []string{"file1", "file2", "dir1/file3"} {
++					run.expectFileRestored(t, file)
++				}
++				run.expectExists(t, "extra")
++				info, err := os.Stat(filepath.Join(run.top, "dir1"))
++				if err != nil || info.ModTime().Unix() == past.Unix() {
++					t.Fatalf("The directory dir1 has the metadata restored: %v", err)
++				}
++			},
++		},
++		{
++			name: "AfterFilesNoCancel", args: single, want: 0,
++			prepare: func(t *testing.T) *cancelRun { return prepareAfterFiles(t, false) },
++			check: func(t *testing.T, run *cancelRun) {
++				for _, file := range []string{"file1", "file2", "dir1/file3"} {
++					run.expectFileRestored(t, file)
++				}
++				run.expectMissing(t, "extra")
++				info, err := os.Stat(filepath.Join(run.top, "dir1"))
++				if err != nil || info.ModTime().Unix() != past.Unix() {
++					t.Fatalf("The directory dir1 has not the time %v: %v", past, err)
++				}
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			resetCancelAfter(t)
++			baseline := runtime.NumGoroutine()
++			run := tt.prepare(t)
++			run.baseline = baseline
++			source := run.fixture.manager
++			tt.fields = fields{
++				snapshotID:         source.snapshotID,
++				storage:            source.storage,
++				SnapshotManager:    source.SnapshotManager,
++				snapshotCache:      source.snapshotCache,
++				config:             source.config,
++				nobackupFile:       source.nobackupFile,
++				filtersFile:        source.filtersFile,
++				excludeByAttribute: source.excludeByAttribute,
++				cachePath:          source.cachePath,
++			}
++			tt.args.top = run.top
++			manager := &BackupManager{
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
++			}
++			// As in TestBackupManager_Restore, got stays -1 when Restore panics
++			got := -1
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				got = manager.Restore(tt.args.top, tt.args.revision, tt.args.inPlace,
++					tt.args.quickMode, tt.args.threads, tt.args.overwrite,
++					tt.args.deleteMode, tt.args.setOwner, tt.args.showStatistics,
++					tt.args.patterns, tt.args.allowFailures)
++				return got == 0
++			})
++			// The request stays set after the cancellation; it is cleared before the next
++			// operation of the check
++			ResetCancel()
++			if tt.wantLogID != "" {
++				expectWorkerErrorsException(t, outcome, tt.wantLogID)
++			} else if outcome.recovered != nil {
++				t.Fatalf("BackupManager.Restore() panicked with %#v", outcome.recovered)
++			}
++			if tt.wantLogID == "" && got != tt.want {
++				t.Errorf("BackupManager.Restore() = %v, want %v", got, tt.want)
++			}
++			waitForWorkerErrorsGoroutines(t, run.baseline)
++			tt.check(t, run)
++		})
++	}
++}
++
++// verifiedChunkCount returns the number of the records in the list of verified chunks
++// of the snapshot cache of the manager.
++func verifiedChunkCount(t *testing.T, manager *BackupManager) int {
++	t.Helper()
++	content, err := os.ReadFile(filepath.Join(manager.cachePath, "verified_chunks"))
++	if os.IsNotExist(err) {
++		return 0
++	}
++	records := map[string]int64{}
++	if err == nil {
++		err = json.Unmarshal(content, &records)
++	}
++	if err != nil {
++		t.Fatalf("Failed to read the verified chunks: %v", err)
++	}
++	return len(records)
++}
++
++// logVerifyStart installs a log function that collects the entries like
++// collectWorkerErrorsLogs and clears the count of the matching downloads of the storage
++// on the entry that starts the verification of the chunks.
++func logVerifyStart(storage *cancelStorage) *workerErrorsLogs {
++	logs := collectWorkerErrorsLogs()
++	collect := LogFunction
++	LogFunction = func(level int, id string, message string) {
++		collect(level, id, message)
++		if level == INFO && id == "SNAPSHOT_VERIFY" && strings.HasPrefix(message, "Verifying ") {
++			storage.downloadCalls.Store(0)
++		}
++	}
++	return logs
++}
++
++// prepareCancelRevisions backs up the revisions of host1 whose file1 differs, and with
++// otherID the revision 1 of host2 after them, then clears the snapshot cache.
++func prepareCancelRevisions(t *testing.T, revisions int, otherID bool) *cancelRun {
++	fixture := newCancelFixture(t, 2)
++	repository := fixture.repository
++	change := func(seed int64) {
++		content := make([]byte, 2*cancelChunkSize)
++		rand.New(rand.NewSource(seed)).Read(content)
++		if err := os.WriteFile(filepath.Join(repository, "file1"), content, 0600); err != nil {
++			t.Fatalf("Failed to change the file1: %v", err)
++		}
++	}
++	for revision := 1; revision <= revisions; revision++ {
++		if revision > 1 {
++			change(int64(100 + revision))
++		}
++		fixture.expectSuccess(fixture.backup(repository, false), revision)
++	}
++	if otherID {
++		change(200)
++		other := CreateBackupManager("host2", fixture.cancel, repository, "", "", "", false)
++		if other == nil || !other.SetupSnapshotCache("default") {
++			t.Fatalf("Failed to create the backup manager of host2")
++		}
++		outcome := runWorkerErrorsOperation(t, func() bool {
++			return other.Backup(repository, false, 2, "test", false, false, 0, false, 65536, 1024)
++		})
++		if outcome.recovered != nil || !outcome.result {
++			t.Fatalf("The backup of host2 failed: %#v", outcome.recovered)
++		}
++	}
++	clearSnapshotCache(t, fixture.manager)
++	return &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel}
++}
++
++// TestSnapshotManager_CheckSnapshots_Cancel checks the cancellation of CheckSnapshots.
++// The cases are added to the skeleton generated by gotests: the fields come from the
++// snapshot manager of the fixture, which has no chunk operator.
++func TestSnapshotManager_CheckSnapshots_Cancel(t *testing.T) {
++	type fields struct {
++		config                 *Config
++		storage                Storage
++		fileChunk              *Chunk
++		snapshotCache          *FileStorage
++		chunkOperator          *ChunkOperator
++		numberOfCorruptedFiles int64
++	}
++	type args struct {
++		snapshotID       string
++		revisionsToCheck []int
++		tag              string
++		showStatistics   bool
++		showTabular      bool
++		checkFiles       bool
++		checkChunks      bool
++		searchFossils    bool
++		resurrect        bool
++		rewriteChunks    bool
++		threads          int
++		allowFailures    bool
++	}
++	// The check of the chunks of the revision 1 of host1 and of the revisions of all the
++	// snapshot ids, both with 2 threads
++	chunks := args{snapshotID: "host1", revisionsToCheck: []int{1}, checkChunks: true,
++		threads: 2}
++	all := args{threads: 2}
++	// prepareBeforeStart requests the cancellation before the check
++	prepareBeforeStart := func(t *testing.T) *cancelRun {
++		fixture := newCancelFixture(t, 2)
++		fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++		run := &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel}
++		run.storage = storageFiles(t, run.fixture.raw)
++		run.armDownloads(nil, 0, false)
++		run.recorder = recordProgress(t)
++		return run
++	}
++	checkBeforeStart := func(t *testing.T, run *cancelRun) {
++		run.expectNoEvents(t)
++		run.expectNoDownloads(t)
++		run.expectStorageUnchanged(t)
++		if cacheFileExists(t, run.fixture.manager, "verified_chunks") {
++			t.Fatalf("The list of verified chunks has been saved")
++		}
++	}
++	// prepareVerify backs up a file of 16 chunks and requests the cancellation at the
++	// second verified chunk
++	prepareVerify := func(t *testing.T) *cancelRun {
++		fixture := newCancelFixture(t, 16)
++		fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++		run := &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel}
++		run.armDownloads(nil, 0, false)
++		run.recorder = cancelAtStep(t, 2)
++		return run
++	}
++	// verifyRecords returns the number of the records in the list of verified chunks
++	// after the canceled check
++	verifyRecords := func(t *testing.T, run *cancelRun) int {
++		expectNoEnd(t, run.recorder.take(), ProgressOperationCheck)
++		records := verifiedChunkCount(t, run.fixture.manager)
++		if records < 2 {
++			t.Fatalf("The list of verified chunks has %d records", records)
++		}
++		return records
++	}
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		want      bool
++		wantLogID string // The log id of the Exception that the check panics with
++		prepare   func(t *testing.T) *cancelRun
++		check     func(t *testing.T, run *cancelRun)
++	}{
++		{
++			name: "BeforeStartLog", args: chunks, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareBeforeStart(t)
++				RequestCancel()
++				return run
++			},
++			check: checkBeforeStart,
++		},
++		{
++			// The log function returns, and the cancellation is raised after it; the check
++			// logs its parameters at DEBUG after a check of the request that comes later
++			name: "BeforeStartLogFunction", args: chunks, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareBeforeStart(t)
++				SetLoggingLevel(DEBUG)
++				run.logs = collectWorkerErrorsLogs()
++				RequestCancel()
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				checkBeforeStart(t, run)
++				run.expectOnlyCancelLog(t)
++			},
++		},
++		{
++			name: "VerifyLog", args: chunks, wantLogID: CancelLogID,
++			prepare: prepareVerify,
++			check:   func(t *testing.T, run *cancelRun) { verifyRecords(t, run) },
++		},
++		{
++			// The check that follows verifies only the chunks missing from the list
++			name: "VerifyLogFunction", args: chunks, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareVerify(t)
++				SetLoggingLevel(INFO)
++				run.logs = logVerifyStart(run.cancel)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				records := verifyRecords(t, run)
++				var total int
++				for _, line := range strings.Split(run.logs.String(), "\n") {
++					if _, err := fmt.Sscanf(line, "INFO SNAPSHOT_VERIFY Verifying %d chunks",
++						&total); err == nil {
++						break
++					}
++				}
++				if total <= 2+2*2+1 || records >= total {
++					t.Fatalf("The check verified %d of %d chunks", records, total)
++				}
++				entry := "ERROR " + CancelLogID + " The operation has been canceled"
++				if got := strings.Count(run.logs.String(), entry); got != 1 {
++					t.Fatalf("The log function has received %q %d times instead of once:\n%s",
++						entry, got, run.logs)
++				}
++				run.armDownloads(func(filePath string) bool {
++					return strings.HasPrefix(filePath, "chunks/")
++				}, 0, false)
++				outcome := run.rerun()
++				if outcome.recovered != nil || !outcome.result {
++					t.Fatalf("The second check failed: %#v (result %t)", outcome.recovered,
++						outcome.result)
++				}
++				if got := run.cancel.downloadCalls.Load(); got != int64(total-records) {
++					t.Fatalf("The second check has downloaded %d chunks instead of %d - %d",
++						got, total, records)
++				}
++				verifying := fmt.Sprintf("SNAPSHOT_VERIFY Verifying %d chunks", total)
++				skipped := fmt.Sprintf("SNAPSHOT_VERIFY Skipped %d chunks that have already "+
++					"been verified before", records)
++				logs := run.logs.String()
++				if got := strings.Count(logs, entry); got != 1 {
++					t.Fatalf("The log function has received %q %d times instead of once:\n%s",
++						entry, got, logs)
++				}
++				if strings.Count(logs, verifying) != 2 || strings.Count(logs, skipped) != 1 {
++					t.Fatalf("The log has no %q twice and %q once:\n%s", verifying, skipped, logs)
++				}
++			},
++		},
++		{
++			// The download of the chunk sequence of the revision 2 requests the
++			// cancellation, which the check sees before the revision 3 of the same id
++			name: "Revisions", args: all, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareCancelRevisions(t, 3, true)
++				second := run.fixture.revisionSnapshot(2)
++				third := run.fixture.revisionSnapshot(3)
++				run.path = run.fixture.chunkPath(third.ChunkSequence[0], true)
++				run.armDownloads(matchPaths(run.fixture.chunkPath(second.ChunkSequence[0], true)),
++					1, false)
++				run.recorder = recordProgress(t)
++				clearSnapshotCache(t, run.fixture.manager)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectNoEvents(t)
++				if run.cancel.downloaded(run.path) {
++					t.Fatalf("The chunk sequence of the revision 3 has been downloaded")
++				}
++			},
++		},
++		{
++			// The download of the file of the revision 2 requests the cancellation, which the
++			// check sees before it downloads the file of the revision 3
++			name: "RevisionFiles", args: all, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareCancelRevisions(t, 3, false)
++				if run.cancel.IsCacheNeeded() {
++					t.Fatalf("The storage needs a cache, which would serve the revision files")
++				}
++				run.armDownloads(matchPaths("snapshots/host1/2"), 1, false)
++				run.recorder = recordProgress(t)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectNoEvents(t)
++				if run.cancel.downloaded("snapshots/host1/3") {
++					t.Fatalf("The file of the revision 3 has been downloaded")
++				}
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			resetCancelAfter(t)
++			baseline := runtime.NumGoroutine()
++			run := tt.prepare(t)
++			run.baseline = baseline
++			source := run.fixture.manager.SnapshotManager
++			tt.fields = fields{
++				config:                 source.config,
++				storage:                source.storage,
++				fileChunk:              source.fileChunk,
++				snapshotCache:          source.snapshotCache,
++				chunkOperator:          nil,
++				numberOfCorruptedFiles: 0,
++			}
++			manager := &SnapshotManager{
++				config:                 tt.fields.config,
++				storage:                tt.fields.storage,
++				fileChunk:              tt.fields.fileChunk,
++				snapshotCache:          tt.fields.snapshotCache,
++				chunkOperator:          tt.fields.chunkOperator,
++				numberOfCorruptedFiles: tt.fields.numberOfCorruptedFiles,
++			}
++			run.rerun = func() workerErrorsOutcome {
++				return runWorkerErrorsOperation(t, func() bool {
++					return manager.CheckSnapshots(tt.args.snapshotID, tt.args.revisionsToCheck,
++						tt.args.tag, tt.args.showStatistics, tt.args.showTabular,
++						tt.args.checkFiles, tt.args.checkChunks, tt.args.searchFossils,
++						tt.args.resurrect, tt.args.rewriteChunks, tt.args.threads,
++						tt.args.allowFailures)
++				})
++			}
++			outcome := run.rerun()
++			// The request stays set after the cancellation; it is cleared before the next
++			// operation of the check
++			ResetCancel()
++			if tt.wantLogID != "" {
++				expectWorkerErrorsException(t, outcome, tt.wantLogID)
++			} else if outcome.recovered != nil {
++				t.Fatalf("SnapshotManager.CheckSnapshots() panicked with %#v", outcome.recovered)
++			}
++			if tt.wantLogID == "" && outcome.result != tt.want {
++				t.Errorf("SnapshotManager.CheckSnapshots() = %v, want %v", outcome.result, tt.want)
++			}
++			waitForWorkerErrorsGoroutines(t, run.baseline)
++			tt.check(t, run)
++		})
++	}
++}
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
---- a/src/duplicacy_progress.go	2026-11-10 07:27:41.641165443 +0000
-+++ b/src/duplicacy_progress.go	2026-11-10 08:06:22.146774398 +0000
+--- a/src/duplicacy_progress.go	2026-11-10 09:11:16.541255296 +0000
++++ b/src/duplicacy_progress.go	2026-11-10 09:11:16.605256860 +0000
 @@ -97,13 +97,14 @@
  // goroutines and the goroutine that runs the operation.  Set it before an operation and
  // don't change it while the operation runs.  It must return without waiting for the
@@ -947,3 +1906,65 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
  // by the operation in the goroutine that called it, like any other panic of the
  // operation; the worker goroutines may still call ProgressFunction after the panic
  // until the operation returns, but not after that.
+diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
+--- a/src/duplicacy_snapshotmanager.go	2026-11-10 09:11:16.545255394 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-10 10:59:21.753119864 +0000
+@@ -873,6 +873,11 @@
+ func (manager *SnapshotManager) CheckSnapshots(snapshotID string, revisionsToCheck []int, tag string, showStatistics bool, showTabular bool,
+ 	checkFiles bool, checkChunks, searchFossils bool, resurrect bool, rewriteChunks bool, threads int, allowFailures bool) bool {
+ 
++	// A cancellation requested before the check is raised before anything is changed
++	if IsCancelRequested() {
++		raiseCancel()
++	}
++
+ 	// Failed downloads are raised in the goroutine waiting for them
+ 	defer manager.catchOperatorDownloads(resurrect, rewriteChunks, threads, allowFailures)()
+ 	manager.numberOfCorruptedFiles = 0
+@@ -946,6 +951,11 @@
+ 		}
+ 
+ 		for _, revision := range revisions {
++			// Checked before each revision file is downloaded; a failure already recorded by the operator is
++			// raised instead
++			if IsCancelRequested() {
++				raiseCancelAfterFailures(manager.chunkOperator)
++			}
+ 			snapshot := manager.DownloadSnapshot(snapshotID, revision)
+ 			if tag != "" && snapshot.Tag != tag {
+ 				continue
+@@ -984,6 +994,11 @@
+ 	for snapshotID = range snapshotMap {
+ 
+ 		for _, snapshot := range snapshotMap[snapshotID] {
++			// Checked before each revision, whose metadata is downloaded below; with checkFiles a revision is
++			// verified as a whole, so the check stops only between revisions
++			if IsCancelRequested() {
++				raiseCancelAfterFailures(manager.chunkOperator)
++			}
+ 
+ 			if checkFiles {
+ 				manager.DownloadSnapshotSequences(snapshot)
+@@ -1235,7 +1250,22 @@
+ 		} ()
+ 	}
+ 
++	// cancelVerify stops the verification on a cancellation.  The channel has no deferred close, so it is closed
++	// here and the verifying goroutines finish the chunks already queued; the deferred saveVerifiedChunks saves
++	// only the intact ones, so that the next check skips only them.  A failure recorded by a verifying goroutine
++	// is raised by WaitForCompletion instead of the cancellation.  This is the only wait for workers on a
++	// cancellation path
++	cancelVerify := func() {
++		close(chunkChannel)
++		wg.Wait()
++		manager.chunkOperator.WaitForCompletion()
++		raiseCancel()
++	}
++
+ 	for chunkIndex := range chunkHashes {
++		if IsCancelRequested() {
++			cancelVerify()
++		}
+ 		chunkChannel <- chunkIndex
+ 	}
+ 
