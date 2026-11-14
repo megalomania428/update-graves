@@ -1,15 +1,19 @@
+diff -ruN -x .git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
+--- a/duplicacy/duplicacy_main.go	2026-11-09 15:52:55.252170715 +0000
++++ b/duplicacy/duplicacy_main.go	2026-11-09 16:57:31.407719849 +0000
+@@ -2250,7 +2250,7 @@
+ 		},
+ 		cli.StringSliceFlag{
+ 			Name:  "suppress, s",
+-			Usage: "suppress logs with the specified id",
++			Usage: "suppress logs with the specified id; errors are always printed",
+ 			Argument: "<id>",
+ 		},
+ 		cli.BoolFlag{
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-06 08:39:24.766336264 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-06 14:02:20.044767094 +0000
-@@ -41,6 +41,7 @@
- 	excludeByAttribute bool // don't backup file based on file attribute
- 
- 	cachePath string
-+	snapshotUploadFailed bool // Set by UploadSnapshot unless the snapshot file has been uploaded
- }
- 
- func (manager *BackupManager) SetDryRun(dryRun bool) {
-@@ -131,6 +132,9 @@
+--- a/src/duplicacy_backupmanager.go	2026-11-09 15:52:54.852159960 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-09 17:42:11.692486475 +0000
+@@ -131,6 +131,9 @@
  func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
  	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
  
@@ -19,12 +23,10 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	var err error
  	top, err = filepath.Abs(top)
  	if err != nil {
-@@ -230,6 +234,17 @@
+@@ -230,6 +233,15 @@
  	localListingChannel := make(chan *Entry)
  	remoteListingChannel := make(chan *Entry)
  	chunkOperator := CreateChunkOperator(manager.config, manager.storage, manager.snapshotCache, showStatistics, false, threads, false)
-+	chunkOperator.catchUploadFailures = true
-+	chunkOperator.catchDownloadFailures = true
 +	// The operator is stopped without raising its error so that a panic being propagated is not replaced
 +	defer chunkOperator.stopWorkers()
 +
@@ -37,7 +39,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	var skippedDirectories []string
  	var skippedFiles []string
-@@ -237,32 +252,90 @@
+@@ -237,32 +249,90 @@
  	LOG_INFO("BACKUP_INDEXING", "Indexing %s", top)
  	go func() {
  		// List local files
@@ -134,7 +136,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	// Create the local file list
  	localEntryList, err := CreateEntryList(manager.snapshotID, manager.cachePath, maximumInMemoryEntries)
  	if err != nil {
-@@ -275,7 +348,7 @@
+@@ -275,7 +345,7 @@
  	var remoteEntry *Entry
  	remoteListingOK := true
  	for {
@@ -143,7 +145,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		if localEntry == nil {
  			break
  		}
-@@ -289,7 +362,7 @@
+@@ -289,7 +359,7 @@
  				compareResult = localEntry.Compare(remoteEntry)
  			} else {
  				if remoteListingOK {
@@ -152,7 +154,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  				}
  				if !remoteListingOK {
  					compareResult = -1
-@@ -347,6 +420,10 @@
+@@ -347,6 +417,10 @@
  		localEntryList.AddEntry(localEntry)
  	}
  
@@ -163,7 +165,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	if enumOnly {
  		return true
  	}
-@@ -479,11 +556,14 @@
+@@ -479,11 +553,14 @@
  			skippedFiles = append(skippedFiles, entry.Path)
  			continue
  		}
@@ -180,27 +182,10 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	}
  
-@@ -528,6 +608,15 @@
- 		totalUploadedMetadataChunkLength, totalUploadedMetadataChunkBytes :=
- 		manager.UploadSnapshot(chunkOperator, top, localSnapshot, localEntryList, chunkCache, metadataChunkSize)
- 
-+	if manager.snapshotUploadFailed {
-+		// UploadSnapshot has logged an error hidden by SuppressLog; a failed upload of
-+		// the metadata chunks still in flight takes precedence
-+		chunkOperator.WaitForCompletion()
-+		// The backup is over, so an error of a later operation must not save its incomplete snapshot
-+		RunAtError = func() {}
-+		return false
-+	}
-+
- 	if showStatistics && !RunInBackground {
- 		for _, entry := range localEntryList.ModifiedEntries {
- 			if entry.Size < 0 {
-@@ -680,30 +769,108 @@
+@@ -680,30 +757,107 @@
  	localListingChannel := make(chan *Entry)
  	remoteListingChannel := make(chan *Entry)
  	chunkOperator := CreateChunkOperator(manager.config, manager.storage, manager.snapshotCache, showStatistics, false, threads, allowFailures)
-+	chunkOperator.catchDownloadFailures = true
 +	// The operator is stopped without raising its error so that a panic being propagated is not replaced
 +	defer chunkOperator.stopWorkers()
 +	// The sequences of the snapshot are downloaded through the operator of the snapshot manager
@@ -311,7 +296,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		if len(patterns) > 0 && !MatchPath(remoteEntry.Path, patterns) {
  			continue
-@@ -714,7 +881,7 @@
+@@ -714,7 +868,7 @@
  
  		for {
  			if localEntry == nil && localListingOK {
@@ -320,7 +305,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			}
  			if localEntry == nil {
  				compareResult = 1
-@@ -793,12 +960,16 @@
+@@ -793,12 +947,16 @@
  	}
  
  	for localListingOK {
@@ -338,7 +323,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	LOG_INFO("RESTORE_START", "Restoring %s to revision %d", top, revision)
  
  	// The same chunk may appear in the chunk list multiple times.  This is to find the first
-@@ -823,6 +994,8 @@
+@@ -823,6 +981,8 @@
  	sort.Sort(ByChunk(fileEntries))
  
  	chunkDownloader := CreateChunkDownloader(chunkOperator)
@@ -347,18 +332,18 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	chunkDownloader.AddFiles(remoteSnapshot, fileEntries)
  
-@@ -923,6 +1096,10 @@
+@@ -923,6 +1083,10 @@
  	}
  
  	if failedFileCount > 0 {
-+		// A failed download recorded by the operator, such as of a chunk prefetched for a
-+		// file that is not restored, is raised instead of the result
++		// A panic recorded by chunkDownloader or chunkOperator is raised instead of the
++		// result.  Download errors are only warnings here, as failures are allowed.
 +		chunkDownloader.Stop()
 +		chunkOperator.Stop()
  		return failedFileCount
  	}
  
-@@ -941,6 +1118,8 @@
+@@ -941,6 +1105,8 @@
  
  	LOG_INFO("RESTORE_STATS", "Total running time: %s", PrettyTime(runningTime))
  
@@ -367,30 +352,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	chunkOperator.Stop()
  
  	return 0
-@@ -1002,6 +1181,9 @@
- 	numberOfNewMetadataChunks int, totalUploadedMetadataChunkSize int64,
- 	totalUploadedMetadataChunkBytes int64) {
- 
-+	// Cleared only after the snapshot file has been uploaded, so every error return below fails the backup
-+	manager.snapshotUploadFailed = true
-+
- 	uploadCompletionFunc := func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int) {
- 		if inCache {
- 			LOG_DEBUG("CHUNK_CACHE", "Skipped metadata chunk %s in cache", chunk.GetID())
-@@ -1135,8 +1317,11 @@
- 
- 	path := fmt.Sprintf("snapshots/%s/%d", manager.snapshotID, snapshot.Revision)
- 	if !manager.config.dryRun {
--		manager.SnapshotManager.UploadFile(path, path, description)
-+		if !manager.SnapshotManager.UploadFile(path, path, description) {
-+			return totalMetadataChunkSize, numberOfNewMetadataChunks, totalUploadedMetadataChunkSize, totalUploadedMetadataChunkBytes
-+		}
- 	}
-+	manager.snapshotUploadFailed = false
- 	return totalMetadataChunkSize, numberOfNewMetadataChunks, totalUploadedMetadataChunkSize, totalUploadedMetadataChunkBytes
- }
- 
-@@ -1558,6 +1743,9 @@
+@@ -1558,6 +1724,9 @@
  func (manager *BackupManager) CopySnapshots(otherManager *BackupManager, snapshotID string,
  	revisionsToBeCopied []int, uploadingThreads int, downloadingThreads int) bool {
  
@@ -400,12 +362,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	if !manager.config.IsCompatibleWith(otherManager.config) {
  		LOG_ERROR("CONFIG_INCOMPATIBLE", "Two storages are not compatible for the copy operation")
  		return false
-@@ -1726,16 +1914,29 @@
- 	LOG_INFO("SNAPSHOT_COPY", "Chunks to copy: %d, to skip: %d, total: %d", len(chunksToCopy), len(chunks) - len(chunksToCopy), len(chunks))
- 
- 	chunkDownloader := CreateChunkOperator(manager.config, manager.storage, nil, false, false, downloadingThreads, false)
-+	chunkDownloader.catchDownloadFailures = true
- 
+@@ -1730,12 +1899,23 @@
  	var uploadedBytes int64
  	startTime := time.Now()
  
@@ -413,7 +370,6 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
 +	// Increased by the uploading goroutines
 +	var copiedChunks int64
  	chunkUploader := CreateChunkOperator(otherManager.config, otherManager.storage, nil, false, false, uploadingThreads, false)
-+	chunkUploader.catchUploadFailures = true
 +	// The operators keep the first failure of either, so that it is raised whichever operator raises first, and
 +	// neither runs its queued tasks after a task of the other has failed
 +	chunkUploader.failures = chunkDownloader.failures
@@ -432,7 +388,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			action = "Copied"
  		}
  
-@@ -1752,6 +1953,10 @@
+@@ -1752,6 +1932,10 @@
  	}
  
  	for i, chunkHash := range chunksToCopy {
@@ -443,7 +399,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		chunkID := manager.config.GetChunkIDFromHash(chunkHash)
  		newChunkID := otherManager.config.GetChunkIDFromHash(chunkHash)
  
-@@ -1770,7 +1975,9 @@
+@@ -1770,7 +1954,9 @@
  	chunkDownloader.Stop()
  	chunkUploader.Stop()
  
@@ -454,20 +410,9 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	for _, snapshot := range snapshots {
  		if revisionMap[snapshot.ID][snapshot.Revision] == false {
-@@ -1779,7 +1986,9 @@
- 		otherManager.storage.CreateDirectory(0, fmt.Sprintf("snapshots/%s", snapshot.ID))
- 		description, _ := snapshot.MarshalJSON()
- 		path := fmt.Sprintf("snapshots/%s/%d", snapshot.ID, snapshot.Revision)
--		otherManager.SnapshotManager.UploadFile(path, path, description)
-+		if !otherManager.SnapshotManager.UploadFile(path, path, description) {
-+			return false
-+		}
- 		LOG_INFO("SNAPSHOT_COPY", "Copied snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
- 	}
- 
 diff -ruN -x .git a/src/duplicacy_benchmark.go b/src/duplicacy_benchmark.go
---- a/src/duplicacy_benchmark.go	2026-11-06 08:39:24.766336264 +0000
-+++ b/src/duplicacy_benchmark.go	2026-11-06 08:39:25.186349308 +0000
+--- a/src/duplicacy_benchmark.go	2026-11-09 15:52:54.852159960 +0000
++++ b/src/duplicacy_benchmark.go	2026-11-09 16:57:47.891987082 +0000
 @@ -14,6 +14,7 @@
  	"math/rand"
  	"os"
@@ -543,29 +488,9 @@ diff -ruN -x .git a/src/duplicacy_benchmark.go b/src/duplicacy_benchmark.go
  }
  
  func Benchmark(localDirectory string, storage Storage, fileSize int64, chunkSize int, chunkCount int, uploadThreads int, downloadThreads int) bool {
-@@ -188,8 +215,7 @@
- 	benchmarkRun(uploadThreads, chunkCount, func(threadIndex int, chunkIndex int) {
- 		err := storage.UploadFile(threadIndex, fmt.Sprintf("benchmark/chunk%d", chunkIndex), chunks[chunkIndex])
- 		if err != nil {
--			LOG_ERROR("BENCHMARK_UPLOAD", "Failed to upload the chunk: %v", err)
--			return
-+			logErrorAndPanic("BENCHMARK_UPLOAD", "Failed to upload the chunk: %v", err)
- 		}
- 	})
- 
-@@ -206,8 +232,7 @@
- 		chunk.Reset(false)
- 		err := storage.DownloadFile(threadIndex, fmt.Sprintf("benchmark/chunk%d", chunkIndex), chunk)
- 		if err != nil {
--			LOG_ERROR("BENCHMARK_DOWNLOAD", "Failed to download the chunk: %v", err)
--			return
-+			logErrorAndPanic("BENCHMARK_DOWNLOAD", "Failed to download the chunk: %v", err)
- 		}
- 
- 		hashInBytes := sha256.Sum256(chunk.GetBytes())
 diff -ruN -x .git a/src/duplicacy_chunkdownloader.go b/src/duplicacy_chunkdownloader.go
---- a/src/duplicacy_chunkdownloader.go	2026-11-06 08:39:24.766336264 +0000
-+++ b/src/duplicacy_chunkdownloader.go	2026-11-06 08:39:25.186349308 +0000
+--- a/src/duplicacy_chunkdownloader.go	2026-11-09 15:52:54.852159960 +0000
++++ b/src/duplicacy_chunkdownloader.go	2026-11-09 15:52:55.272171253 +0000
 @@ -5,6 +5,7 @@
  package duplicacy
  
@@ -693,20 +618,17 @@ diff -ruN -x .git a/src/duplicacy_chunkdownloader.go b/src/duplicacy_chunkdownlo
  			downloader.numberOfDownloadingChunks++
  			downloader.numberOfActiveChunks++
 diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator.go
---- a/src/duplicacy_chunkoperator.go	2026-11-06 08:39:24.766336264 +0000
-+++ b/src/duplicacy_chunkoperator.go	2026-11-06 14:01:49.303966774 +0000
-@@ -61,6 +61,10 @@
+--- a/src/duplicacy_chunkoperator.go	2026-11-09 15:52:54.852159960 +0000
++++ b/src/duplicacy_chunkoperator.go	2026-11-09 16:57:39.883856835 +0000
+@@ -61,6 +61,7 @@
  	rewriteChunks bool           // Whether to rewrite corrupted chunks when erasure coding is enabled
  
  	UploadCompletionFunc func(chunk *Chunk, chunkIndex int, inCache bool, chunkSize int, uploadSize int)
 +	failures *workerErrors        // The first panic of the tasks, raised again in the calling goroutine
-+	catchUploadFailures bool      // Raise upload errors even if suppressed; set by Backup
-+	// Raise download errors even if suppressed; set by the operations waiting for them
-+	catchDownloadFailures bool
  }
  
  // CreateChunkOperator creates a new ChunkOperator.
-@@ -81,16 +85,16 @@
+@@ -81,16 +82,16 @@
  		startTime: time.Now().Unix(),
  		allowFailures: allowFailures,
  		rewriteChunks: rewriteChunks,
@@ -725,7 +647,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  				case <-operator.stopChannel:
  					return
  				}
-@@ -101,7 +105,14 @@
+@@ -101,7 +102,14 @@
  	return operator
  }
  
@@ -740,7 +662,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  	if atomic.LoadInt64(&operator.numberOfActiveTasks) < 0 {
  		return
  	}
-@@ -117,13 +128,36 @@
+@@ -117,13 +125,36 @@
  	atomic.AddInt64(&operator.numberOfActiveTasks, int64(-1))
  }
  
@@ -778,7 +700,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  func (operator *ChunkOperator) AddTask(operation int, chunkID string, chunkHash string, filePath string, chunkIndex int, chunk *Chunk, isMetadata bool, skipCache bool, completionFunc func(*Chunk, int))  {
  
  	task := ChunkTask {
-@@ -138,8 +172,9 @@
+@@ -138,8 +169,9 @@
  		completionFunc: completionFunc,
  	}
  
@@ -789,7 +711,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  
  	return
  }
-@@ -156,12 +191,20 @@
+@@ -156,12 +188,20 @@
  
  func (operator *ChunkOperator) download(chunkHash string, chunkIndex int, isMetadata bool, skipCache bool) *Chunk {
  	chunkID := operator.config.GetChunkIDFromHash(chunkHash)
@@ -812,7 +734,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  }
  
  func (operator *ChunkOperator) DownloadAsync(chunkHash string, chunkIndex int, isMetadata bool, completionFunc func(*Chunk, int)) {
-@@ -170,6 +213,8 @@
+@@ -170,6 +210,8 @@
  }
  
  func (operator *ChunkOperator) Upload(chunk *Chunk, chunkIndex int, isMetadata bool) {
@@ -821,7 +743,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  	chunkHash := chunk.GetHash()
  	chunkID := operator.config.GetChunkIDFromHash(chunkHash)
  	operator.AddTask(ChunkOperationUpload, chunkID, chunkHash, "", chunkIndex, chunk, isMetadata, false, nil)
-@@ -193,11 +238,44 @@
+@@ -193,11 +235,23 @@
  	operator.AddTask(ChunkOperationResurrect, chunkID, "", filePath, 0, nil, IsMetadataChunkPath(filePath), false, nil)
  }
  
@@ -843,91 +765,13 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
 +	}
 +	operator.Run(threadIndex, task)
 +}
-+
-+// logUploadError logs an upload error; if the operator catches upload failures, the error is raised as an Exception
-+// even when SuppressLog hides it.
-+func (operator *ChunkOperator) logUploadError(logID string, format string, v ...interface{}) {
-+	if operator.catchUploadFailures {
-+		logErrorAndPanic(logID, format, v...)
-+	} else {
-+		LOG_ERROR(logID, format, v...)
-+	}
-+}
-+
-+// logDownloadError logs a failed download as a warning if failures are allowed and as an error otherwise; if the
-+// operator catches download failures, the error is raised as an Exception even when
-+// SuppressLog hides it.
-+func (operator *ChunkOperator) logDownloadError(logID string, format string, v ...interface{}) {
-+	if !operator.allowFailures && operator.catchDownloadFailures {
-+		logErrorAndPanic(logID, format, v...)
-+	} else {
-+		LOG_WERROR(operator.allowFailures, logID, format, v...)
-+	}
-+}
  
 +// Run runs the task; the task is counted as active and its panic is recorded by runTask.
 +func (operator *ChunkOperator) Run(threadIndex int, task ChunkTask) {
  	if task.operation == ChunkOperationDownload {
  		operator.DownloadChunk(threadIndex, task)
  		return
-@@ -211,7 +289,7 @@
- 		if task.filePath == "" {
- 			filePath, exist, _, err := operator.storage.FindChunk(threadIndex, task.chunkID, false, task.isMetadata)
- 			if err != nil {
--				LOG_ERROR("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
-+				logErrorAndPanic("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
- 				return
- 			} else if !exist {
- 				if task.operation == ChunkOperationDelete {
-@@ -226,7 +304,7 @@
- 					operator.fossils = append(operator.fossils, fossilPath)
- 					operator.collectionLock.Unlock()
- 				} else {
--					LOG_ERROR("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
-+					logErrorAndPanic("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
- 				}
- 				return
- 			}
-@@ -237,9 +315,9 @@
- 	if task.operation == ChunkOperationFind {
- 		_, exist, _, err := operator.storage.FindChunk(threadIndex, task.chunkID, false, task.isMetadata)
- 		if err != nil {
--			LOG_ERROR("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
-+			logErrorAndPanic("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
- 		} else if !exist {
--			LOG_ERROR("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
-+			logErrorAndPanic("CHUNK_FIND", "Chunk %s does not exist in the storage", task.chunkID)
- 		} else {
- 			LOG_DEBUG("CHUNK_FIND", "Chunk %s exists in the storage", task.chunkID)
- 		}
-@@ -269,7 +347,7 @@
- 				operator.fossils = append(operator.fossils, fossilPath)
- 				operator.collectionLock.Unlock()
- 			} else {
--				LOG_ERROR("CHUNK_DELETE", "Failed to fossilize the chunk %s: %v", task.chunkID, err)
-+				logErrorAndPanic("CHUNK_DELETE", "Failed to fossilize the chunk %s: %v", task.chunkID, err)
- 			}
- 		} else {
- 			LOG_TRACE("CHUNK_FOSSILIZE", "The chunk %s has been marked as a fossil", task.chunkID)
-@@ -280,7 +358,7 @@
- 	} else if task.operation == ChunkOperationResurrect {
- 		chunkPath, exist, _, err := operator.storage.FindChunk(threadIndex, task.chunkID, false, task.isMetadata)
- 		if err != nil {
--			LOG_ERROR("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
-+			logErrorAndPanic("CHUNK_FIND", "Failed to locate the path for the chunk %s: %v", task.chunkID, err)
- 		}
- 
- 		if exist {
-@@ -289,7 +367,7 @@
- 		} else {
- 			err := operator.storage.MoveFile(threadIndex, task.filePath, chunkPath)
- 			if err != nil {
--				LOG_ERROR("FOSSIL_RESURRECT", "Failed to resurrect the chunk %s from the fossil %s: %v",
-+				logErrorAndPanic("FOSSIL_RESURRECT", "Failed to resurrect the chunk %s from the fossil %s: %v",
- 					task.chunkID, task.filePath, err)
- 			} else {
- 				LOG_INFO("FOSSIL_RESURRECT", "The chunk %s has been resurrected", task.filePath)
-@@ -355,6 +433,8 @@
+@@ -355,6 +409,8 @@
  		if operator.allowFailures {
  			chunk.isBroken = true
  			task.completionFunc(chunk, task.chunkIndex)
@@ -936,92 +780,9 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  		}
  	}
  
-@@ -372,7 +452,7 @@
- 		chunkPath, exist, _, err = operator.storage.FindChunk(threadIndex, chunkID, false, task.isMetadata)
- 		if err != nil {
- 			completeFailedChunk()
--			LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
-+			operator.logDownloadError("DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
- 			return
- 		}
- 
-@@ -383,7 +463,7 @@
- 			fossilPath, exist, _, err = operator.storage.FindChunk(threadIndex, chunkID, true, task.isMetadata)
- 			if err != nil {
- 				completeFailedChunk()
--				LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
-+				operator.logDownloadError("DOWNLOAD_CHUNK", "Failed to find the chunk %s: %v", chunkID, err)
- 				return
- 			}
- 
-@@ -408,9 +488,9 @@
- 				// A chunk is not found.  This is a serious error and hopefully it will never happen.
- 				completeFailedChunk()
- 				if err != nil {
--					LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Chunk %s can't be found: %v", chunkID, err)
-+					operator.logDownloadError("DOWNLOAD_CHUNK", "Chunk %s can't be found: %v", chunkID, err)
- 				} else {
--					LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Chunk %s can't be found", chunkID)
-+					operator.logDownloadError("DOWNLOAD_CHUNK", "Chunk %s can't be found", chunkID)
- 				}
- 				return
- 			}
-@@ -430,7 +510,7 @@
- 				continue
- 			} else {
- 				completeFailedChunk()
--				LOG_WERROR(operator.allowFailures, "DOWNLOAD_CHUNK", "Failed to download the chunk %s: %v", chunkID, err)
-+				operator.logDownloadError("DOWNLOAD_CHUNK", "Failed to download the chunk %s: %v", chunkID, err)
- 				return
- 			}
- 		}
-@@ -445,7 +525,7 @@
- 				continue
- 			} else {
- 				completeFailedChunk()
--				LOG_WERROR(operator.allowFailures, "DOWNLOAD_DECRYPT", "Failed to decrypt the chunk %s: %v", chunkID, err)
-+				operator.logDownloadError("DOWNLOAD_DECRYPT", "Failed to decrypt the chunk %s: %v", chunkID, err)
- 				return
- 			}
- 		}
-@@ -459,7 +539,7 @@
- 				continue
- 			} else {
- 				completeFailedChunk()
--				LOG_WERROR(operator.allowFailures, "DOWNLOAD_CORRUPTED", "The chunk %s has a hash id of %s", chunkID, actualChunkID)
-+				operator.logDownloadError("DOWNLOAD_CORRUPTED", "The chunk %s has a hash id of %s", chunkID, actualChunkID)
- 				return
- 			}
- 		}
-@@ -559,7 +639,7 @@
- 	// This returns the path the chunk file should be at.
- 	chunkPath, exist, _, err := operator.storage.FindChunk(threadIndex, chunkID, false, task.isMetadata)
- 	if err != nil {
--		LOG_ERROR("UPLOAD_CHUNK", "Failed to find the path for the chunk %s: %v", chunkID, err)
-+		operator.logUploadError("UPLOAD_CHUNK", "Failed to find the path for the chunk %s: %v", chunkID, err)
- 		return false
- 	}
- 
-@@ -574,14 +654,14 @@
- 	// Encrypt the chunk only after we know that it must be uploaded.
- 	err = chunk.Encrypt(operator.config.ChunkKey, chunk.GetHash(), task.isMetadata)
- 	if err != nil {
--		LOG_ERROR("UPLOAD_CHUNK", "Failed to encrypt the chunk %s: %v", chunkID, err)
-+		operator.logUploadError("UPLOAD_CHUNK", "Failed to encrypt the chunk %s: %v", chunkID, err)
- 		return false
- 	}
- 
- 	if !operator.config.dryRun {
- 		err = operator.storage.UploadFile(threadIndex, chunkPath, chunk.GetBytes())
- 		if err != nil {
--			LOG_ERROR("UPLOAD_CHUNK", "Failed to upload the chunk %s: %v", chunkID, err)
-+			operator.logUploadError("UPLOAD_CHUNK", "Failed to upload the chunk %s: %v", chunkID, err)
- 			return false
- 		}
- 		LOG_DEBUG("CHUNK_UPLOAD", "Chunk %s has been uploaded", chunkID)
 diff -ruN -x .git a/src/duplicacy_config.go b/src/duplicacy_config.go
---- a/src/duplicacy_config.go	2026-11-06 08:39:24.766336264 +0000
-+++ b/src/duplicacy_config.go	2026-11-06 08:39:25.194349557 +0000
+--- a/src/duplicacy_config.go	2026-11-09 15:52:54.856160067 +0000
++++ b/src/duplicacy_config.go	2026-11-09 15:52:55.272171253 +0000
 @@ -85,8 +85,8 @@
  	FileKey []byte `json:"-"`
  
@@ -1034,8 +795,8 @@ diff -ruN -x .git a/src/duplicacy_config.go b/src/duplicacy_config.go
  	// for RSA encryption
  	rsaPrivateKey *rsa.PrivateKey
 diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
---- a/src/duplicacy_log.go	2026-11-06 08:39:24.770336388 +0000
-+++ b/src/duplicacy_log.go	2026-11-06 14:02:09.488492376 +0000
+--- a/src/duplicacy_log.go	2026-11-09 15:52:54.860160175 +0000
++++ b/src/duplicacy_log.go	2026-11-09 17:29:26.432061117 +0000
 @@ -25,6 +25,11 @@
  	ASSERT = 4
  )
@@ -1048,7 +809,22 @@ diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
  var LogFunction func(level int, logID string, message string)
  
  var printLogHeader = false
-@@ -138,6 +143,13 @@
+@@ -45,7 +50,13 @@
+ 	testingT = t
+ }
+ 
+-// Contains the ids of logs that won't be displayed
++// Contains the ids of logs that won't be displayed.  Only the entries up to WARN are
++// hidden: an entry of the level ERROR or above is never hidden by them and is raised as
++// an Exception.  With LogFunction or the testing logger set, an entry goes there instead
++// of the standard output and isn't hidden by the ids.  LogFunction gets an entry at any
++// logging level; the testing logger doesn't write an entry up to WARN below the logging
++// level, but reports an error at any level; on the standard output an entry below the
++// logging level isn't printed.  In all cases an error is raised.
+ var suppressedLogs map[string]bool = map[string]bool{}
+ 
+ func SuppressLog(id string) {
+@@ -138,6 +149,13 @@
  
  	if LogFunction != nil {
  		LogFunction(level, logID, message)
@@ -1062,9 +838,18 @@ diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
  		return
  	}
  
+@@ -161,7 +179,7 @@
+ 		defer logMutex.Unlock()
+ 
+ 		if level >= loggingLevel {
+-			if level <= ERROR && len(suppressedLogs) > 0 {
++			if level <= WARN && len(suppressedLogs) > 0 {
+ 				if _, found := suppressedLogs[logID]; found {
+ 					return
+ 				}
 diff -ruN -x .git a/src/duplicacy_sambastorage.go b/src/duplicacy_sambastorage.go
---- a/src/duplicacy_sambastorage.go	2026-11-06 08:39:24.774336513 +0000
-+++ b/src/duplicacy_sambastorage.go	2026-11-06 08:39:25.194349557 +0000
+--- a/src/duplicacy_sambastorage.go	2026-11-09 15:52:54.860160175 +0000
++++ b/src/duplicacy_sambastorage.go	2026-11-09 15:52:55.272171253 +0000
 @@ -13,6 +13,7 @@
  	"path"
  	"time"
@@ -1083,46 +868,35 @@ diff -ruN -x .git a/src/duplicacy_sambastorage.go b/src/duplicacy_sambastorage.g
  	if err != nil {
  		return nil, err
 diff -ruN -x .git a/src/duplicacy_snapshot.go b/src/duplicacy_snapshot.go
---- a/src/duplicacy_snapshot.go	2026-11-06 08:39:24.774336513 +0000
-+++ b/src/duplicacy_snapshot.go	2026-11-06 14:02:20.044767094 +0000
-@@ -63,9 +63,14 @@
+--- a/src/duplicacy_snapshot.go	2026-11-09 15:52:54.860160175 +0000
++++ b/src/duplicacy_snapshot.go	2026-11-09 16:57:52.784067037 +0000
+@@ -63,10 +63,14 @@
  	files *[]Entry
  }
  
-+// ListLocalFiles sends the entries under top to listingChannel and closes it; it returns false if top can't be listed
-+// and SuppressLog hides the error.
++// ListLocalFiles sends the entries under top to listingChannel and closes it.
  func (snapshot *Snapshot) ListLocalFiles(top string, nobackupFile string,
  								         filtersFile string, excludeByAttribute bool, listingChannel chan *Entry,
--								         skippedDirectories *[]string, skippedFiles *[]string) {
-+								         skippedDirectories *[]string, skippedFiles *[]string) bool {
-+
+ 								         skippedDirectories *[]string, skippedFiles *[]string) {
+ 
 +	// The channel is closed on every exit, including a panic and a failed listing of the top directory
 +	defer close(listingChannel)
- 
++
  	var patterns []string
  
-@@ -85,7 +90,7 @@
- 		if err != nil {
- 			if directory.Path == "" {
- 				LOG_ERROR("LIST_FAILURE", "Failed to list the repository root: %v", err)
--				return
-+				return false
- 			}
- 			LOG_WARN("LIST_FAILURE", "Failed to list subdirectory %s: %v", directory.Path, err)
- 			if skippedDirectories != nil {
-@@ -101,7 +106,7 @@
+ 	if filtersFile == "" {
+@@ -101,7 +105,6 @@
  		}
  
  	}
 -	close(listingChannel)
-+	return true
  }
  
  func (snapshot *Snapshot)ListRemoteFiles(config *Config, chunkOperator *ChunkOperator, entryOut func(*Entry) bool) {
 diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
---- a/src/duplicacy_snapshotmanager.go	2026-11-06 08:39:24.774336513 +0000
-+++ b/src/duplicacy_snapshotmanager.go	2026-11-06 14:02:20.040766990 +0000
-@@ -294,6 +294,92 @@
+--- a/src/duplicacy_snapshotmanager.go	2026-11-09 15:52:54.864160282 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-09 16:58:01.152204475 +0000
+@@ -294,6 +294,83 @@
  	}
  }
  
@@ -1151,18 +925,14 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +	return created
 +}
 +
-+// useOperator prepares the operator with the given number of threads, as prepareOperator does, and makes it raise
-+// the failed downloads of an operation in the goroutine waiting for them, as catchOperatorDownloads does.  The
-+// returned function must be deferred directly, since it recovers the panic of the operation: it waits for the tasks,
-+// stops the operator and removes it if it has been created here, or otherwise clears the recorded failures and, with
-+// clearFossils, the collected fossils, and restores the mode, so that an operator outliving the operation doesn't
-+// report them again.  Then it raises the panic of the operation again, or the first failure of the tasks if the
-+// operation has returned without a panic.
++// useOperator prepares the operator with the given number of threads, as prepareOperator does.  The returned function
++// must be deferred directly, since it recovers the panic of the operation: it waits for the tasks, stops the operator
++// and removes it if it has been created here, or otherwise clears the recorded failures and, with clearFossils, the
++// collected fossils, so that an operator outliving the operation doesn't report them again.  Then it raises the panic
++// of the operation again, or the first failure of the tasks if the operation has returned without a panic.
 +func (manager *SnapshotManager) useOperator(threads int, clearFossils bool) func() {
 +	created := manager.prepareOperator(false, false, threads, false)
 +	operator := manager.chunkOperator
-+	catching := operator.catchDownloadFailures
-+	operator.catchDownloadFailures = true
 +	return func() {
 +		value := recover()
 +		operator.waitForTasks()
@@ -1174,7 +944,6 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +			}
 +		} else {
 +			operator.resetFailures()
-+			operator.catchDownloadFailures = catching
 +			if clearFossils {
 +				operator.collectionLock.Lock()
 +				operator.fossils = nil
@@ -1188,17 +957,14 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +	}
 +}
 +
-+// catchOperatorDownloads prepares the operator with the given settings, as prepareOperator does, and makes it raise
-+// the failed downloads of an operation in the goroutine waiting for them.  The returned function must be deferred:
-+// it stops the operator without raising its error and removes it if it has been created here, or otherwise clears
-+// the recorded failures and restores the mode, so that an operator outliving the operation doesn't report them
-+// again.
++// catchOperatorDownloads prepares the operator with the given settings, as prepareOperator does, for an operation
++// whose failed downloads are raised in the goroutine waiting for them.  The returned function must be deferred: it
++// stops the operator without raising its error and removes it if it has been created here, or otherwise clears the
++// recorded failures, so that an operator outliving the operation doesn't report them again.
 +func (manager *SnapshotManager) catchOperatorDownloads(resurrect bool, rewriteChunks bool, threads int,
 +	allowFailures bool) func() {
 +	created := manager.prepareOperator(resurrect, rewriteChunks, threads, allowFailures)
 +	operator := manager.chunkOperator
-+	catching := operator.catchDownloadFailures
-+	operator.catchDownloadFailures = true
 +	return func() {
 +		if created {
 +			operator.stopWorkers()
@@ -1207,7 +973,6 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +			}
 +		} else {
 +			operator.resetFailures()
-+			operator.catchDownloadFailures = catching
 +		}
 +	}
 +}
@@ -1215,7 +980,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  // DownloadSequence returns the content represented by a sequence of chunks.
  func (manager *SnapshotManager) DownloadSequence(sequence []string) (content []byte) {
  	manager.CreateChunkOperator(false, false, 1, false)
-@@ -681,11 +767,7 @@
+@@ -681,11 +758,7 @@
  	LOG_DEBUG("LIST_PARAMETERS", "id: %s, revisions: %v, tag: %s, showFiles: %t, showChunks: %t",
  		snapshotID, revisionsToList, tag, showFiles, showChunks)
  
@@ -1228,7 +993,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  	var snapshotIDs []string
  	var err error
-@@ -789,11 +871,8 @@
+@@ -789,11 +862,8 @@
  func (manager *SnapshotManager) CheckSnapshots(snapshotID string, revisionsToCheck []int, tag string, showStatistics bool, showTabular bool,
  	checkFiles bool, checkChunks, searchFossils bool, resurrect bool, rewriteChunks bool, threads int, allowFailures bool) bool {
  
@@ -1242,20 +1007,20 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  	LOG_DEBUG("LIST_PARAMETERS", "id: %s, revisions: %v, tag: %s, showStatistics: %t, showTabular: %t, checkFiles: %t, searchFossils: %t, resurrect: %t",
  		snapshotID, revisionsToCheck, tag, showStatistics, showTabular, checkFiles, searchFossils, resurrect)
-@@ -1084,47 +1163,50 @@
+@@ -1084,47 +1154,50 @@
  	wg.Add(threads)
  	for i := 0; i < threads; i++ {
  		go func() {
 -			defer CatchLogException()
--
++			defer wg.Done()
+ 
 -			for {
 -				chunkIndex, ok := <- chunkChannel
 -				if !ok {
 -					wg.Done()
 -					return
 -				}
-+			defer wg.Done()
- 
+-
 -				// The chunk must be read from the storage rather than the snapshot cache; that is the whole
 -				// point of verifying it
 -				chunk := manager.chunkOperator.DownloadFromStorage(chunkHashes[chunkIndex], chunkIndex, isMetadataChunks[chunkIndex])
@@ -1303,9 +1068,6 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +						} else {
 +							verifiedChunksLock.Unlock()
 +						}
-+
-+						downloadedChunkSize := atomic.AddInt64(&totalDownloadedChunkSize, int64(chunk.GetLength()))
-+						downloadedChunks := atomic.AddInt64(&totalDownloadedChunks, 1)
  
 -					elapsedTime := time.Now().Sub(startTime).Seconds()
 -					speed := int64(float64(downloadedChunkSize) / elapsedTime)
@@ -1314,6 +1076,10 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 -					LOG_INFO("VERIFY_PROGRESS", "Verified chunk %s (%d/%d), %sB/s %s %.1f%%",
 -							chunkID, downloadedChunks, totalChunks, PrettySize(speed), PrettyTime(remainingTime), percentage)
 -				}
++						downloadedChunkSize := atomic.AddInt64(&totalDownloadedChunkSize, int64(chunk.GetLength()))
++						downloadedChunks := atomic.AddInt64(&totalDownloadedChunks, 1)
+ 
+-				manager.config.PutChunk(chunk)
 +						elapsedTime := time.Now().Sub(startTime).Seconds()
 +						speed := int64(float64(downloadedChunkSize) / elapsedTime)
 +						remainingTime := int64(float64(totalChunks - downloadedChunks) / float64(downloadedChunks) * elapsedTime)
@@ -1321,14 +1087,13 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +						LOG_INFO("VERIFY_PROGRESS", "Verified chunk %s (%d/%d), %sB/s %s %.1f%%",
 +								chunkID, downloadedChunks, totalChunks, PrettySize(speed), PrettyTime(remainingTime), percentage)
 +					}
- 
--				manager.config.PutChunk(chunk)
++
 +					manager.config.PutChunk(chunk)
 +				}()
  			}
  		} ()
  	}
-@@ -1477,6 +1559,10 @@
+@@ -1477,6 +1550,10 @@
  
  	LOG_DEBUG("PRINT_PARAMETERS", "id: %s, revision: %d, path: %s", snapshotID, revision, path)
  
@@ -1339,7 +1104,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	var snapshot *Snapshot
  
  	if revision <= 0 {
-@@ -1522,11 +1608,8 @@
+@@ -1522,11 +1599,8 @@
  	LOG_DEBUG("DIFF_PARAMETERS", "top: %s, id: %s, revision: %v, path: %s, compareByHash: %t",
  		top, snapshotID, revisions, filePath, compareByHash)
  
@@ -1353,19 +1118,17 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  	var leftSnapshot *Snapshot
  	var rightSnapshot *Snapshot
-@@ -1540,15 +1623,27 @@
+@@ -1540,15 +1614,22 @@
  		if len(filePath) == 0 {
  			rightSnapshot = CreateEmptySnapshot(snapshotID)
  			localListingChannel := make(chan *Entry)
 +			localListingDone := make(chan struct{})
-+			localListingOK := false
  			go func() {
 -				defer CatchLogException()
--				rightSnapshot.ListLocalFiles(top, nobackupFile, filtersFile, excludeByAttribute, localListingChannel, nil, nil)
 +				defer close(localListingDone)
 +				// A panic is recorded by the operator and raised again once the listing has ended
 +				defer manager.chunkOperator.failures.catch()
-+				localListingOK = rightSnapshot.ListLocalFiles(top, nobackupFile, filtersFile, excludeByAttribute, localListingChannel, nil, nil)
+ 				rightSnapshot.ListLocalFiles(top, nobackupFile, filtersFile, excludeByAttribute, localListingChannel, nil, nil)
  			} ()
  
 +			// ListLocalFiles closes the channel on every exit, so the loop ends even if the listing panics
@@ -1376,14 +1139,10 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
 +			// The panic is recorded after the channel is closed, but before the goroutine exits
 +			<-localListingDone
 +			manager.chunkOperator.failures.raise()
-+			if !localListingOK {
-+				// The repository can't be listed and SuppressLog has hidden the error
-+				return false
-+			}
  
  		}
  	} else {
-@@ -1747,11 +1842,7 @@
+@@ -1747,11 +1828,7 @@
  	LOG_DEBUG("HISTORY_PARAMETERS", "top: %s, id: %s, revisions: %v, path: %s, showLocalHash: %t",
  		top, snapshotID, revisions, filePath, showLocalHash)
  
@@ -1396,7 +1155,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  	var err error
  
-@@ -1876,11 +1967,7 @@
+@@ -1876,11 +1953,7 @@
  		LOG_WARN("DELETE_OPTIONS", "Tags or retention policy will be ignored if at least one revision is specified")
  	}
  
@@ -1409,7 +1168,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  	prefPath := GetDuplicacyPreferencePath()
  	logDir := path.Join(prefPath, "logs")
-@@ -2607,7 +2694,7 @@
+@@ -2607,7 +2680,7 @@
  		}
  
  		if entry.EndChunk < entry.StartChunk {
@@ -1419,8 +1178,8 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			return false
  		}
 diff -ruN -x .git a/src/duplicacy_swiftstorage.go b/src/duplicacy_swiftstorage.go
---- a/src/duplicacy_swiftstorage.go	2026-11-06 08:39:24.778336637 +0000
-+++ b/src/duplicacy_swiftstorage.go	2026-11-06 08:39:25.194349557 +0000
+--- a/src/duplicacy_swiftstorage.go	2026-11-09 15:52:54.864160282 +0000
++++ b/src/duplicacy_swiftstorage.go	2026-11-09 15:52:55.276171361 +0000
 @@ -113,7 +113,13 @@
  		arguments["protocol"] = "https"
  	}
@@ -1438,8 +1197,8 @@ diff -ruN -x .git a/src/duplicacy_swiftstorage.go b/src/duplicacy_swiftstorage.g
  	connection := swift.Connection{
 diff -ruN -x .git a/src/duplicacy_workererrors.go b/src/duplicacy_workererrors.go
 --- a/src/duplicacy_workererrors.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_workererrors.go	2026-11-06 14:02:20.040766990 +0000
-@@ -0,0 +1,76 @@
++++ b/src/duplicacy_workererrors.go	2026-11-09 16:57:36.979809799 +0000
+@@ -0,0 +1,65 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -1505,20 +1264,9 @@ diff -ruN -x .git a/src/duplicacy_workererrors.go b/src/duplicacy_workererrors.g
 +		panic(failures.value)
 +	}
 +}
-+
-+// logErrorAndPanic logs an error and raises it as an Exception even if SuppressLog hides
-+// it, so that the error reaches the caller of the operation.
-+func logErrorAndPanic(logID string, format string, v ...interface{}) {
-+	LOG_ERROR(logID, format, v...)
-+	panic(Exception{
-+		Level:   ERROR,
-+		LogID:   logID,
-+		Message: fmt.Sprintf(format, v...),
-+	})
-+}
 diff -ruN -x .git a/src/duplicacy_workererrors_copy_test.go b/src/duplicacy_workererrors_copy_test.go
 --- a/src/duplicacy_workererrors_copy_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_workererrors_copy_test.go	2026-11-06 14:02:02.040298476 +0000
++++ b/src/duplicacy_workererrors_copy_test.go	2026-11-09 16:58:17.388473518 +0000
 @@ -0,0 +1,502 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -1697,8 +1445,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_copy_test.go b/src/duplicacy_work
 +}
 +
 +// TestWorkerErrorsCopySnapshotFile fails the upload of the snapshot file to the destination, which raises an
-+// Exception, also through a log function, and makes the copy return false when
-+// SuppressLog hides the error.
++// Exception, also through a log function and with its log id suppressed.
 +func TestWorkerErrorsCopySnapshotFile(t *testing.T) {
 +	for _, name := range []string{"Log", "LogFunction", "Suppressed"} {
 +		t.Run(name, func(t *testing.T) {
@@ -1708,7 +1455,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_copy_test.go b/src/duplicacy_work
 +			logs := setWorkerErrorsMode(name, "UPLOAD_File")
 +			waitForWorkerErrorsGoroutines(t, baseline)
 +
-+			expectWorkerErrorsFailure(t, name, fixture.copy(), logs, "UPLOAD_File")
++			expectWorkerErrorsException(t, fixture.copy(), "UPLOAD_File")
++			expectWorkerErrorsLogged(t, logs, "UPLOAD_File")
 +			if fixture.destinationStorage.injectedCount() == 0 {
 +				t.Fatalf("The upload of the snapshot file has not been attempted")
 +			}
@@ -2024,8 +1772,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_copy_test.go b/src/duplicacy_work
 +}
 diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_workererrors_log_test.go
 --- a/src/duplicacy_workererrors_log_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_workererrors_log_test.go	2026-11-06 13:46:14.826677431 +0000
-@@ -0,0 +1,769 @@
++++ b/src/duplicacy_workererrors_log_test.go	2026-11-09 16:58:52.285061981 +0000
+@@ -0,0 +1,888 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -2034,6 +1782,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +
 +import (
 +	"fmt"
++	"io"
 +	"io/fs"
 +	"os"
 +	"path/filepath"
@@ -2049,9 +1798,12 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +// otherwise go on with a wrong state.  A failed read in the middle of a file packed by
 +// Backup (CHUNK_MAKER) is not tested: Backup opens the files itself, so the failure can't
 +// be caused deterministically without a test point in the production code.  The cases
-+// are added to the skeletons generated by gotests, renamed with the suffix _LogErrors.
++// are added to the skeletons generated by gotests, renamed with the suffix _LogErrors.  The
++// cases with a suppressed log id print to the standard output and check that SuppressLog
++// hides only the entries up to WARN.
 +
-+// Test_logf_LogErrors calls logf with a log function on every level.
++// Test_logf_LogErrors calls logf with a log function on every level, and without one with
++// a suppressed log id.
 +func Test_logf_LogErrors(t *testing.T) {
 +	type args struct {
 +		level  int
@@ -2073,6 +1825,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +		args      args
 +		wantPanic interface{}
 +		logPanic  interface{} // The panic of the log function, nil if it returns
++		suppress  string      // The log id given to SuppressLog; logf then prints at INFO
++		printed   bool        // Whether the entry is printed, with suppress
 +	}{
 +		{name: "DEBUG", args: message(DEBUG)},
 +		{name: "TRACE", args: message(TRACE)},
@@ -2086,26 +1840,53 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +			name: "PanickingLogFunction", args: message(ERROR), wantPanic: logPanic,
 +			logPanic: logPanic,
 +		},
++		{name: "SuppressedINFO", args: message(INFO), suppress: "LOG_TEST"},
++		{name: "SuppressedWARN", args: message(WARN), suppress: "LOG_TEST"},
++		{
++			name: "SuppressedERROR", args: message(ERROR), suppress: "LOG_TEST", printed: true,
++			wantPanic: raised(ERROR),
++		},
++		{
++			name: "SuppressedFATAL", args: message(FATAL), suppress: "LOG_TEST", printed: true,
++			wantPanic: raised(FATAL),
++		},
++		{name: "OtherSuppressedINFO", args: message(INFO), suppress: "LOG_OTHER", printed: true},
++		{name: "OtherSuppressedWARN", args: message(WARN), suppress: "LOG_OTHER", printed: true},
 +	}
 +	for _, tt := range tests {
 +		t.Run(tt.name, func(t *testing.T) {
 +			saveWorkerErrorsGlobals(t)
-+			var calls []Exception
-+			LogFunction = func(level int, logID string, message string) {
-+				calls = append(calls, Exception{Level: level, LogID: logID, Message: message})
-+				if tt.logPanic != nil {
-+					panic(tt.logPanic)
-+				}
-+			}
-+			outcome := runWorkerErrorsOperation(t, func() bool {
-+				logf(tt.args.level, tt.args.logID, tt.args.format, tt.args.v...)
-+				return true
-+			})
 +			expected := Exception{Level: tt.args.level, LogID: tt.args.logID,
 +				Message: fmt.Sprintf(tt.args.format, tt.args.v...)}
-+			if len(calls) != 1 || calls[0] != expected {
-+				t.Fatalf("The log function has been called with %+v instead of %+v", calls,
-+					expected)
++			operation := func() bool {
++				logf(tt.args.level, tt.args.logID, tt.args.format, tt.args.v...)
++				return true
++			}
++			var outcome workerErrorsOutcome
++			if tt.suppress != "" {
++				SetLoggingLevel(INFO)
++				SuppressLog(tt.suppress)
++				var output string
++				outcome, output = captureLogErrorsOutput(t, operation)
++				printed := strings.Contains(output, expected.Message+"\n")
++				if printed != tt.printed {
++					t.Fatalf("The entry has been printed: %t, want %t:\n%s", printed,
++						tt.printed, output)
++				}
++			} else {
++				var calls []Exception
++				LogFunction = func(level int, logID string, message string) {
++					calls = append(calls,
++						Exception{Level: level, LogID: logID, Message: message})
++					if tt.logPanic != nil {
++						panic(tt.logPanic)
++					}
++				}
++				outcome = runWorkerErrorsOperation(t, operation)
++				if len(calls) != 1 || calls[0] != expected {
++					t.Fatalf("The log function has been called with %+v instead of %+v",
++						calls, expected)
++				}
 +			}
 +			if outcome.recovered != tt.wantPanic {
 +				t.Fatalf("logf() panicked with %#v, want %#v", outcome.recovered, tt.wantPanic)
@@ -2130,19 +1911,68 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +	revision     []byte            // The revision file before the operation
 +	files        map[string]string // The files of the repository before the operation
 +	storageFiles []string          // The files of the storage before the operation
++	stdout       bool              // The case prints to the standard output, without a log function
++	output       string            // What the operation has printed, with stdout
++	wantPanic    interface{}       // The expected panic if it depends on the fixture, or nil
 +}
 +
-+// startLogErrorsRun installs the log function of a case after its fixture is prepared and
-+// waits for the goroutines of the preparation.
++// startLogErrorsRun installs the log function of a case after its fixture is prepared,
++// unless the case prints to the standard output, and waits for the goroutines of the
++// preparation.
 +func startLogErrorsRun(t *testing.T, run *logErrorsRun, baseline int) {
 +	t.Helper()
 +	run.baseline = baseline
-+	run.logs = collectWorkerErrorsLogs()
++	if !run.stdout {
++		run.logs = collectWorkerErrorsLogs()
++	}
 +	waitForWorkerErrorsGoroutines(t, baseline)
 +}
 +
++// runLogErrorsOperation runs the operation of a case and keeps its outcome and, if the case
++// prints to the standard output, what the operation has printed.
++func runLogErrorsOperation(t *testing.T, run *logErrorsRun, operation func() bool) {
++	t.Helper()
++	if run.stdout {
++		run.outcome, run.output = captureLogErrorsOutput(t, operation)
++	} else {
++		run.outcome = runWorkerErrorsOperation(t, operation)
++	}
++}
++
++// captureLogErrorsOutput runs the operation as runWorkerErrorsOperation does, with the
++// standard output replaced by a pipe, and returns its outcome and what it has printed.
++func captureLogErrorsOutput(t *testing.T, operation func() bool) (workerErrorsOutcome, string) {
++	t.Helper()
++	reader, writer, err := os.Pipe()
++	if err != nil {
++		t.Fatalf("Failed to create a pipe: %v", err)
++	}
++	stdout := os.Stdout
++	os.Stdout = writer
++	restored := false
++	restore := func() {
++		if !restored {
++			restored = true
++			os.Stdout = stdout
++			_ = writer.Close()
++		}
++	}
++	t.Cleanup(restore)
++	// The pipe is read concurrently, so that a long output doesn't block the operation
++	printed := make(chan string, 1)
++	go func() {
++		defer func() { _ = reader.Close() }()
++		data, _ := io.ReadAll(reader)
++		printed <- string(data)
++	}()
++	outcome := runWorkerErrorsOperation(t, operation)
++	restore()
++	return outcome, <-printed
++}
++
 +// expectLogErrorsException checks that the operation has raised the expected Exception
-+// after the log function has received it, and that no goroutine of it is left.
++// after the log function, or the standard output if the case prints there, has received
++// it, and that no goroutine of it is left.
 +func expectLogErrorsException(t *testing.T, method string, run *logErrorsRun,
 +	wantPanic interface{}) {
 +	t.Helper()
@@ -2150,9 +1980,18 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +		t.Fatalf("%s panicked with %#v, want %#v", method, run.outcome.recovered, wantPanic)
 +	}
 +	exception := wantPanic.(Exception)
-+	entry := getLevelName(exception.Level) + " " + exception.LogID + " " + exception.Message
-+	if !strings.Contains("\n"+run.logs.String()+"\n", "\n"+entry+"\n") {
-+		t.Fatalf("The log function has not received %q:\n%s", entry, run.logs.String())
++	if run.stdout {
++		// The message ends a line of the output, after the header if it is enabled
++		if !strings.Contains(run.output, exception.Message+"\n") {
++			t.Fatalf("The standard output has not received %q:\n%s", exception.Message,
++				run.output)
++		}
++	} else {
++		entry := getLevelName(exception.Level) + " " + exception.LogID + " " +
++			exception.Message
++		if !strings.Contains("\n"+run.logs.String()+"\n", "\n"+entry+"\n") {
++			t.Fatalf("The log function has not received %q:\n%s", entry, run.logs.String())
++		}
 +	}
 +	waitForWorkerErrorsGoroutines(t, run.baseline)
 +}
@@ -2224,16 +2063,15 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +// make the backup start again from the revision 1 and overwrite it.
 +func TestBackupManager_Backup_LogErrors(t *testing.T) {
 +	type fields struct {
-+		snapshotID           string
-+		storage              Storage
-+		SnapshotManager      *SnapshotManager
-+		snapshotCache        *FileStorage
-+		config               *Config
-+		nobackupFile         string
-+		filtersFile          string
-+		excludeByAttribute   bool
-+		cachePath            string
-+		snapshotUploadFailed bool
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
 +	}
 +	type args struct {
 +		top                    string
@@ -2299,29 +2137,27 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +			startLogErrorsRun(t, run, baseline)
 +			source := run.fixture.manager
 +			tt.fields = fields{
-+				snapshotID:           source.snapshotID,
-+				storage:              source.storage,
-+				SnapshotManager:      source.SnapshotManager,
-+				snapshotCache:        source.snapshotCache,
-+				config:               source.config,
-+				nobackupFile:         source.nobackupFile,
-+				filtersFile:          source.filtersFile,
-+				excludeByAttribute:   source.excludeByAttribute,
-+				cachePath:            source.cachePath,
-+				snapshotUploadFailed: source.snapshotUploadFailed,
++				snapshotID:         source.snapshotID,
++				storage:            source.storage,
++				SnapshotManager:    source.SnapshotManager,
++				snapshotCache:      source.snapshotCache,
++				config:             source.config,
++				nobackupFile:       source.nobackupFile,
++				filtersFile:        source.filtersFile,
++				excludeByAttribute: source.excludeByAttribute,
++				cachePath:          source.cachePath,
 +			}
 +			tt.args.top = run.fixture.repository
 +			manager := &BackupManager{
-+				snapshotID:           tt.fields.snapshotID,
-+				storage:              tt.fields.storage,
-+				SnapshotManager:      tt.fields.SnapshotManager,
-+				snapshotCache:        tt.fields.snapshotCache,
-+				config:               tt.fields.config,
-+				nobackupFile:         tt.fields.nobackupFile,
-+				filtersFile:          tt.fields.filtersFile,
-+				excludeByAttribute:   tt.fields.excludeByAttribute,
-+				cachePath:            tt.fields.cachePath,
-+				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
 +			}
 +			run.outcome = runWorkerErrorsOperation(t, func() bool {
 +				return manager.Backup(tt.args.top, tt.args.quickMode, tt.args.threads,
@@ -2458,16 +2294,15 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +// it would delete.
 +func TestBackupManager_Restore_LogErrors(t *testing.T) {
 +	type fields struct {
-+		snapshotID           string
-+		storage              Storage
-+		SnapshotManager      *SnapshotManager
-+		snapshotCache        *FileStorage
-+		config               *Config
-+		nobackupFile         string
-+		filtersFile          string
-+		excludeByAttribute   bool
-+		cachePath            string
-+		snapshotUploadFailed bool
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
 +	}
 +	type args struct {
 +		top            string
@@ -2534,29 +2369,27 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +			startLogErrorsRun(t, run, baseline)
 +			source := run.fixture.manager
 +			tt.fields = fields{
-+				snapshotID:           source.snapshotID,
-+				storage:              source.storage,
-+				SnapshotManager:      source.SnapshotManager,
-+				snapshotCache:        source.snapshotCache,
-+				config:               source.config,
-+				nobackupFile:         source.nobackupFile,
-+				filtersFile:          source.filtersFile,
-+				excludeByAttribute:   source.excludeByAttribute,
-+				cachePath:            source.cachePath,
-+				snapshotUploadFailed: source.snapshotUploadFailed,
++				snapshotID:         source.snapshotID,
++				storage:            source.storage,
++				SnapshotManager:    source.SnapshotManager,
++				snapshotCache:      source.snapshotCache,
++				config:             source.config,
++				nobackupFile:       source.nobackupFile,
++				filtersFile:        source.filtersFile,
++				excludeByAttribute: source.excludeByAttribute,
++				cachePath:          source.cachePath,
 +			}
 +			tt.args.top = run.fixture.repository
 +			manager := &BackupManager{
-+				snapshotID:           tt.fields.snapshotID,
-+				storage:              tt.fields.storage,
-+				SnapshotManager:      tt.fields.SnapshotManager,
-+				snapshotCache:        tt.fields.snapshotCache,
-+				config:               tt.fields.config,
-+				nobackupFile:         tt.fields.nobackupFile,
-+				filtersFile:          tt.fields.filtersFile,
-+				excludeByAttribute:   tt.fields.excludeByAttribute,
-+				cachePath:            tt.fields.cachePath,
-+				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
 +			}
 +			// As in fixture.restore, got stays -1 when Restore panics
 +			got := -1
@@ -2577,9 +2410,10 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +}
 +
 +// TestSnapshotManager_CheckSnapshots_LogErrors checks the revision 1 without its revision
-+// file, which would leave the check with no snapshot to dereference, and its files with a
++// file, which would leave the check with no snapshot to dereference, its files with a
 +// remote listing that fails, which would leave the check with a truncated listing to
-+// verify.
++// verify, and its chunks with one that can't be downloaded and SNAPSHOT_VERIFY suppressed,
++// which would hide the corrupted chunks and report success.
 +func TestSnapshotManager_CheckSnapshots_LogErrors(t *testing.T) {
 +	type fields struct {
 +		config        *Config
@@ -2607,6 +2441,9 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +		threads: 2}
 +	checkFiles := args{snapshotID: "host1", revisionsToCheck: []int{1}, checkFiles: true,
 +		threads: 2}
++	// The chunks with allowed failures, which only count a chunk that can't be downloaded
++	checkFailedChunks := checkChunks
++	checkFailedChunks.allowFailures = true
 +	tests := []struct {
 +		name      string
 +		fields    fields
@@ -2647,6 +2484,36 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +				}
 +			},
 +		},
++		{
++			// As duplicacy -suppress VERIFY_PROGRESS -suppress SNAPSHOT_VERIFY check -chunks
++			// -persist: the error of the corrupted chunks has the log id of the entries hidden
++			name: "SuppressedVerify", args: checkFailedChunks, want: false,
++			prepare: func(t *testing.T) *logErrorsRun {
++				fixture := newWorkerErrorsFixture(t, false)
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				snapshot := fixture.revisionSnapshot(1)
++				// Taken before GetSnapshotChunkHashes, which clears the chunks of the snapshot
++				failedChunk := snapshot.ChunkHashes[len(snapshot.ChunkHashes)/2]
++				// The check counts the chunks of the revision as GetSnapshotChunkHashes does
++				manager := fixture.manager.SnapshotManager
++				chunkHashes := map[string]bool{}
++				manager.CreateChunkOperator(false, false, 1, false)
++				manager.GetSnapshotChunkHashes(snapshot, &chunkHashes, map[string]bool{})
++				fixture.stopSnapshotOperator()
++				fixture.failDownload(failedChunk, false)
++				SetLoggingLevel(INFO)
++				SuppressLog("SNAPSHOT_VERIFY")
++				return &logErrorsRun{fixture: fixture, stdout: true,
++					wantPanic: Exception{Level: ERROR, LogID: "SNAPSHOT_VERIFY",
++						Message: fmt.Sprintf("1 out of %d chunks are corrupted",
++							len(chunkHashes))}}
++			},
++			check: func(t *testing.T, run *logErrorsRun) {
++				if strings.Contains(run.output, "Verifying ") {
++					t.Fatalf("The suppressed entry has been printed:\n%s", run.output)
++				}
++			},
++		},
 +	}
 +	for _, tt := range tests {
 +		t.Run(tt.name, func(t *testing.T) {
@@ -2668,7 +2535,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +				snapshotCache: tt.fields.snapshotCache,
 +				chunkOperator: tt.fields.chunkOperator,
 +			}
-+			run.outcome = runWorkerErrorsOperation(t, func() bool {
++			runLogErrorsOperation(t, run, func() bool {
 +				return manager.CheckSnapshots(tt.args.snapshotID, tt.args.revisionsToCheck,
 +					tt.args.tag, tt.args.showStatistics, tt.args.showTabular,
 +					tt.args.checkFiles, tt.args.checkChunks, tt.args.searchFossils,
@@ -2676,8 +2543,11 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +					tt.args.allowFailures)
 +			})
 +			tt.check(t, run)
-+			expectLogErrorsException(t, "SnapshotManager.CheckSnapshots()", run,
-+				tt.wantPanic)
++			wantPanic := tt.wantPanic
++			if run.wantPanic != nil {
++				wantPanic = run.wantPanic
++			}
++			expectLogErrorsException(t, "SnapshotManager.CheckSnapshots()", run, wantPanic)
 +			if got := run.outcome.result; got != tt.want {
 +				t.Errorf("SnapshotManager.CheckSnapshots() = %v, want %v", got, tt.want)
 +			}
@@ -2691,16 +2561,15 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +// chunk of the revision.
 +func TestBackupManager_CopySnapshots_LogErrors(t *testing.T) {
 +	type fields struct {
-+		snapshotID           string
-+		storage              Storage
-+		SnapshotManager      *SnapshotManager
-+		snapshotCache        *FileStorage
-+		config               *Config
-+		nobackupFile         string
-+		filtersFile          string
-+		excludeByAttribute   bool
-+		cachePath            string
-+		snapshotUploadFailed bool
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
 +	}
 +	type args struct {
 +		otherManager        *BackupManager
@@ -2758,29 +2627,27 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +			startLogErrorsRun(t, run, baseline)
 +			source := run.copyFixture.manager
 +			tt.fields = fields{
-+				snapshotID:           source.snapshotID,
-+				storage:              source.storage,
-+				SnapshotManager:      source.SnapshotManager,
-+				snapshotCache:        source.snapshotCache,
-+				config:               source.config,
-+				nobackupFile:         source.nobackupFile,
-+				filtersFile:          source.filtersFile,
-+				excludeByAttribute:   source.excludeByAttribute,
-+				cachePath:            source.cachePath,
-+				snapshotUploadFailed: source.snapshotUploadFailed,
++				snapshotID:         source.snapshotID,
++				storage:            source.storage,
++				SnapshotManager:    source.SnapshotManager,
++				snapshotCache:      source.snapshotCache,
++				config:             source.config,
++				nobackupFile:       source.nobackupFile,
++				filtersFile:        source.filtersFile,
++				excludeByAttribute: source.excludeByAttribute,
++				cachePath:          source.cachePath,
 +			}
 +			tt.args.otherManager = run.copyFixture.destination
 +			manager := &BackupManager{
-+				snapshotID:           tt.fields.snapshotID,
-+				storage:              tt.fields.storage,
-+				SnapshotManager:      tt.fields.SnapshotManager,
-+				snapshotCache:        tt.fields.snapshotCache,
-+				config:               tt.fields.config,
-+				nobackupFile:         tt.fields.nobackupFile,
-+				filtersFile:          tt.fields.filtersFile,
-+				excludeByAttribute:   tt.fields.excludeByAttribute,
-+				cachePath:            tt.fields.cachePath,
-+				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
 +			}
 +			run.outcome = runWorkerErrorsOperation(t, func() bool {
 +				return manager.CopySnapshots(tt.args.otherManager, tt.args.snapshotID,
@@ -2797,7 +2664,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
 +}
 diff -ruN -x .git a/src/duplicacy_workererrors_prune_test.go b/src/duplicacy_workererrors_prune_test.go
 --- a/src/duplicacy_workererrors_prune_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_workererrors_prune_test.go	2026-11-06 08:39:25.198349682 +0000
++++ b/src/duplicacy_workererrors_prune_test.go	2026-11-09 16:58:17.388473518 +0000
 @@ -0,0 +1,417 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -2930,7 +2797,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_prune_test.go b/src/duplicacy_wor
 +		return
 +	}
 +	if operator != existing || operator.isStopped() || operator.failures.hasFailed() || len(operator.fossils) != 0 ||
-+		operator.catchDownloadFailures || atomic.LoadInt64(&operator.NumberOfFailedChunks) != 0 {
++		atomic.LoadInt64(&operator.NumberOfFailedChunks) != 0 {
 +		fixture.t.Fatalf("The existing operator of the snapshot manager has not been kept without its failures")
 +	}
 +}
@@ -3218,8 +3085,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_prune_test.go b/src/duplicacy_wor
 +}
 diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererrors_test.go
 --- a/src/duplicacy_workererrors_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_workererrors_test.go	2026-11-06 14:01:40.931748635 +0000
-@@ -0,0 +1,1466 @@
++++ b/src/duplicacy_workererrors_test.go	2026-11-09 16:58:17.384473451 +0000
+@@ -0,0 +1,1455 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -3500,8 +3367,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +
 +// setWorkerErrorsMode prepares the expected error of a subtest: in the mode Log it is
 +// logged without a log function, in LogFunction through the log function of
-+// collectWorkerErrorsLogs, whose entries are returned, and in Suppressed it is hidden by
-+// SuppressLog, so that the operation goes on past it.
++// collectWorkerErrorsLogs, whose entries are returned, and in Suppressed its log id is
++// passed to SuppressLog, which doesn't hide an error.
 +func setWorkerErrorsMode(mode string, logID string) *workerErrorsLogs {
 +	switch mode {
 +	case "LogFunction":
@@ -3758,7 +3625,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +		}
 +		return
 +	}
-+	if operator != existing || operator.failures.hasFailed() || operator.catchDownloadFailures ||
++	if operator != existing || operator.failures.hasFailed() ||
 +		atomic.LoadInt64(&operator.NumberOfFailedChunks) != 0 {
 +		fixture.t.Fatalf("The existing operator of the snapshot manager has not been restored")
 +	}
@@ -3811,7 +3678,6 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +			}
 +			baseline := runtime.NumGoroutine()
 +			operator := CreateChunkOperator(config, storage, nil, false, false, 2, false)
-+			operator.catchUploadFailures = true
 +			operator.UploadCompletionFunc = completionFunc
 +			outcomes := []workerErrorsOutcome{runWorkerErrorsOperation(t, func() bool {
 +				for i, chunk := range chunks {
@@ -3836,22 +3702,11 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +	}
 +}
 +
-+// expectWorkerErrorsFailure checks the outcome of a failed operation in the mode of
-+// setWorkerErrorsMode: an Exception with the log id in the modes Log and LogFunction, the
-+// latter with the error among the collected entries, or false without a panic when the
-+// error is suppressed.
-+func expectWorkerErrorsFailure(t *testing.T, mode string, outcome workerErrorsOutcome,
-+	logs *workerErrorsLogs, logID string) {
++// expectWorkerErrorsLogged checks that the log function of collectWorkerErrorsLogs has
++// received the error, if the mode of setWorkerErrorsMode has installed it.
++func expectWorkerErrorsLogged(t *testing.T, logs *workerErrorsLogs, logID string) {
 +	t.Helper()
-+	if mode == "Suppressed" {
-+		if outcome.recovered != nil || outcome.result {
-+			t.Fatalf("Expected false without a panic, got %#v (result %t)", outcome.recovered,
-+				outcome.result)
-+		}
-+		return
-+	}
-+	expectWorkerErrorsException(t, outcome, logID)
-+	if mode == "LogFunction" && !strings.Contains("\n"+logs.String(), "\nERROR "+logID+" ") {
++	if logs != nil && !strings.Contains("\n"+logs.String(), "\nERROR "+logID+" ") {
 +		t.Fatalf("The log function has not received the error %s:\n%s", logID, logs.String())
 +	}
 +}
@@ -3989,12 +3844,9 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +			baseline := runtime.NumGoroutine()
 +			fixture := newWorkerErrorsFixture(t, false)
 +			logs := setWorkerErrorsMode(name, "LIST_FAILURE")
-+			if name == "Suppressed" {
-+				// Without the entries of the top directory the backup ends with SNAPSHOT_EMPTY
-+				SuppressLog("SNAPSHOT_EMPTY")
-+			}
 +			outcome := fixture.backup(filepath.Join(fixture.repository, "missing"), false)
-+			expectWorkerErrorsFailure(t, name, outcome, logs, "LIST_FAILURE")
++			expectWorkerErrorsException(t, outcome, "LIST_FAILURE")
++			expectWorkerErrorsLogged(t, logs, "LIST_FAILURE")
 +			if fixture.revisionExists(1) {
 +				t.Fatalf("The revision 1 has been created despite the failed listing")
 +			}
@@ -4039,7 +3891,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +			fixture.storage.fail("UploadFile", "snapshots/host1/1")
 +			logs := setWorkerErrorsMode(name, "UPLOAD_File")
 +			outcome := fixture.backup(fixture.repository, false)
-+			expectWorkerErrorsFailure(t, name, outcome, logs, "UPLOAD_File")
++			expectWorkerErrorsException(t, outcome, "UPLOAD_File")
++			expectWorkerErrorsLogged(t, logs, "UPLOAD_File")
 +			if fixture.revisionExists(1) {
 +				t.Fatalf("The revision 1 has been created despite the failed upload")
 +			}
@@ -4047,11 +3900,12 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +				t.Fatalf("The upload of the snapshot file has not been attempted")
 +			}
 +			if name == "Suppressed" {
-+				// A failed backup must not leave its incomplete snapshot to be saved by a later error
++				// The error is raised where it is logged, so RunAtError saves the incomplete
++				// snapshot, as it does after an error of the CLI
 +				RunAtError()
 +				incomplete := filepath.Join(fixture.manager.cachePath, "incomplete_snapshot")
-+				if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
-+					t.Fatalf("RunAtError has saved the incomplete snapshot of the failed backup: %v", err)
++				if _, err := os.Stat(incomplete); err != nil {
++					t.Fatalf("RunAtError has not saved the incomplete snapshot: %v", err)
 +				}
 +			}
 +			waitForWorkerErrorsGoroutines(t, baseline)
@@ -4067,16 +3921,18 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +			t.Setenv("DUPLICACY_FAIL_SNAPSHOT", "1")
 +			logs := setWorkerErrorsMode(name, "SNAPSHOT_FAIL")
 +			outcome := fixture.backup(fixture.repository, false)
-+			expectWorkerErrorsFailure(t, name, outcome, logs, "SNAPSHOT_FAIL")
++			expectWorkerErrorsException(t, outcome, "SNAPSHOT_FAIL")
++			expectWorkerErrorsLogged(t, logs, "SNAPSHOT_FAIL")
 +			if fixture.revisionExists(1) {
 +				t.Fatalf("The revision 1 has been created despite the failed backup")
 +			}
 +			if name == "Suppressed" {
-+				// A failed backup must not leave its incomplete snapshot to be saved by a later error
++				// The error is raised where it is logged, so RunAtError saves the incomplete
++				// snapshot, as it does after an error of the CLI
 +				RunAtError()
 +				incomplete := filepath.Join(fixture.manager.cachePath, "incomplete_snapshot")
-+				if _, err := os.Stat(incomplete); !os.IsNotExist(err) {
-+					t.Fatalf("RunAtError has saved the incomplete snapshot of the failed backup: %v", err)
++				if _, err := os.Stat(incomplete); err != nil {
++					t.Fatalf("RunAtError has not saved the incomplete snapshot: %v", err)
 +				}
 +			}
 +			waitForWorkerErrorsGoroutines(t, baseline)
@@ -4519,13 +4375,12 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +	}
 +}
 +
-+// TestWorkerErrorsRestoreEarlyReturn checks that Restore raises the failed download of a
-+// chunk that nothing waits for when it ends early, with the error of the file that is not
-+// overwritten hidden by SuppressLog and without allowed failures.  The layout is that of
++// TestWorkerErrorsRestoreEarlyReturn checks that Restore without allowed failures stops at
++// the error of a file that is not overwritten, also with its log id suppressed, while the
++// download of a chunk prefetched for a skipped file fails.  The layout is that of
 +// TestWorkerErrorsRestorePrefetch: the chunk 3 is prefetched while file1 waits for the
-+// chunk 2, and its download fails only once file1 has been restored, so the failure is
-+// recorded when nothing waits for the chunk any more.  FailedFiles ends with the number
-+// of failed files: file3 differs from the snapshot and is not overwritten.
++// chunk 2, and its download fails only once file1 has been restored.  FailedFiles ends with
++// the error of file3, which differs from the snapshot and is not overwritten.
 +func TestWorkerErrorsRestoreEarlyReturn(t *testing.T) {
 +	t.Run("FailedFiles", func(t *testing.T) {
 +		saveWorkerErrorsGlobals(t)
@@ -4560,7 +4415,7 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +		if err != nil || string(left) != string(modified) {
 +			t.Fatalf("file3 has been changed by the restore: %v", err)
 +		}
-+		expectWorkerErrorsException(t, outcome, "DOWNLOAD_CHUNK")
++		expectWorkerErrorsException(t, outcome, "DOWNLOAD_OVERWRITE")
 +		waitForWorkerErrorsGoroutines(t, baseline)
 +	})
 +}
@@ -4632,8 +4487,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +}
 +
 +// TestWorkerErrorsDiff fails the download of a file chunk of the file compared by Diff, also with an operator of the
-+// snapshot manager existing before Diff, and the local listing of a missing directory compared with a revision,
-+// which makes Diff return false when SuppressLog hides the error.
++// snapshot manager existing before Diff, and the local listing of a missing directory compared with a revision, also
++// through a log function and with its log id suppressed.
 +func TestWorkerErrorsDiff(t *testing.T) {
 +	for _, name := range []string{"File", "ExistingOperator", "LocalListing",
 +		"LocalListingLogFunction", "LocalListingSuppressed"} {
@@ -4668,7 +4523,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererr
 +				})
 +			}
 +
-+			expectWorkerErrorsFailure(t, mode, diff(), logs, logID)
++			expectWorkerErrorsException(t, diff(), logID)
++			expectWorkerErrorsLogged(t, logs, logID)
 +			if !listing && fixture.storage.injectedCount() == 0 {
 +				t.Fatalf("The download of the file chunk has not been attempted")
 +			}

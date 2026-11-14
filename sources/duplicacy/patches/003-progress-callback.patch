@@ -1,7 +1,7 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-06 14:02:48.325502527 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-06 14:02:48.397504399 +0000
-@@ -227,6 +227,9 @@
+--- a/src/duplicacy_backupmanager.go	2026-11-09 17:42:18.780665110 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-09 17:42:18.828666320 +0000
+@@ -226,6 +226,9 @@
  	var totalModifiedFileSize int64    // total size of modified files
  	var uploadedModifiedFileSize int64 // portions that have been uploaded (including cache hits)
  	var preservedFileSize int64 // total size of unmodified files
@@ -11,7 +11,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	localSnapshot := CreateEmptySnapshot(manager.snapshotID)
  	localSnapshot.Revision = remoteSnapshot.Revision + 1
-@@ -403,6 +406,9 @@
+@@ -400,6 +403,9 @@
  				}
  			} else {
  				totalModifiedFileSize += localEntry.Size
@@ -21,7 +21,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  				if localEntry.Size > 0 {
  					localEntry.Size = -1
  				}
-@@ -411,6 +417,9 @@
+@@ -408,6 +414,9 @@
  		} else {
  			// compareResult must be < 0; the local file is new
  			totalModifiedFileSize += localEntry.Size
@@ -31,7 +31,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			if localEntry.Size > 0 {
  					// A size of -1 indicates this is a modified file that will be uploaded
  					localEntry.Size = -1
-@@ -433,6 +442,10 @@
+@@ -430,6 +439,10 @@
  		return false
  	}
  
@@ -42,7 +42,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	fileChunkMaker := CreateFileChunkMaker(manager.config, false)
  
  	keepUploadAlive := int64(1800)
-@@ -494,6 +507,11 @@
+@@ -491,6 +504,11 @@
  		}
  
  		uploadedModifiedFileSize := atomic.AddInt64(&uploadedModifiedFileSize, int64(chunkSize))
@@ -54,7 +54,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		if (IsTracing() || showStatistics) && totalModifiedFileSize > 0 {
  			now := time.Now().Unix()
-@@ -641,6 +659,16 @@
+@@ -629,6 +647,16 @@
  
  	RunAtError = func() {}
  	deleteIncompleteSnapshot(manager.cachePath)
@@ -71,9 +71,9 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	totalMetadataChunks := len(localSnapshot.FileSequence) + len(localSnapshot.ChunkSequence) +
  		len(localSnapshot.LengthSequence)
-@@ -1184,14 +1212,19 @@
- 	// Cleared only after the snapshot file has been uploaded, so every error return below fails the backup
- 	manager.snapshotUploadFailed = true
+@@ -1168,14 +1196,19 @@
+ 	numberOfNewMetadataChunks int, totalUploadedMetadataChunkSize int64,
+ 	totalUploadedMetadataChunkBytes int64) {
  
 +	// The worker goroutines report the metadata chunks concurrently; a missing lock is
 +	// caught by the race detector only, as a lost update doesn't happen reliably
@@ -91,7 +91,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			} else {
  				LOG_DEBUG("CHUNK_EXIST", "Skipped metadata chunk %s in the storage", chunk.GetID())
  			}
-@@ -1913,10 +1946,17 @@
+@@ -1894,9 +1927,16 @@
  
  	LOG_INFO("SNAPSHOT_COPY", "Chunks to copy: %d, to skip: %d, total: %d", len(chunksToCopy), len(chunks) - len(chunksToCopy), len(chunks))
  
@@ -100,7 +100,6 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
 +			Kind: ProgressKindStart, TotalBytes: -1, TotalChunks: int64(len(chunksToCopy))})
 +	}
  	chunkDownloader := CreateChunkOperator(manager.config, manager.storage, nil, false, false, downloadingThreads, false)
- 	chunkDownloader.catchDownloadFailures = true
  
  	var uploadedBytes int64
 +	// The bytes written to the destination by the uploading goroutines, only for
@@ -109,7 +108,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	startTime := time.Now()
  
  	// Increased by the uploading goroutines
-@@ -1941,6 +1981,14 @@
+@@ -1920,6 +1960,14 @@
  		}
  
  		atomic.AddInt64(&uploadedBytes, int64(chunkSize))
@@ -124,7 +123,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		elapsedTime := time.Now().Sub(startTime).Seconds()
  		speed := int64(float64(atomic.LoadInt64(&uploadedBytes)) / elapsedTime)
-@@ -1992,5 +2040,11 @@
+@@ -1969,5 +2017,11 @@
  		LOG_INFO("SNAPSHOT_COPY", "Copied snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
  	}
  
@@ -138,8 +137,8 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  }
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 --- a/src/duplicacy_progress.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_progress.go	2026-11-06 14:03:11.826113074 +0000
-@@ -0,0 +1,81 @@
++++ b/src/duplicacy_progress.go	2026-11-09 17:42:18.828666320 +0000
+@@ -0,0 +1,80 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -187,11 +186,10 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 +	Action    ProgressAction // The action of a prune step; empty otherwise
 +	// The totals known at the start, or -1 if unknown.  TotalBytes of a backup start is
 +	// the size of the modified files to be split into chunks, as listed; the steps don't
-+	// add up to it if a file changes before its chunks are made or, with the read error
-+	// hidden by SuppressLog, can't be read to the end, and a file that can't be opened has
-+	// no steps.  At the end of a backup the totals are the number and the length of the
-+	// new file and metadata chunks; at the end of a copy, the number of copied chunks and
-+	// their length.
++	// add up to it if a file changes before its chunks are made, and a file that can't be
++	// opened has no steps.  At the end of a backup the totals are the number and the
++	// length of the new file and metadata chunks; at the end of a copy, the number of
++	// copied chunks and their length.
 +	TotalBytes  int64
 +	TotalChunks int64
 +	// The length of the chunk of a step before compression and encryption
@@ -223,8 +221,8 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 +var ProgressFunction func(event ProgressEvent)
 diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test.go
 --- a/src/duplicacy_progress_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_progress_test.go	2026-11-06 14:03:06.625978018 +0000
-@@ -0,0 +1,1271 @@
++++ b/src/duplicacy_progress_test.go	2026-11-09 17:42:18.832666421 +0000
+@@ -0,0 +1,1265 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -595,16 +593,15 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +// top directory from its repository.
 +func TestBackupManager_Backup(t *testing.T) {
 +	type fields struct {
-+		snapshotID           string
-+		storage              Storage
-+		SnapshotManager      *SnapshotManager
-+		snapshotCache        *FileStorage
-+		config               *Config
-+		nobackupFile         string
-+		filtersFile          string
-+		excludeByAttribute   bool
-+		cachePath            string
-+		snapshotUploadFailed bool
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
 +	}
 +	type args struct {
 +		top                    string
@@ -1170,29 +1167,27 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +				run.manager = run.fixture.manager
 +			}
 +			tt.fields = fields{
-+				snapshotID:           run.manager.snapshotID,
-+				storage:              run.manager.storage,
-+				SnapshotManager:      run.manager.SnapshotManager,
-+				snapshotCache:        run.manager.snapshotCache,
-+				config:               run.manager.config,
-+				nobackupFile:         run.manager.nobackupFile,
-+				filtersFile:          run.manager.filtersFile,
-+				excludeByAttribute:   run.manager.excludeByAttribute,
-+				cachePath:            run.manager.cachePath,
-+				snapshotUploadFailed: run.manager.snapshotUploadFailed,
++				snapshotID:         run.manager.snapshotID,
++				storage:            run.manager.storage,
++				SnapshotManager:    run.manager.SnapshotManager,
++				snapshotCache:      run.manager.snapshotCache,
++				config:             run.manager.config,
++				nobackupFile:       run.manager.nobackupFile,
++				filtersFile:        run.manager.filtersFile,
++				excludeByAttribute: run.manager.excludeByAttribute,
++				cachePath:          run.manager.cachePath,
 +			}
 +			tt.args.top = run.fixture.repository
 +			manager := &BackupManager{
-+				snapshotID:           tt.fields.snapshotID,
-+				storage:              tt.fields.storage,
-+				SnapshotManager:      tt.fields.SnapshotManager,
-+				snapshotCache:        tt.fields.snapshotCache,
-+				config:               tt.fields.config,
-+				nobackupFile:         tt.fields.nobackupFile,
-+				filtersFile:          tt.fields.filtersFile,
-+				excludeByAttribute:   tt.fields.excludeByAttribute,
-+				cachePath:            tt.fields.cachePath,
-+				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
 +			}
 +			outcome := runWorkerErrorsOperation(t, func() bool {
 +				return manager.Backup(tt.args.top, tt.args.quickMode, tt.args.threads,
@@ -1218,16 +1213,15 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +// manager, the other manager is the destination.
 +func TestBackupManager_CopySnapshots(t *testing.T) {
 +	type fields struct {
-+		snapshotID           string
-+		storage              Storage
-+		SnapshotManager      *SnapshotManager
-+		snapshotCache        *FileStorage
-+		config               *Config
-+		nobackupFile         string
-+		filtersFile          string
-+		excludeByAttribute   bool
-+		cachePath            string
-+		snapshotUploadFailed bool
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
 +	}
 +	type args struct {
 +		otherManager        *BackupManager
@@ -1456,29 +1450,27 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +			run.baseline = baseline
 +			source := run.copyFixture.manager
 +			tt.fields = fields{
-+				snapshotID:           source.snapshotID,
-+				storage:              source.storage,
-+				SnapshotManager:      source.SnapshotManager,
-+				snapshotCache:        source.snapshotCache,
-+				config:               source.config,
-+				nobackupFile:         source.nobackupFile,
-+				filtersFile:          source.filtersFile,
-+				excludeByAttribute:   source.excludeByAttribute,
-+				cachePath:            source.cachePath,
-+				snapshotUploadFailed: source.snapshotUploadFailed,
++				snapshotID:         source.snapshotID,
++				storage:            source.storage,
++				SnapshotManager:    source.SnapshotManager,
++				snapshotCache:      source.snapshotCache,
++				config:             source.config,
++				nobackupFile:       source.nobackupFile,
++				filtersFile:        source.filtersFile,
++				excludeByAttribute: source.excludeByAttribute,
++				cachePath:          source.cachePath,
 +			}
 +			tt.args.otherManager = run.copyFixture.destination
 +			manager := &BackupManager{
-+				snapshotID:           tt.fields.snapshotID,
-+				storage:              tt.fields.storage,
-+				SnapshotManager:      tt.fields.SnapshotManager,
-+				snapshotCache:        tt.fields.snapshotCache,
-+				config:               tt.fields.config,
-+				nobackupFile:         tt.fields.nobackupFile,
-+				filtersFile:          tt.fields.filtersFile,
-+				excludeByAttribute:   tt.fields.excludeByAttribute,
-+				cachePath:            tt.fields.cachePath,
-+				snapshotUploadFailed: tt.fields.snapshotUploadFailed,
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
 +			}
 +			outcome := runWorkerErrorsOperation(t, func() bool {
 +				return manager.CopySnapshots(tt.args.otherManager, tt.args.snapshotID,
