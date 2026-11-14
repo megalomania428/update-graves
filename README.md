@@ -116,7 +116,7 @@ When a pull request changes an application's upstream ref or release asset, vers
 - `duplicacy`:
 
   ```bash
-  git checkout master && git pull; TAG4REL='duplicacy-v2.7.2p001'
+  git checkout master && git pull; TAG4REL='duplicacy-v3.3.0p002'
   git tag -fm $(git branch --sho) ${TAG4REL} && git push --force origin ${TAG4REL}
   ```
 
