@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-10 09:11:16.533255101 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-10 10:28:25.633663865 +0000
+--- a/src/duplicacy_backupmanager.go	2026-11-10 11:46:59.681851164 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-10 11:46:59.701851631 +0000
 @@ -131,6 +131,11 @@
  func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
  	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
@@ -220,8 +220,8 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			continue
 diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 --- a/src/duplicacy_cancel.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel.go	2026-11-10 11:18:24.008935520 +0000
-@@ -0,0 +1,87 @@
++++ b/src/duplicacy_cancel.go	2026-11-10 14:04:17.904627570 +0000
+@@ -0,0 +1,132 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -229,6 +229,8 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +package duplicacy
 +
 +import (
++	"fmt"
++	"io"
 +	"sync/atomic"
 +)
 +
@@ -268,8 +270,40 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +// checks each revision and, with checkChunks, before it queues each chunk; the chunks
 +// already queued are verified, and only the intact ones are saved to the list of verified
 +// chunks.  With checkFiles a revision is verified as a whole, so the check stops only
-+// between revisions.  ListSnapshots, ShowHistory, PrintFile, Diff, DownloadSequence,
-+// Benchmark and PruneSnapshots ignore the request.
++// between revisions.
++//
++// PruneSnapshots checks it before it lists the revisions of each snapshot ID and before
++// it downloads each revision file, between the old fossil collections, where it first
++// waits for the tasks of the previous ones, before it chooses the revisions to delete and
++// for each snapshot ID while choosing them, before it reads the chunks of each revision
++// and, in the non-exhaustive mode, once more before it fossilizes or deletes the first
++// chunk; the exhaustive mode checks it before it lists each chunk directory and after the
++// listing until it adds the first fossilize, delete or resurrect task, which a dry run
++// never adds.  A prune canceled after it has created its log writes "Prune canceled"
++// there, unless a failure of its tasks is raised instead.  A canceled prune changes the
++// storage at most through the old fossil collections it has already processed, none with
++// collectOnly, and not at all in a dry run: the fossils and temporary files of such a
++// collection that is eligible for deletion, which is a collection that has passed the
++// deletion criteria or, in the exclusive mode, any collection, may be deleted or the
++// fossils turned back into chunks, while a collection that isn't eligible is left as it
++// is.  In the local directory of the collections in the snapshot
++// cache, not in the storage, a canceled prune has removed at most the file of a processed
++// collection that is eligible, except in a dry run, and the file of a collection that
++// lists a revision that still exists, in a dry run too and without touching the fossils
++// of that collection; with collectOnly it touches no file of the collections.  The tasks
++// of an old collection are a step that ends before the check ahead of the next
++// collection, so a request made while they run cancels the prune if another collection
++// or a later check follows.  The chunks, the new fossil collection and the deletion of
++// the revision files are one step that isn't stopped, since stopping it would leave
++// fossils without a collection or, in the exclusive mode, revisions whose chunks are
++// deleted.  It starts after the last check before the first fossilize or delete task of
++// the revisions to delete in the non-exhaustive mode and with the first fossilize, delete
++// or resurrect task of the chunk scan in the exhaustive mode: a request made then doesn't
++// stop the prune, which completes and returns true with the request still set, and so
++// does one made with deleteOnly after the check of the last old collection.  So a prune
++// returns at the latest when the step it is in ends: the tasks of the current old
++// collection or the rest of the prune.  ListSnapshots, ShowHistory, PrintFile, Diff,
++// DownloadSequence and Benchmark ignore the request.
 +func RequestCancel() {
 +	cancelRequested.Store(true)
 +}
@@ -309,10 +343,21 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +	raiseFailures(operators...)
 +	raiseCancel()
 +}
++
++// raisePruneCancel raises the cancellation of PruneSnapshots.  A failure already recorded
++// by the operator is raised instead; otherwise the cancellation is written to the log of
++// the prune directly, since that log isn't written through LOG_*, and then raised.
++func (manager *SnapshotManager) raisePruneCancel(logFile io.Writer) {
++	raiseFailures(manager.chunkOperator)
++	if logFile != nil {
++		fmt.Fprintf(logFile, "Prune canceled\n")
++	}
++	raiseCancel()
++}
 diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 --- a/src/duplicacy_cancel_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel_test.go	2026-11-10 10:54:10.565697068 +0000
-@@ -0,0 +1,1568 @@
++++ b/src/duplicacy_cancel_test.go	2026-11-10 13:47:22.647326682 +0000
+@@ -0,0 +1,2471 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -1881,9 +1926,912 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +		})
 +	}
 +}
++
++// pruneCall is a call of the storage of a prune; number counts the calls with the same
++// operation and path, from 1.
++type pruneCall struct {
++	operation string
++	path      string
++	number    int
++}
++
++// pruneCancelStorage wraps faultStorage for the cancellation tests of PruneSnapshots.  It
++// records the calls of ListFiles, DownloadFile, DeleteFile and MoveFile and requests a
++// cancellation at the first recorded call selected by cancelOn, before the call is made.
++type pruneCancelStorage struct {
++	*faultStorage
++	lock     sync.Mutex
++	calls    []pruneCall
++	cancelOn func(call pruneCall) bool
++	fired    bool
++}
++
++func (storage *pruneCancelStorage) record(operation string, filePath string) {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	call := pruneCall{operation: operation, path: filePath, number: 1}
++	for _, earlier := range storage.calls {
++		if earlier.operation == operation && earlier.path == filePath {
++			call.number++
++		}
++	}
++	storage.calls = append(storage.calls, call)
++	if !storage.fired && storage.cancelOn != nil && storage.cancelOn(call) {
++		storage.fired = true
++		RequestCancel()
++	}
++}
++
++func (storage *pruneCancelStorage) ListFiles(threadIndex int, dir string) ([]string,
++	[]int64, error) {
++	storage.record("ListFiles", dir)
++	return storage.faultStorage.ListFiles(threadIndex, dir)
++}
++
++func (storage *pruneCancelStorage) DownloadFile(threadIndex int, filePath string,
++	chunk *Chunk) error {
++	storage.record("DownloadFile", filePath)
++	return storage.faultStorage.DownloadFile(threadIndex, filePath, chunk)
++}
++
++func (storage *pruneCancelStorage) DeleteFile(threadIndex int, filePath string) error {
++	storage.record("DeleteFile", filePath)
++	return storage.faultStorage.DeleteFile(threadIndex, filePath)
++}
++
++func (storage *pruneCancelStorage) MoveFile(threadIndex int, from string,
++	to string) error {
++	storage.record("MoveFile", from)
++	return storage.faultStorage.MoveFile(threadIndex, from, to)
++}
++
++func (storage *pruneCancelStorage) reset() {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	storage.calls, storage.fired = nil, false
++}
++
++func (storage *pruneCancelStorage) called(operation string, filePath string) bool {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	for _, call := range storage.calls {
++		if call.operation == operation && call.path == filePath {
++			return true
++		}
++	}
++	return false
++}
++
++// count returns the number of the calls of the operation on the paths with the prefix.
++func (storage *pruneCancelStorage) count(operation string, prefix string) int {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	count := 0
++	for _, call := range storage.calls {
++		if call.operation == operation && strings.HasPrefix(call.path, prefix) {
++			count++
++		}
++	}
++	return count
++}
++
++func (storage *pruneCancelStorage) setCancelOn(cancelOn func(call pruneCall) bool) {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	storage.cancelOn = cancelOn
++}
++
++// cancelOnFirst selects the first call of the operation on a path with the prefix.
++func cancelOnFirst(operation string, prefix string) func(call pruneCall) bool {
++	return func(call pruneCall) bool {
++		return call.operation == operation && strings.HasPrefix(call.path, prefix)
++	}
++}
++
++// cancelOnPath selects the first call of the operation on exactly the path.
++func cancelOnPath(operation string, filePath string) func(call pruneCall) bool {
++	return func(call pruneCall) bool {
++		return call.operation == operation && call.path == filePath && call.number == 1
++	}
++}
++
++func newPruneCancelFixture(t *testing.T) (*workerErrorsPruneFixture,
++	*pruneCancelStorage) {
++	fixture := newWorkerErrorsPruneFixture(t)
++	storage := &pruneCancelStorage{faultStorage: fixture.storage}
++	fixture.raw.DerivedStorage = storage
++	fixture.manager.storage = storage
++	return fixture, storage
++}
++
++// clearPruneCache empties the cached revision files and chunks, so that the prune
++// downloads them from the storage; the fossil collections stay.
++func clearPruneCache(t *testing.T, fixture *workerErrorsPruneFixture) {
++	t.Helper()
++	for _, dir := range []string{"snapshots", "chunks"} {
++		root := filepath.Join(fixture.testDir, "cache", dir)
++		entries, err := os.ReadDir(root)
++		if err != nil {
++			t.Fatalf("Failed to list the cache %s: %v", root, err)
++		}
++		for _, entry := range entries {
++			if err = os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
++				t.Fatalf("Failed to clear the cache %s: %v", root, err)
++			}
++		}
++	}
++}
++
++// pruneCancelRun is a case of TestSnapshotManager_PruneSnapshots_Cancel.
++type pruneCancelRun struct {
++	fixture   *workerErrorsPruneFixture
++	storage   *pruneCancelStorage
++	recorder  *progressRecorder
++	logs      *workerErrorsLogs
++	operator  *ChunkOperator
++	manager   *SnapshotManager
++	files     []string // The chunks and the revision files before the prune
++	logFiles  []string // The files of the log directory before the prune
++	baseline  int
++	flagAfter bool
++	first     []string // The fossils of the old collection 1
++	second    []string // The fossils of the old collection 2
++	paths     []string // The paths of the chunks that the case looks at
++}
++
++func pruneLogFiles(t *testing.T, fixture *workerErrorsPruneFixture) []string {
++	t.Helper()
++	entries, err := os.ReadDir(filepath.Join(fixture.testDir, ".duplicacy", "logs"))
++	if err != nil && !os.IsNotExist(err) {
++		t.Fatalf("Failed to list the log directory: %v", err)
++	}
++	var names []string
++	for _, entry := range entries {
++		names = append(names, entry.Name())
++	}
++	return names
++}
++
++// arm finishes the preparation of a case: after the preliminary prunes and revisions it
++// clears the cache, records the progress, remembers the files, requests the cancellation
++// at once or sets the trigger, and forgets the calls made so far.
++func (run *pruneCancelRun) arm(t *testing.T, cancelOn func(call pruneCall) bool,
++	immediately bool) {
++	t.Helper()
++	clearPruneCache(t, run.fixture)
++	run.recorder = recordProgress(t)
++	run.files = workerErrorsStorageFiles(t, run.fixture.raw, "chunks", "snapshots")
++	run.logFiles = pruneLogFiles(t, run.fixture)
++	if immediately {
++		RequestCancel()
++	}
++	run.storage.setCancelOn(cancelOn)
++	run.storage.reset()
++}
++
++// sequencePath returns the path of the chunk with the chunk sequence of the revision.
++func (run *pruneCancelRun) sequencePath(revision int) string {
++	snapshot := run.fixture.manager.DownloadSnapshot("vm1@host1", revision)
++	return run.fixture.chunkPath(snapshot.ChunkSequence[0])
++}
++
++func (run *pruneCancelRun) expectUnchanged(t *testing.T) {
++	t.Helper()
++	got := workerErrorsStorageFiles(t, run.fixture.raw, "chunks", "snapshots")
++	if !reflect.DeepEqual(got, run.files) {
++		t.Fatalf("The storage has changed: %v instead of %v", got, run.files)
++	}
++}
++
++func (run *pruneCancelRun) expectNoWrites(t *testing.T) {
++	t.Helper()
++	if moves, deletes := run.storage.count("MoveFile", ""),
++		run.storage.count("DeleteFile", ""); moves != 0 || deletes != 0 {
++		t.Fatalf("The prune has moved %d files and deleted %d", moves, deletes)
++	}
++}
++
++func (run *pruneCancelRun) expectNotCalled(t *testing.T, operation string,
++	prefix string) {
++	t.Helper()
++	if run.storage.count(operation, prefix) != 0 {
++		t.Fatalf("%s has been called for %s", operation, prefix)
++	}
++}
++
++// expectEvents checks the events of the prune: none, the start and the steps without an
++// end, or one end; nothing follows after the return.
++func (run *pruneCancelRun) expectEvents(t *testing.T, mode string) {
++	t.Helper()
++	events := run.recorder.take()
++	switch mode {
++	case "none":
++		if len(events) != 0 {
++			t.Fatalf("Unexpected events %+v", events)
++		}
++	case "canceled":
++		// A prune canceled before its first task has only the start
++		if len(events) == 1 && events[0].Kind == ProgressKindStart &&
++			events[0].Operation == ProgressOperationPrune {
++			break
++		}
++		expectNoEnd(t, events, ProgressOperationPrune)
++	case "completed":
++		summarizePruneProgress(t, events)
++		ends := 0
++		for _, event := range events {
++			if event.Kind == ProgressKindEnd {
++				ends++
++			}
++		}
++		if ends != 1 {
++			t.Fatalf("Expected one end, got %+v", events)
++		}
++	}
++	if late := run.recorder.take(); len(late) != 0 {
++		t.Fatalf("Events after the return: %+v", late)
++	}
++}
++
++// fossilExists checks the path in the storage itself, bypassing the wrapper.
++func (run *pruneCancelRun) fossilExists(t *testing.T, filePath string) bool {
++	t.Helper()
++	exist, _, _, err := run.fixture.raw.GetFileInfo(0, filePath)
++	if err != nil {
++		t.Fatalf("Failed to check %s: %v", filePath, err)
++	}
++	return exist
++}
++
++func (run *pruneCancelRun) collectionExists(t *testing.T, name string) bool {
++	t.Helper()
++	_, err := os.Stat(filepath.Join(run.fixture.testDir, "cache", "fossils", name))
++	if err != nil && !os.IsNotExist(err) {
++		t.Fatalf("Failed to check the collection %s: %v", name, err)
++	}
++	return err == nil
++}
++
++func (run *pruneCancelRun) readCollection(t *testing.T, name string) FossilCollection {
++	t.Helper()
++	content, err := os.ReadFile(filepath.Join(run.fixture.testDir, "cache", "fossils",
++		name))
++	if err != nil {
++		t.Fatalf("Failed to read the collection %s: %v", name, err)
++	}
++	var collection FossilCollection
++	if err = json.Unmarshal(content, &collection); err != nil {
++		t.Fatalf("Failed to parse the collection %s: %v", name, err)
++	}
++	return collection
++}
++
++func TestSnapshotManager_PruneSnapshots_Cancel(t *testing.T) {
++	type fields struct {
++		config                 *Config
++		storage                Storage
++		fileChunk              *Chunk
++		snapshotCache          *FileStorage
++		chunkOperator          *ChunkOperator
++		numberOfCorruptedFiles int64
++	}
++	type args struct {
++		selfID               string
++		snapshotID           string
++		revisionsToBeDeleted []int
++		tags                 []string
++		retentions           []string
++		exhaustive           bool
++		exclusive            bool
++		ignoredIDs           []string
++		dryRun               bool
++		deleteOnly           bool
++		collectOnly          bool
++		threads              int
++	}
++	vm1 := args{selfID: "vm1@host1", snapshotID: "vm1@host1", threads: 2}
++	with := func(change func(a *args)) args {
++		a := vm1
++		change(&a)
++		return a
++	}
++	keep := with(func(a *args) { a.retentions = workerErrorsKeep })
++	delete1 := with(func(a *args) { a.revisionsToBeDeleted = []int{1} })
++	delete1Single := with(func(a *args) { a.revisionsToBeDeleted, a.threads = []int{1}, 1 })
++	delete1Exclusive := with(func(a *args) {
++		a.revisionsToBeDeleted, a.exclusive = []int{1}, true
++	})
++	delete12 := with(func(a *args) { a.revisionsToBeDeleted = []int{1, 2} })
++	delete3Single := with(func(a *args) { a.revisionsToBeDeleted, a.threads = []int{3}, 1 })
++	exhaustive := with(func(a *args) { a.exhaustive = true })
++	exhaustiveDryRun := with(func(a *args) { a.exhaustive, a.dryRun = true, true })
++	exhaustiveActed := with(func(a *args) {
++		a.exhaustive, a.threads, a.revisionsToBeDeleted = true, 1, []int{1}
++	})
++	deleteOnly := with(func(a *args) {
++		a.revisionsToBeDeleted, a.deleteOnly, a.threads = []int{1}, true, 1
++	})
++	deleteOnlySingle := with(func(a *args) { a.deleteOnly, a.threads = true, 1 })
++	collectOnly := with(func(a *args) {
++		a.revisionsToBeDeleted, a.collectOnly = []int{1}, true
++	})
++	newRun := func(t *testing.T) *pruneCancelRun {
++		fixture, storage := newPruneCancelFixture(t)
++		return &pruneCancelRun{fixture: fixture, storage: storage}
++	}
++	newChunks := func(run *pruneCancelRun, count int) []string {
++		var hashes []string
++		for i := 0; i < count; i++ {
++			hashes = append(hashes, uploadRandomChunk(run.fixture.manager, 1024))
++		}
++		return hashes
++	}
++	// prepareCollections creates the old collection 1 of the chunks of the revision 3 and,
++	// with both, the collection 2 of the chunks of the revision 5; the revision 7, which
++	// makes them eligible, references either the chunks of the collection 1 or the chunks
++	// 2 and 3 of the fixture
++	prepareCollections := func(t *testing.T, both bool,
++		referencesFossils bool) *pruneCancelRun {
++		run := newRun(t)
++		fixture := run.fixture
++		a := newChunks(run, 3)
++		fixture.createRevision(3, -1, a...)
++		fixture.createRevision(4, 0, fixture.chunks[1], fixture.chunks[2])
++		fixture.expectSuccess(fixture.prune([]int{3}, nil, false))
++		if both {
++			b := newChunks(run, 3)
++			fixture.createRevision(5, 0, b...)
++			fixture.createRevision(6, 0, fixture.chunks[1], fixture.chunks[2])
++			fixture.expectSuccess(fixture.prune([]int{5}, nil, false))
++		}
++		if referencesFossils {
++			fixture.createRevision(7, 1, a...)
++		} else {
++			fixture.createRevision(7, 1, fixture.chunks[1], fixture.chunks[2])
++		}
++		first := run.readCollection(t, "1")
++		if len(first.Fossils)+len(first.Temporaries) < 3 {
++			t.Fatalf("The collection 1 has %d fossils and %d temporary files",
++				len(first.Fossils), len(first.Temporaries))
++		}
++		run.first = first.Fossils
++		if both {
++			run.second = run.readCollection(t, "2").Fossils
++			if !run.collectionExists(t, "2") {
++				t.Fatalf("The collection 2 is missing")
++			}
++		}
++		return run
++	}
++	// expectSecondUntouched checks the old collection 2 and its fossils
++	expectSecondUntouched := func(t *testing.T, run *pruneCancelRun) {
++		t.Helper()
++		if !run.collectionExists(t, "2") {
++			t.Fatalf("The collection 2 has been deleted")
++		}
++		for _, fossil := range run.second {
++			if !run.fossilExists(t, fossil) ||
++				run.storage.called("DeleteFile", fossil) ||
++				run.storage.called("MoveFile", fossil) {
++				t.Fatalf("The fossil %s of the collection 2 has been touched", fossil)
++			}
++		}
++	}
++	// expectFirstProcessed checks that the tasks of the old collection 1 have completed
++	expectFirstProcessed := func(t *testing.T, run *pruneCancelRun) {
++		t.Helper()
++		if run.collectionExists(t, "1") {
++			t.Fatalf("The collection 1 has not been deleted")
++		}
++		for _, fossil := range run.first {
++			if run.fossilExists(t, fossil) {
++				t.Fatalf("The fossil %s of the collection 1 has not been deleted", fossil)
++			}
++		}
++	}
++	// prepareRevisions requests the cancellation at the download of the revision file 1
++	prepareRevisions := func(t *testing.T) *pruneCancelRun {
++		run := newRun(t)
++		run.arm(t, cancelOnPath("DownloadFile", "snapshots/vm1@host1/1"), false)
++		return run
++	}
++	// prepareOnSequence prepares a case that requests the cancellation at the download of
++	// the chunk with the chunk sequence of the revision; the extra revisions are created
++	// first and their sequence paths come after it in run.paths
++	prepareOnSequence := func(t *testing.T, trigger int,
++		extra func(run *pruneCancelRun) []int) *pruneCancelRun {
++		run := newRun(t)
++		var revisions []int
++		if extra != nil {
++			revisions = extra(run)
++		}
++		run.paths = []string{run.sequencePath(trigger)}
++		for _, revision := range revisions {
++			run.paths = append(run.paths, run.sequencePath(revision))
++		}
++		run.arm(t, cancelOnPath("DownloadFile", run.paths[0]), false)
++		return run
++	}
++	prepareCollectionsOnDelete := func(t *testing.T, both bool,
++		referencesFossils bool) *pruneCancelRun {
++		run := prepareCollections(t, both, referencesFossils)
++		run.arm(t, cancelOnFirst("DeleteFile", "chunks/"), false)
++		return run
++	}
++	prepareWorkerError := func(t *testing.T, both bool) *pruneCancelRun {
++		run := prepareCollections(t, both, true)
++		run.arm(t, cancelOnFirst("MoveFile", "chunks/"), false)
++		run.fixture.storage.fail("MoveFile", "chunks/")
++		return run
++	}
++	prepareFossilize := func(t *testing.T) *pruneCancelRun {
++		run := newRun(t)
++		fixture := run.fixture
++		c := newChunks(run, 4)
++		fixture.createRevision(3, -1, c...)
++		fixture.createRevision(4, 0, fixture.chunks[1], fixture.chunks[2])
++		run.paths = []string{run.sequencePath(3)}
++		for _, chunk := range c {
++			run.paths = append(run.paths, fixture.chunkPath(chunk))
++		}
++		run.arm(t, cancelOnFirst("MoveFile", "chunks/"), false)
++		return run
++	}
++	expectFossilized := func(t *testing.T, run *pruneCancelRun) {
++		t.Helper()
++		for _, chunkPath := range run.paths {
++			if run.fossilExists(t, chunkPath) || !run.fossilExists(t, chunkPath+".fsl") {
++				t.Fatalf("The chunk %s has not been turned into a fossil", chunkPath)
++			}
++		}
++		run.fixture.expectRevisions([]int{1, 2, 4}, []int{3})
++		if !run.fixture.collectionSaved() {
++			t.Fatalf("No fossil collection has been saved")
++		}
++		run.expectEvents(t, "completed")
++	}
++	expectUnchanged := func(t *testing.T, run *pruneCancelRun) {
++		t.Helper()
++		run.expectUnchanged(t)
++		run.expectEvents(t, "canceled")
++	}
++	tests := []struct {
++		name       string
++		fields     fields
++		args       args
++		want       bool
++		wantLogID  string
++		notFired   bool // The trigger is not set
++		notFlagged bool // The request is not set after the prune
++		recover    string
++		prepare    func(t *testing.T) *pruneCancelRun
++		check      func(t *testing.T, run *pruneCancelRun)
++		after      func(t *testing.T, run *pruneCancelRun)
++	}{
++		{
++			name: "BeforeStart", args: keep, wantLogID: CancelLogID, notFired: true,
++			recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				run.arm(t, nil, true)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				for _, operation := range []string{"ListFiles", "DownloadFile", "DeleteFile",
++					"MoveFile"} {
++					run.expectNotCalled(t, operation, "")
++				}
++				if got := pruneLogFiles(t, run.fixture); !reflect.DeepEqual(got, run.logFiles) {
++					t.Fatalf("The log files are %v instead of %v", got, run.logFiles)
++				}
++				run.expectUnchanged(t)
++				run.expectEvents(t, "none")
++			},
++		},
++		{
++			name: "RevisionsLog", args: keep, wantLogID: CancelLogID, recover: "full",
++			prepare: prepareRevisions,
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNotCalled(t, "DownloadFile", "snapshots/vm1@host1/2")
++				names := pruneLogFiles(t, run.fixture)
++				if len(names) != 1 || len(run.logFiles) != 0 {
++					t.Fatalf("The log files are %v after %v", names, run.logFiles)
++				}
++				content, err := os.ReadFile(filepath.Join(run.fixture.testDir, ".duplicacy",
++					"logs", names[0]))
++				if err != nil || string(content) != "Prune canceled\n" {
++					t.Fatalf("The log is %q (%v)", content, err)
++				}
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "RevisionsLogFunction", args: keep, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := prepareRevisions(t)
++				run.logs = collectWorkerErrorsLogs()
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNotCalled(t, "DownloadFile", "snapshots/vm1@host1/2")
++				if !strings.Contains(run.logs.String(),
++					"ERROR OPERATION_CANCELED The operation has been canceled") {
++					t.Fatalf("The log function has received %q", run.logs.String())
++				}
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "SnapshotIDs", args: keep, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				fixture := run.fixture
++				end := fixture.now - 2*24*3600
++				createTestSnapshot(fixture.manager, "vm2@host1", 1, end-3600, end-60,
++					[]string{fixture.chunks[2]}, "tag")
++				run.arm(t, cancelOnPath("DownloadFile", "snapshots/vm1@host1/2"), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNotCalled(t, "ListFiles", "snapshots/vm2@host1")
++				run.expectNotCalled(t, "DownloadFile", "snapshots/vm2@host1")
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "Collections", args: delete1Single,
++			wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				return prepareCollectionsOnDelete(t, true, false)
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				expectFirstProcessed(t, run)
++				expectSecondUntouched(t, run)
++				run.expectEvents(t, "canceled")
++			},
++		},
++		{
++			name: "WorkerErrorCollections", args: delete1Single, wantLogID: "FOSSIL_RESURRECT",
++			prepare: func(t *testing.T) *pruneCancelRun { return prepareWorkerError(t, true) },
++			check: func(t *testing.T, run *pruneCancelRun) {
++				expectSecondUntouched(t, run)
++				run.expectEvents(t, "canceled")
++			},
++		},
++		{
++			name: "WorkerErrorChoose", args: delete1Single, wantLogID: "FOSSIL_RESURRECT",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := prepareWorkerError(t, false)
++				collection := run.readCollection(t, "1")
++				if len(collection.Fossils) != 4 || len(collection.Temporaries) != 0 {
++					t.Fatalf("The collection 1 has %d fossils and %d temporary files",
++						len(collection.Fossils), len(collection.Temporaries))
++				}
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectEvents(t, "canceled")
++			},
++		},
++		{
++			name: "MapsDeleted", args: delete12, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				return prepareOnSequence(t, 1, func(run *pruneCancelRun) []int {
++					run.fixture.createRevision(3, 0, run.fixture.chunks[1], run.fixture.chunks[2])
++					return []int{2}
++				})
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				if run.storage.called("DownloadFile", run.paths[1]) {
++					t.Fatalf("The chunk sequence of the revision 2 has been downloaded")
++				}
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "MapsKept", args: delete1, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				return prepareOnSequence(t, 2, func(run *pruneCancelRun) []int {
++					fixture := run.fixture
++					fixture.createRevision(3, 0, fixture.chunks[2], newChunks(run, 1)[0])
++					return []int{3}
++				})
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				if run.storage.called("DownloadFile", run.paths[1]) {
++					t.Fatalf("The chunk sequence of the revision 3 has been downloaded")
++				}
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "BeforeFossilize", args: delete1, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun { return prepareOnSequence(t, 2, nil) },
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNoWrites(t)
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "BeforeDeleteExclusive", args: delete1Exclusive, wantLogID: CancelLogID,
++			recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun { return prepareOnSequence(t, 2, nil) },
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNoWrites(t)
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "ExhaustiveRevisions", args: exhaustive, wantLogID: CancelLogID,
++			recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				return prepareOnSequence(t, 1, func(run *pruneCancelRun) []int {
++					return []int{2}
++				})
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				if run.storage.called("DownloadFile", run.paths[1]) {
++					t.Fatalf("The chunk sequence of the revision 2 has been downloaded")
++				}
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "ExhaustiveBeforeList", args: exhaustive, wantLogID: CancelLogID,
++			recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun { return prepareOnSequence(t, 2, nil) },
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNotCalled(t, "ListFiles", "chunks/")
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "ExhaustiveList", args: exhaustive, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				run.arm(t, cancelOnPath("ListFiles", "chunks/"), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNoWrites(t)
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "DryRun", args: exhaustiveDryRun, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				run.arm(t, cancelOnPath("ListFiles", "chunks/"), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNoWrites(t)
++				expectUnchanged(t, run)
++			},
++		},
++		{
++			name: "ExhaustiveActed", args: exhaustiveActed, want: true, recover: "partial",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				for _, hash := range newChunks(run, 4) {
++					run.paths = append(run.paths, run.fixture.chunkPath(hash))
++				}
++				run.arm(t, cancelOnFirst("MoveFile", "chunks/"), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				if moves := run.storage.count("MoveFile", "chunks/"); moves < len(run.paths) {
++					t.Fatalf("The scan has moved %d files, want at least %d", moves,
++						len(run.paths))
++				}
++				for _, chunkPath := range run.paths {
++					if !run.fossilExists(t, chunkPath+".fsl") {
++						t.Fatalf("The chunk %s has not been fossilized", chunkPath)
++					}
++				}
++				run.fixture.expectRevisions([]int{2}, []int{1})
++				if !run.fixture.collectionSaved() {
++					t.Fatalf("No fossil collection has been saved")
++				}
++				run.expectEvents(t, "completed")
++			},
++		},
++		{
++			name: "Indivisible", args: delete3Single, want: true, recover: "partial",
++			prepare: prepareFossilize, check: expectFossilized,
++		},
++		{
++			name: "CleanSnapshotCache", args: delete3Single, want: true, recover: "partial",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := prepareFossilize(t)
++				stale := filepath.Join(run.fixture.testDir, "cache", "chunks",
++					strings.Repeat("f", 64))
++				if err := os.WriteFile(stale, []byte("stale"), 0600); err != nil {
++					t.Fatalf("Failed to create the cached chunk: %v", err)
++				}
++				run.paths = append(run.paths, stale)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				stale := run.paths[len(run.paths)-1]
++				run.paths = run.paths[:len(run.paths)-1]
++				if _, err := os.Stat(stale); !os.IsNotExist(err) {
++					t.Fatalf("The cached chunk has not been removed: %v", err)
++				}
++				expectFossilized(t, run)
++			},
++		},
++		{
++			name: "DeleteOnlyCanceled", args: deleteOnly, wantLogID: CancelLogID,
++			recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				return prepareCollectionsOnDelete(t, true, false)
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				expectFirstProcessed(t, run)
++				expectSecondUntouched(t, run)
++				run.expectEvents(t, "canceled")
++			},
++		},
++		{
++			name: "DeleteOnlyCompletes", args: deleteOnlySingle, want: true, recover: "partial",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				return prepareCollectionsOnDelete(t, false, false)
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				expectFirstProcessed(t, run)
++				run.expectEvents(t, "completed")
++			},
++		},
++		{
++			name: "CollectOnly", args: collectOnly, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := prepareCollections(t, true, false)
++				run.paths = []string{run.sequencePath(2)}
++				run.arm(t, cancelOnPath("DownloadFile", run.paths[0]), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectNoWrites(t)
++				if !run.collectionExists(t, "1") {
++					t.Fatalf("The collection 1 has been deleted")
++				}
++				for _, fossil := range run.first {
++					if !run.fossilExists(t, fossil) {
++						t.Fatalf("The fossil %s of the collection 1 is missing", fossil)
++					}
++				}
++				expectSecondUntouched(t, run)
++				run.expectEvents(t, "canceled")
++			},
++		},
++		{
++			name: "ExistingOperator", args: keep, wantLogID: CancelLogID, recover: "full",
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				run.fixture.manager.CreateChunkOperator(false, false, 2, false)
++				run.operator = run.fixture.manager.chunkOperator
++				t.Cleanup(run.operator.stopWorkers)
++				run.operator.fossils = []string{"chunks/workererrors.fsl"}
++				run.arm(t, cancelOnPath("DownloadFile", "snapshots/vm1@host1/1"), false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				if run.manager.chunkOperator != run.operator || run.operator.isStopped() ||
++					len(run.operator.fossils) != 0 {
++					t.Fatalf("The existing operator has not been kept without its fossils")
++				}
++				expectUnchanged(t, run)
++			},
++			after: func(t *testing.T, run *pruneCancelRun) {
++				if run.manager.chunkOperator != run.operator || run.operator.isStopped() ||
++					run.storage.called("DeleteFile", "chunks/workererrors.fsl") ||
++					run.storage.called("MoveFile", "chunks/workererrors.fsl") {
++					t.Fatalf("The repeated prune has touched the old fossil of the operator")
++				}
++			},
++		},
++		{
++			name: "NoCancel", args: keep, want: true, notFired: true, notFlagged: true,
++			prepare: func(t *testing.T) *pruneCancelRun {
++				run := newRun(t)
++				run.arm(t, nil, false)
++				return run
++			},
++			check: func(t *testing.T, run *pruneCancelRun) {
++				run.expectEvents(t, "completed")
++				run.fixture.expectPruned()
++			},
++		},
++	}
++	// runPrune runs PruneSnapshots of the manager of the case with the arguments
++	runPrune := func(t *testing.T, manager *SnapshotManager, a args) workerErrorsOutcome {
++		return runWorkerErrorsOperation(t, func() bool {
++			return manager.PruneSnapshots(a.selfID, a.snapshotID, a.revisionsToBeDeleted,
++				a.tags, a.retentions, a.exhaustive, a.exclusive, a.ignoredIDs, a.dryRun,
++				a.deleteOnly, a.collectOnly, a.threads)
++		})
++	}
++	// expectPruneRecovers checks that the storage is consistent after a canceled prune
++	// and that the same prune without the cancellation completes
++	expectPruneRecovers := func(t *testing.T, run *pruneCancelRun, a args, mode string) {
++		t.Helper()
++		check := func(chunks bool) {
++			t.Helper()
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				return run.manager.CheckSnapshots("vm1@host1", nil, "", false, false, false,
++					chunks, false, false, false, 2, false)
++			})
++			if outcome.recovered != nil || !outcome.result {
++				t.Fatalf("CheckSnapshots failed: %#v (result %t)", outcome.recovered,
++					outcome.result)
++			}
++		}
++		if mode == "full" {
++			check(false)
++		}
++		run.storage.setCancelOn(nil)
++		outcome := runPrune(t, run.manager, a)
++		if outcome.recovered != nil {
++			t.Fatalf("The repeated prune panicked with %#v", outcome.recovered)
++		}
++		check(true)
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			resetCancelAfter(t)
++			run := tt.prepare(t)
++			run.baseline = runtime.NumGoroutine()
++			source := run.fixture.manager
++			tt.fields = fields{
++				config:                 source.config,
++				storage:                source.storage,
++				fileChunk:              source.fileChunk,
++				snapshotCache:          source.snapshotCache,
++				chunkOperator:          source.chunkOperator,
++				numberOfCorruptedFiles: source.numberOfCorruptedFiles,
++			}
++			manager := &SnapshotManager{
++				config:                 tt.fields.config,
++				storage:                tt.fields.storage,
++				fileChunk:              tt.fields.fileChunk,
++				snapshotCache:          tt.fields.snapshotCache,
++				chunkOperator:          tt.fields.chunkOperator,
++				numberOfCorruptedFiles: tt.fields.numberOfCorruptedFiles,
++			}
++			run.manager = manager
++			outcome := runPrune(t, manager, tt.args)
++			run.flagAfter = IsCancelRequested()
++			ResetCancel()
++			if tt.wantLogID != "" {
++				expectWorkerErrorsException(t, outcome, tt.wantLogID)
++			} else if outcome.recovered != nil {
++				t.Fatalf("SnapshotManager.PruneSnapshots() panicked with %#v", outcome.recovered)
++			} else if outcome.result != tt.want {
++				t.Errorf("SnapshotManager.PruneSnapshots() = %v, want %v", outcome.result,
++					tt.want)
++			}
++			if fired := run.storage.fired; fired == tt.notFired {
++				t.Fatalf("The trigger has fired: %t", fired)
++			}
++			if run.flagAfter == tt.notFlagged {
++				t.Fatalf("The request is set after the prune: %t", run.flagAfter)
++			}
++			waitForWorkerErrorsGoroutines(t, run.baseline)
++			tt.check(t, run)
++			if tt.recover != "" {
++				expectPruneRecovers(t, run, tt.args, tt.recover)
++				waitForWorkerErrorsGoroutines(t, run.baseline)
++			}
++			if tt.after != nil {
++				tt.after(t, run)
++			}
++		})
++	}
++}
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
---- a/src/duplicacy_progress.go	2026-11-10 09:11:16.541255296 +0000
-+++ b/src/duplicacy_progress.go	2026-11-10 09:11:16.605256860 +0000
+--- a/src/duplicacy_progress.go	2026-11-10 11:46:59.685851258 +0000
++++ b/src/duplicacy_progress.go	2026-11-10 11:46:59.701851631 +0000
 @@ -97,13 +97,14 @@
  // goroutines and the goroutine that runs the operation.  Set it before an operation and
  // don't change it while the operation runs.  It must return without waiting for the
@@ -1907,8 +2855,8 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
  // operation; the worker goroutines may still call ProgressFunction after the panic
  // until the operation returns, but not after that.
 diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
---- a/src/duplicacy_snapshotmanager.go	2026-11-10 09:11:16.545255394 +0000
-+++ b/src/duplicacy_snapshotmanager.go	2026-11-10 10:59:21.753119864 +0000
+--- a/src/duplicacy_snapshotmanager.go	2026-11-10 11:46:59.685851258 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-10 13:57:11.596514277 +0000
 @@ -873,6 +873,11 @@
  func (manager *SnapshotManager) CheckSnapshots(snapshotID string, revisionsToCheck []int, tag string, showStatistics bool, showTabular bool,
  	checkFiles bool, checkChunks, searchFossils bool, resurrect bool, rewriteChunks bool, threads int, allowFailures bool) bool {
@@ -1968,3 +2916,190 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		chunkChannel <- chunkIndex
  	}
  
+@@ -1994,6 +2024,12 @@
+ 
+ 	defer manager.useOperator(threads, true)()
+ 
++	// A cancellation requested before the prune is raised before the log is created and before any event; the
++	// operator has no tasks yet
++	if IsCancelRequested() {
++		raiseCancel()
++	}
++
+ 	// The chunks to fossilize or delete come as a stream, so the totals are unknown
+ 	if ProgressFunction != nil {
+ 		ProgressFunction(ProgressEvent{Operation: ProgressOperationPrune, Kind: ProgressKindStart, TotalBytes: -1,
+@@ -2096,6 +2132,10 @@
+ 	}
+ 
+ 	for _, id := range snapshotIDs {
++		// Listing and loading the revisions doesn't change the storage
++		if IsCancelRequested() {
++			manager.raisePruneCancel(logFile)
++		}
+ 		var revisions []int
+ 		revisions, err = manager.ListSnapshotRevisions(id)
+ 		if err != nil {
+@@ -2106,6 +2146,9 @@
+ 		sort.Ints(revisions)
+ 		var snapshots []*Snapshot
+ 		for _, revision := range revisions {
++			if IsCancelRequested() {
++				manager.raisePruneCancel(logFile)
++			}
+ 			snapshot := manager.DownloadSnapshot(id, revision)
+ 			if snapshot != nil {
+ 				snapshots = append(snapshots, snapshot)
+@@ -2138,6 +2181,16 @@
+ 	// Find fossil collections previously created, and delete fossils and temporary files in them if they are
+ 	// deletable.
+ 	for _, collectionName := range collections {
++		// The tasks of a collection and the deletion of its file are one step, so a cancellation is checked only
++		// here, between collections, after the tasks of the previous ones: a resurrection stopped halfway would
++		// leave a needed chunk as a fossil.  A failure of these tasks is raised by WaitForCompletion instead of
++		// the cancellation.  The wait has no test of its own: without it raisePruneCancel still raises a failure
++		// already recorded and the deferred cleanup of useOperator waits for the tasks.  With collectOnly the
++		// loop only counts the collections and adds no task
++		if IsCancelRequested() {
++			manager.chunkOperator.WaitForCompletion()
++			manager.raisePruneCancel(logFile)
++		}
+ 
+ 		matched := collectionRegex.FindStringSubmatch(collectionName)
+ 		if matched == nil {
+@@ -2273,6 +2326,13 @@
+ 		return true
+ 	}
+ 
++	// Choosing the revisions doesn't change the storage.  The tasks of the last old collection may still be
++	// running, so raisePruneCancel raises a failure they have already recorded instead of the cancellation; the
++	// checks of this phase have no test that tells them apart, since nothing between them touches the storage
++	if IsCancelRequested() {
++		manager.raisePruneCancel(logFile)
++	}
++
+ 	toBeDeleted := 0
+ 
+ 	revisionMap := make(map[int]bool)
+@@ -2287,6 +2347,9 @@
+ 
+ 	// Find the snapshots that need to be deleted
+ 	for id, snapshots := range allSnapshots {
++		if IsCancelRequested() {
++			manager.raisePruneCancel(logFile)
++		}
+ 
+ 		if len(snapshotID) > 0 && id != snapshotID {
+ 			continue
+@@ -2505,6 +2568,11 @@
+ 		}
+ 
+ 		for _, snapshot := range snapshots {
++			// Reading the chunks of the revisions doesn't change the storage; the tasks of the last old
++			// collection may still be running, so a failure they have recorded is raised instead
++			if IsCancelRequested() {
++				manager.raisePruneCancel(logFile)
++			}
+ 			if !snapshot.Flag {
+ 				continue
+ 			}
+@@ -2522,6 +2590,9 @@
+ 
+ 	for _, snapshots := range allSnapshots {
+ 		for _, snapshot := range snapshots {
++			if IsCancelRequested() {
++				manager.raisePruneCancel(logFile)
++			}
+ 			if snapshot.Flag {
+ 				continue
+ 			}
+@@ -2536,6 +2607,12 @@
+ 		}
+ 	}
+ 
++	// The last check: fossilizing or deleting the chunks, saving the collection and deleting the revision files
++	// are one step, and stopping it would leave fossils without a collection or, in exclusive mode, revisions
++	// whose chunks are deleted, so a request made from here on lets the prune complete
++	if IsCancelRequested() {
++		manager.raisePruneCancel(logFile)
++	}
+ 	for chunk, value := range targetChunks {
+ 		if value {
+ 			continue
+@@ -2578,6 +2655,11 @@
+ 		}
+ 
+ 		for _, snapshot := range snapshots {
++			// Reading the chunks of the revisions doesn't change the storage; a failure recorded by the tasks of
++			// the last old collection is raised instead
++			if IsCancelRequested() {
++				manager.raisePruneCancel(logFile)
++			}
+ 			if snapshot.Flag {
+ 				LOG_INFO("SNAPSHOT_DELETE", "Deleting snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
+ 				continue
+@@ -2591,7 +2673,14 @@
+ 		}
+ 	}
+ 
++	// Until the first task is added the scan only lists the storage and a cancellation leaves no trace.  From
++	// the first fossilize, delete or resurrect on, the rest of the prune is one step and the request isn't
++	// checked; a dry run adds no task, so it checks the request during the whole scan
++	acted := false
+ 	for _, dir := range manager.storage.GetChunkDirectories() {
++		if !acted && IsCancelRequested() {
++			manager.raisePruneCancel(logFile)
++		}
+ 
+ 		isMetadata := dir == metadataDir
+ 
+@@ -2600,6 +2689,9 @@
+ 		foundChunks := make(map[string]bool)
+ 
+ 		allFiles, _ := manager.ListAllFiles(manager.storage, dir)
++		if !acted && IsCancelRequested() {
++			manager.raisePruneCancel(logFile)
++		}
+ 		uniqueFiles := make(map[string]bool)
+ 		for _, file := range allFiles {
+ 			if _, found := uniqueFiles[file]; found {
+@@ -2622,6 +2714,7 @@
+ 				if exclusive {
+ 					// In exclusive mode, we assume no other restore operation is running concurrently.
+ 					manager.chunkOperator.Delete("", dir+file, isMetadata)
++					acted = true
+ 					fmt.Fprintf(logFile, "Deleted temporary %s\n", dir+file)
+ 				} else {
+ 					collection.AddTemporary(dir + file)
+@@ -2643,6 +2736,7 @@
+ 						}
+ 
+ 						manager.chunkOperator.Resurrect(chunk, dir+file)
++						acted = true
+ 						fmt.Fprintf(logFile, "Found referenced fossil %s\n", dir+file)
+ 
+ 					} else {
+@@ -2654,6 +2748,7 @@
+ 
+ 						if exclusive {
+ 							manager.chunkOperator.Delete(chunk, dir+file, isMetadata)
++							acted = true
+ 						} else {
+ 							collection.AddFossil(dir + file)
+ 							LOG_DEBUG("FOSSIL_FIND", "Found unreferenced fossil %s", dir+file)
+@@ -2679,6 +2774,7 @@
+ 				}
+ 
+ 				manager.fossilizeChunk(chunk, dir+file, isMetadata, exclusive)
++				acted = true
+ 				if exclusive {
+ 					fmt.Fprintf(logFile, "Deleted chunk %s (exclusive mode)\n", chunk)
+ 				} else {
+@@ -2694,6 +2790,7 @@
+ 
+ 				// This is a redundant chunk file (for instance D3/495A8D and D3/49/5A8D )
+ 				manager.chunkOperator.Delete(chunk, dir+file, isMetadata)
++				acted = true
+ 				fmt.Fprintf(logFile, "Deleted redundant chunk %s\n", dir+file)
+ 			} else {
+ 				foundChunks[chunk] = true
