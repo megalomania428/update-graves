@@ -1,0 +1,949 @@
+diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
+--- a/src/duplicacy_backupmanager.go	2026-11-10 07:27:41.637165353 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-10 08:54:10.643945563 +0000
+@@ -131,6 +131,11 @@
+ func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
+ 	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
+ 
++	// A cancellation requested before the backup is raised before anything is changed
++	if IsCancelRequested() {
++		raiseCancel()
++	}
++
+ 	// The sequences of the previous snapshot are downloaded through the operator of the snapshot manager
+ 	defer manager.SnapshotManager.catchOperatorDownloads(false, false, 1, false)()
+ 
+@@ -187,6 +192,16 @@
+ 	if hashMode {
+ 		incompleteSnapshot = loadIncompleteSnapshot(manager.snapshotID, manager.cachePath)
+ 	}
++	// The file of the incomplete snapshot is opened only for reading, so on every exit, a cancellation in the
++	// comparison below included, it is closed without a Sync, which fails on Windows for such a file and would skip
++	// the Close.  This runs after the deferred stop of the remote listing, which reads the file.  The file is not
++	// closed here when it is already closed (its field is nil) or its snapshot has been discarded below (set to nil)
++	defer func() {
++		if incompleteSnapshot != nil && incompleteSnapshot.onDiskFile != nil {
++			incompleteSnapshot.onDiskFile.Close()
++			incompleteSnapshot.onDiskFile = nil
++		}
++	}()
+ 
+ 	// If the listing operation is fast and this is an initial backup, list all chunks and
+ 	// put them in the cache.
+@@ -348,6 +363,13 @@
+ 	var remoteEntry *Entry
+ 	remoteListingOK := true
+ 	for {
++		// No upload has been queued yet, so a cancellation stops here without saving an incomplete snapshot; a
++		// failure already recorded by a listing goroutine or by the operator of the snapshot manager is raised
++		// instead.  This check has no test of its own: without it the backup stops at the next check, before the
++		// first file is packed
++		if IsCancelRequested() {
++			raiseCancelAfterFailures(chunkOperator, manager.SnapshotManager.chunkOperator)
++		}
+ 		localEntry := readLocalEntry()
+ 		if localEntry == nil {
+ 			break
+@@ -468,6 +490,9 @@
+ 	}
+ 
+ 	var once sync.Once
++	// saveIncomplete saves the incomplete snapshot of a hash mode backup and is nil otherwise.  A cancellation calls
++	// it instead of RunAtError, which may still hold the function of an earlier backup that has failed
++	var saveIncomplete func()
+ 	if hashMode && !manager.config.dryRun {
+ 		// In case an error occurs during a hash mode backup, save the incomplete snapshot
+ 		RunAtError = func() {
+@@ -475,6 +500,22 @@
+ 				localEntryList.SaveIncompleteSnapshot()
+ 			})
+ 		}
++		saveIncomplete = RunAtError
++	}
++
++	// cancelUpload stops the backup once uploads may have been queued.  The queued uploads finish first, so that the
++	// saved incomplete snapshot has no chunk without a hash; WaitForCompletion raises a recorded failure of an upload
++	// instead, and so does a failure recorded by the operator of the snapshot manager, which leaves RunAtError set
++	// for CatchLogException.  After the save RunAtError is cleared, as on a success.  The order of the wait and the
++	// save has no test of its own: an upload can't be made to finish after the save without a test point
++	cancelUpload := func() {
++		chunkOperator.WaitForCompletion()
++		raiseFailures(manager.SnapshotManager.chunkOperator)
++		if saveIncomplete != nil {
++			saveIncomplete()
++		}
++		RunAtError = func() {}
++		raiseCancel()
+ 	}
+ 
+ 	startUploadingTime := time.Now().Unix()
+@@ -533,6 +574,11 @@
+ 	chunkIndex := -1
+ 	// This function is called when the chunk maker generates a new chunk
+ 	uploadChunkFunc := func(chunk *Chunk) {
++		// AddData reads a whole file and passes its chunks here, so a large file is stopped between its chunks.  The
++		// check comes before the chunk takes an index, so that the indexes of the saved snapshot have no gap
++		if IsCancelRequested() {
++			cancelUpload()
++		}
+ 		chunkID := chunk.GetID()
+ 		chunkSize := chunk.GetLength()
+ 
+@@ -562,6 +608,10 @@
+ 
+ 	// These are files to be uploaded; directories and links are excluded
+ 	for i := range localEntryList.ModifiedEntries {
++		// This check has no test of its own: without it the backup stops at the check of the first chunk of the file
++		if IsCancelRequested() {
++			cancelUpload()
++		}
+ 		entry := &localEntryList.ModifiedEntries[i]
+ 		LOG_TRACE("PACK_START", "Packing %s", entry.Path)
+ 		fullPath := joinPath(shadowTop, entry.Path)
+@@ -585,6 +635,11 @@
+ 	// This flushes the chunk maker (forcing all remaining data to be sent in chunks)
+ 	fileChunkMaker.AddData(nil, uploadChunkFunc)
+ 	chunkOperator.WaitForCompletion()
++	// A cancellation requested by the last uploads is raised before UploadSnapshot, which uploads the metadata chunks
++	// and the revision file as a whole and can't save the incomplete snapshot
++	if IsCancelRequested() {
++		cancelUpload()
++	}
+ 
+ 	localSnapshot.EndTime = time.Now().Unix()
+ 
+@@ -1772,6 +1827,11 @@
+ func (manager *BackupManager) CopySnapshots(otherManager *BackupManager, snapshotID string,
+ 	revisionsToBeCopied []int, uploadingThreads int, downloadingThreads int) bool {
+ 
++	// A cancellation requested before the copy is raised before anything is changed
++	if IsCancelRequested() {
++		raiseCancel()
++	}
++
+ 	// The snapshot sequences are downloaded through the operator of the snapshot manager
+ 	defer manager.SnapshotManager.useOperator(1, false)()
+ 
+@@ -1999,6 +2059,13 @@
+ 		// one check covers both.  This check has no test of its own: the operators skip the queued tasks after a
+ 		// failure, so without it the copy only adds the skipped tasks
+ 		chunkDownloader.failures.raise()
++		// A cancellation stops adding tasks; the tasks already added are finished by the deferred stop of the
++		// operators.  A failure recorded by an operator of the copy or by the operator of the snapshot manager is
++		// raised instead.  This order has no test of its own: a failing upload is added by a downloading worker, so
++		// its failure can't be recorded before this check without a test point
++		if IsCancelRequested() {
++			raiseCancelAfterFailures(chunkDownloader, chunkUploader, manager.SnapshotManager.chunkOperator)
++		}
+ 		chunkID := manager.config.GetChunkIDFromHash(chunkHash)
+ 		newChunkID := otherManager.config.GetChunkIDFromHash(chunkHash)
+ 
+@@ -2021,6 +2088,13 @@
+ 	LOG_INFO("SNAPSHOT_COPY", "Copied %d new chunks and skipped %d existing chunks", numberOfCopiedChunks,
+ 		len(chunks) - numberOfCopiedChunks)
+ 
++	// The chunks have been copied, but a canceled copy writes no revision.  The operators of the copy have been
++	// stopped above, raising their failures; a failure recorded by the operator of the snapshot manager is raised
++	// instead of the cancellation as well
++	if IsCancelRequested() {
++		raiseCancelAfterFailures(manager.SnapshotManager.chunkOperator)
++	}
++
+ 	for _, snapshot := range snapshots {
+ 		if revisionMap[snapshot.ID][snapshot.Revision] == false {
+ 			continue
+diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
+--- a/src/duplicacy_cancel.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_cancel.go	2026-11-10 08:06:22.154774584 +0000
+@@ -0,0 +1,71 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"sync/atomic"
++)
++
++// CancelLogID is the LogID of the Exception that an operation stopped by RequestCancel
++// panics with; a consumer tells a cancellation from other errors by comparing
++// Exception.LogID with it.
++const CancelLogID = "OPERATION_CANCELED"
++
++// cancelRequested is set by RequestCancel and cleared by ResetCancel.  Like the other
++// global state of the package, it serves one operation at a time per process.
++var cancelRequested atomic.Bool
++
++// RequestCancel asks the running operation to stop.  It doesn't block and may be called
++// from any goroutine, ProgressFunction included.  The operation stops adding new tasks
++// at its next check, lets the tasks already queued finish and panics in the goroutine
++// that called it with an Exception whose LogID is CancelLogID, logged through LOG_ERROR;
++// a failure that a worker has already recorded is raised instead.  A canceled operation
++// returns no value and reports no end through ProgressFunction.
++//
++// An operation doesn't clear the request, or a request made before it starts would be
++// lost; such an operation panics before it changes anything.  The consumer calls
++// ResetCancel before the next operation.  A request made after the last check of an
++// operation doesn't stop it: the operation completes as usual and the request stays
++// set.  An in-place restore stops only between files.  ListSnapshots, ShowHistory,
++// PrintFile, Diff, DownloadSequence and Benchmark ignore the request.
++func RequestCancel() {
++	cancelRequested.Store(true)
++}
++
++// ResetCancel clears the request of RequestCancel; the consumer calls it before the next
++// operation.
++func ResetCancel() {
++	cancelRequested.Store(false)
++}
++
++// IsCancelRequested reports whether RequestCancel has been called since the last
++// ResetCancel.
++func IsCancelRequested() bool {
++	return cancelRequested.Load()
++}
++
++// raiseCancel panics with the Exception of a cancellation through LOG_ERROR, which
++// panics also after a LogFunction that returns.
++func raiseCancel() {
++	LOG_ERROR(CancelLogID, "The operation has been canceled")
++}
++
++// raiseFailures raises the first failure recorded by one of the operators, which takes
++// precedence over a cancellation.  It doesn't wait for the tasks of the operators; a nil
++// operator is skipped.
++func raiseFailures(operators ...*ChunkOperator) {
++	for _, operator := range operators {
++		if operator != nil {
++			operator.failures.raise()
++		}
++	}
++}
++
++// raiseCancelAfterFailures raises the first failure recorded by one of the operators or
++// else the cancellation.
++func raiseCancelAfterFailures(operators ...*ChunkOperator) {
++	raiseFailures(operators...)
++	raiseCancel()
++}
+diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
+--- a/src/duplicacy_cancel_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_cancel_test.go	2026-11-10 08:55:45.618324937 +0000
+@@ -0,0 +1,691 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"fmt"
++	"math/rand"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// cancelChunkSize is the size at which the storages of newCancelFixture cut the chunks.
++const cancelChunkSize = 64 * 1024
++
++// resetCancelAfter clears the cancellation request now and after the test.
++func resetCancelAfter(t *testing.T) {
++	ResetCancel()
++	t.Cleanup(ResetCancel)
++}
++
++// cancelStorage wraps faultStorage for the cancellation tests.  It counts the calls of
++// UploadFile on chunk files, under chunks/ or metadata/, and their successful uploads,
++// and requests a cancellation at the call with the number cancelAt.  With hold every
++// upload of a chunk after the request waits 100 ms, so that the operation is blocked
++// adding a task when it checks the request.
++type cancelStorage struct {
++	*faultStorage
++	cancelAt int64        // The number of the chunk upload that requests the cancellation
++	hold     bool         // Delay the chunk uploads made after the request
++	calls    atomic.Int64 // The calls of UploadFile on chunk files
++	uploads  atomic.Int64 // The successful uploads of chunk files
++}
++
++// newCancelStorage wraps the storage and, like newFaultStorage, points its
++// DerivedStorage to the wrapper.
++func newCancelStorage(raw *FileStorage) *cancelStorage {
++	storage := &cancelStorage{faultStorage: newFaultStorage(raw)}
++	raw.DerivedStorage = storage
++	return storage
++}
++
++func (storage *cancelStorage) UploadFile(threadIndex int, filePath string,
++	content []byte) error {
++	if !strings.HasPrefix(filePath, "chunks/") && !strings.HasPrefix(filePath, "metadata/") {
++		return storage.faultStorage.UploadFile(threadIndex, filePath, content)
++	}
++	if storage.hold && IsCancelRequested() {
++		time.Sleep(100 * time.Millisecond)
++	}
++	if storage.calls.Add(1) == storage.cancelAt {
++		RequestCancel()
++	}
++	err := storage.faultStorage.UploadFile(threadIndex, filePath, content)
++	if err == nil {
++		storage.uploads.Add(1)
++	}
++	return err
++}
++
++// cancelAtStep records the progress events like recordProgress and requests a
++// cancellation at the step with the given number.
++func cancelAtStep(t *testing.T, step int64) *progressRecorder {
++	recorder := &progressRecorder{}
++	var steps atomic.Int64
++	setProgressFunction(t, func(event ProgressEvent) {
++		recorder.lock.Lock()
++		recorder.events = append(recorder.events, event)
++		recorder.lock.Unlock()
++		if event.Kind == ProgressKindStep && steps.Add(1) == step {
++			RequestCancel()
++		}
++	})
++	return recorder
++}
++
++// cancelFixture is a repository whose files are cut into chunks of exactly
++// cancelChunkSize, with a storage wrapped by cancelStorage.
++type cancelFixture struct {
++	*workerErrorsFixture
++	cancel     *cancelStorage
++	fileChunks int // The number of the file chunks of a backup of the repository
++}
++
++// newCancelStorageFixture creates a storage in storageDir that cuts the chunks at
++// cancelChunkSize, configured from copyFrom unless it is nil, and a manager of the
++// repository for it with its own snapshot cache.
++func newCancelStorageFixture(t *testing.T, repository string, storageDir string,
++	cache string, copyFrom *Config) *cancelFixture {
++	t.Helper()
++	raw, err := CreateFileStorage(storageDir, false, 2)
++	if err != nil {
++		t.Fatalf("Failed to create the storage: %v", err)
++	}
++	// An average size of 2^30 keeps the rolling hash from cutting the chunks, so they are
++	// cut at the maximum size
++	if !ConfigStorage(raw, 16384, 100, 1<<30, cancelChunkSize, cancelChunkSize/4, "",
++		copyFrom, false, "", 0, 0) {
++		t.Fatalf("Failed to initialize the storage")
++	}
++	storage := newCancelStorage(raw)
++	fixture := &workerErrorsFixture{t: t, repository: repository, raw: raw,
++		storage: storage.faultStorage}
++	fixture.manager = CreateBackupManager("host1", storage, repository, "", "", "", false)
++	if fixture.manager == nil || !fixture.manager.SetupSnapshotCache(cache) {
++		t.Fatalf("Failed to create the backup manager")
++	}
++	return &cancelFixture{workerErrorsFixture: fixture, cancel: storage}
++}
++
++// newCancelFixture creates a repository with a file of the given number of chunks for
++// each number, file1 first, and a storage without a backup.  The number of the file
++// chunks is checked by a backup of the same files to a separate storage with the same
++// configuration.
++func newCancelFixture(t *testing.T, chunks ...int) *cancelFixture {
++	t.Helper()
++	saveWorkerErrorsGlobals(t)
++	dir := t.TempDir()
++	repository := filepath.Join(dir, "repository")
++	if err := os.MkdirAll(filepath.Join(repository, ".duplicacy"), 0700); err != nil {
++		t.Fatalf("Failed to create the repository: %v", err)
++	}
++	fileChunks := 0
++	for i, count := range chunks {
++		content := make([]byte, count*cancelChunkSize)
++		rand.New(rand.NewSource(int64(i + 1))).Read(content)
++		file := filepath.Join(repository, fmt.Sprintf("file%d", i+1))
++		if err := os.WriteFile(file, content, 0600); err != nil {
++			t.Fatalf("Failed to write %s: %v", file, err)
++		}
++		fileChunks += count
++	}
++	SetDuplicacyPreferencePath(filepath.Join(repository, ".duplicacy"))
++	control := newCancelStorageFixture(t, repository, filepath.Join(dir, "control"),
++		"control", nil)
++	control.expectSuccess(control.backup(repository, false), 1)
++	if got := len(control.revisionSnapshot(1).ChunkHashes); got != fileChunks {
++		t.Fatalf("The backup has %d file chunks instead of %d", got, fileChunks)
++	}
++	fixture := newCancelStorageFixture(t, repository, filepath.Join(dir, "storage"),
++		"default", nil)
++	fixture.fileChunks = fileChunks
++	return fixture
++}
++
++// newCancelCopyFixture creates the copy fixture of the cancellation tests: the revision 1
++// of a source with a file of 24 chunks and an empty destination wrapped by
++// cancelStorage, which it returns as well.
++func newCancelCopyFixture(t *testing.T) (*workerErrorsCopyFixture, *cancelStorage) {
++	t.Helper()
++	source := newCancelFixture(t, 24)
++	source.expectSuccess(source.backup(source.repository, false), 1)
++	destination := newCancelStorageFixture(t, source.repository,
++		filepath.Join(t.TempDir(), "destination"), "destination", source.manager.config)
++	fixture := &workerErrorsCopyFixture{workerErrorsFixture: source.workerErrorsFixture,
++		snapshot: source.revisionSnapshot(1), destinationRaw: destination.raw,
++		destinationStorage: destination.storage, destination: destination.manager}
++	return fixture, destination.cancel
++}
++
++// cancelRun is the state of one case of the cancellation tables.
++type cancelRun struct {
++	fixture     *workerErrorsFixture
++	copyFixture *workerErrorsCopyFixture
++	cancel      *cancelStorage    // The storage that requests the cancellation
++	fileChunks  int               // The number of the file chunks of the repository
++	recorder    *progressRecorder // The events of the operation
++	logs        *workerErrorsLogs // The entries of the log function of the case
++	baseline    int               // The number of goroutines before the preparation
++	storedCount int64             // The number of chunks in the storage before the call
++	storedSize  int64             // The size of the chunks in the storage before the call
++}
++
++// expectNoEvents checks that the hook has not been called.
++func (run *cancelRun) expectNoEvents(t *testing.T) {
++	t.Helper()
++	if events := run.recorder.take(); len(events) != 0 {
++		t.Fatalf("Unexpected events %+v", events)
++	}
++}
++
++// cacheFileExists reports whether the file is in the snapshot cache of the manager.
++func cacheFileExists(t *testing.T, manager *BackupManager, name string) bool {
++	t.Helper()
++	_, err := os.Stat(filepath.Join(manager.cachePath, name))
++	if err != nil && !os.IsNotExist(err) {
++		t.Fatalf("Failed to check %s: %v", name, err)
++	}
++	return err == nil
++}
++
++// cancelOnLog installs a log function that collects the entries like
++// collectWorkerErrorsLogs and requests a cancellation when it receives the INFO entry
++// with the log id, then returns.
++func cancelOnLog(logID string) *workerErrorsLogs {
++	logs := collectWorkerErrorsLogs()
++	collect := LogFunction
++	LogFunction = func(level int, id string, message string) {
++		collect(level, id, message)
++		if level == INFO && id == logID {
++			RequestCancel()
++		}
++	}
++	return logs
++}
++
++// openFilesOf returns the paths of the files that the descriptors of the process point
++// to; ok is false when /proc/self/fd is not available.
++func openFilesOf(t *testing.T) (paths []string, ok bool) {
++	t.Helper()
++	entries, err := os.ReadDir("/proc/self/fd")
++	if err != nil {
++		return nil, false
++	}
++	for _, entry := range entries {
++		// A descriptor that is closed in the meantime, like the one of the directory
++		// itself, fails to resolve
++		if target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name())); err == nil {
++			paths = append(paths, target)
++		}
++	}
++	return paths, true
++}
++
++// TestBackupManager_Backup_Cancel checks the cancellation of Backup.  The cases are added
++// to the skeleton generated by gotests: the fields come from the manager of the case, the
++// top directory from its repository.
++func TestBackupManager_Backup_Cancel(t *testing.T) {
++	type fields struct {
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
++	}
++	type args struct {
++		top                    string
++		quickMode              bool
++		threads                int
++		tag                    string
++		showStatistics         bool
++		shadowCopy             bool
++		shadowCopyTimeout      int
++		enumOnly               bool
++		metadataChunkSize      int
++		maximumInMemoryEntries int
++	}
++	// The arguments of fixture.backup: a hash backup with 2 threads
++	hash := args{threads: 2, tag: "test", metadataChunkSize: 65536,
++		maximumInMemoryEntries: 1024}
++	quick := hash
++	quick.quickMode = true
++	// prepareBeforeStart requests the cancellation before the first backup of the fixture
++	prepareBeforeStart := func(t *testing.T) *cancelRun {
++		run := &cancelRun{fixture: newWorkerErrorsFixture(t, false)}
++		run.storedCount, run.storedSize = storedChunks(t, run.fixture.raw)
++		run.recorder = recordProgress(t)
++		RequestCancel()
++		return run
++	}
++	// checkBeforeStart checks that the backup has changed nothing
++	checkBeforeStart := func(t *testing.T, run *cancelRun) {
++		run.expectNoEvents(t)
++		count, size := storedChunks(t, run.fixture.raw)
++		if count != run.storedCount || size != run.storedSize || run.fixture.revisionExists(1) {
++			t.Fatalf("The storage has %d chunks of %d bytes instead of %d of %d", count, size,
++				run.storedCount, run.storedSize)
++		}
++		if cacheFileExists(t, run.fixture.manager, "incomplete_snapshot") {
++			t.Fatalf("An incomplete snapshot has been saved")
++		}
++	}
++	// prepareCancelFixture creates the repository with files of the given numbers of
++	// chunks; the upload with the number cancelAt, or of the last file chunk for 0,
++	// requests the cancellation
++	prepareCancelFixture := func(t *testing.T, cancelAt int64, hold bool,
++		chunks ...int) *cancelRun {
++		fixture := newCancelFixture(t, chunks...)
++		fixture.cancel.cancelAt, fixture.cancel.hold = cancelAt, hold
++		if cancelAt == 0 {
++			fixture.cancel.cancelAt = int64(fixture.fileChunks)
++		}
++		return &cancelRun{fixture: fixture.workerErrorsFixture, cancel: fixture.cancel,
++			fileChunks: fixture.fileChunks, recorder: recordProgress(t)}
++	}
++	prepareBeforeUploadSnapshot := func(t *testing.T) *cancelRun {
++		return prepareCancelFixture(t, 0, false, 3, 5)
++	}
++	checkBeforeUploadSnapshot := func(t *testing.T, run *cancelRun) {
++		expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
++		if uploads := run.cancel.uploads.Load(); uploads != int64(run.fileChunks) {
++			t.Fatalf("%d chunks have been uploaded instead of the %d file chunks",
++				uploads, run.fileChunks)
++		}
++		if run.fixture.revisionExists(1) {
++			t.Fatalf("The revision 1 has been created despite the cancellation")
++		}
++		if !cacheFileExists(t, run.fixture.manager, "incomplete_snapshot") {
++			t.Fatalf("The incomplete snapshot has not been saved")
++		}
++	}
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		want      bool
++		wantLogID string // The log id of the Exception that the backup panics with
++		prepare   func(t *testing.T) *cancelRun
++		check     func(t *testing.T, run *cancelRun)
++	}{
++		{
++			name: "BeforeStartLog", args: hash, wantLogID: CancelLogID,
++			prepare: prepareBeforeStart, check: checkBeforeStart,
++		},
++		{
++			// The log function returns, and the cancellation is raised after it
++			name: "BeforeStartLogFunction", args: hash, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareBeforeStart(t)
++				run.logs = collectWorkerErrorsLogs()
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				checkBeforeStart(t, run)
++				entry := "ERROR " + CancelLogID + " The operation has been canceled"
++				if !strings.Contains(run.logs.String(), entry) {
++					t.Fatalf("The log function has not received %q:\n%s", entry, run.logs)
++				}
++				// The backup logs BACKUP_START and other entries before its comparison, which
++				// checks the request as well; the check of the first line stops it before them
++				if strings.Contains(run.logs.String(), " BACKUP_") {
++					t.Fatalf("The backup has started before the cancellation:\n%s", run.logs)
++				}
++			},
++		},
++		{
++			// The first backup is a hash backup: the cancellation at the step 3 saves its
++			// incomplete snapshot, which the next backup resumes
++			name: "Incomplete", args: hash, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := &cancelRun{fixture: newWorkerErrorsFixture(t, false)}
++				run.recorder = cancelAtStep(t, 3)
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				fixture := run.fixture
++				expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
++				if fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has been created despite the cancellation")
++				}
++				if !cacheFileExists(t, fixture.manager, "incomplete_snapshot") {
++					t.Fatalf("The incomplete snapshot has not been saved")
++				}
++				logs := collectWorkerErrorsLogs()
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				if !strings.Contains(logs.String(), "INFO INCOMPLETE_LOAD ") {
++					t.Fatalf("The next backup has not loaded the incomplete snapshot:\n%s", logs)
++				}
++				if cacheFileExists(t, fixture.manager, "incomplete_snapshot") {
++					t.Fatalf("The incomplete snapshot has not been deleted after the backup")
++				}
++			},
++		},
++		{
++			// The cancellation requested by the log function on INCOMPLETE_LOAD stops the
++			// comparison with the loaded incomplete snapshot; its file has to be closed
++			name: "IncompleteLoaded", args: hash, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := &cancelRun{fixture: newWorkerErrorsFixture(t, false)}
++				cancelAtStep(t, 3)
++				first := run.fixture.backup(run.fixture.repository, false)
++				expectWorkerErrorsException(t, first, CancelLogID)
++				ResetCancel()
++				if !cacheFileExists(t, run.fixture.manager, "incomplete_snapshot") {
++					t.Fatalf("The incomplete snapshot has not been saved")
++				}
++				run.recorder = recordProgress(t)
++				run.logs = cancelOnLog("INCOMPLETE_LOAD")
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				fixture := run.fixture
++				if !strings.Contains(run.logs.String(), "INFO INCOMPLETE_LOAD ") {
++					t.Fatalf("The backup has not loaded the incomplete snapshot:\n%s", run.logs)
++				}
++				run.expectNoEvents(t)
++				if fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has been created despite the cancellation")
++				}
++				if !cacheFileExists(t, fixture.manager, "incomplete_snapshot") {
++					t.Fatalf("The incomplete snapshot has been deleted")
++				}
++				cached, err := filepath.EvalSymlinks(filepath.Join(fixture.manager.cachePath,
++					"incomplete_snapshot"))
++				if err != nil {
++					t.Fatalf("Failed to resolve the incomplete snapshot: %v", err)
++				}
++				open, haveProc := openFilesOf(t)
++				for _, path := range open {
++					if path == cached {
++						t.Errorf("The file %s is still open after the cancellation", cached)
++					}
++				}
++				logs := collectWorkerErrorsLogs()
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				if !strings.Contains(logs.String(), "INFO INCOMPLETE_LOAD ") {
++					t.Fatalf("The next backup has not loaded the incomplete snapshot:\n%s", logs)
++				}
++				if !haveProc {
++					t.Skip("/proc/self/fd is not available to check the open files")
++				}
++			},
++		},
++		{
++			// The upload of the last file chunk requests the cancellation, which only the
++			// check after the uploads sees; the metadata chunks would be uploaded later, by
++			// UploadSnapshot
++			name: "BeforeUploadSnapshot", args: hash, wantLogID: CancelLogID,
++			prepare: prepareBeforeUploadSnapshot, check: checkBeforeUploadSnapshot,
++		},
++		{
++			// The same cancellation with a log function that returns
++			name: "BeforeUploadSnapshotLogFunction", args: hash, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareBeforeUploadSnapshot(t)
++				run.logs = collectWorkerErrorsLogs()
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				checkBeforeUploadSnapshot(t, run)
++				entry := "ERROR " + CancelLogID + " The operation has been canceled"
++				if !strings.Contains(run.logs.String(), entry) {
++					t.Fatalf("The log function has not received %q:\n%s", entry, run.logs)
++				}
++			},
++		},
++		{
++			// One file of 16 chunks: the upload 2 requests the cancellation, which the
++			// backup sees at the next chunk of the file; with 2 threads at most 2 + 2*2 + 1
++			// chunks have been queued by then
++			name: "StopWithinFile", args: hash, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				return prepareCancelFixture(t, 2, true, 16)
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
++				uploads := run.cancel.uploads.Load()
++				if uploads > 2+2*2+1 || uploads >= int64(run.fileChunks) {
++					t.Fatalf("%d of %d file chunks have been uploaded", uploads, run.fileChunks)
++				}
++				if run.fixture.revisionExists(1) {
++					t.Fatalf("The revision 1 has been created despite the cancellation")
++				}
++			},
++		},
++		{
++			// A quick backup after the revision 1 is not a hash backup and saves no
++			// incomplete snapshot; the files change their sizes, so they are packed again
++			name: "Quick", args: quick, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				fixture := newWorkerErrorsFixture(t, false)
++				fixture.expectSuccess(fixture.backup(fixture.repository, false), 1)
++				for _, file := range []string{"file1", "file2", "dir1/file3"} {
++					// The new sizes are at least 1000000 bytes, the old ones are smaller
++					createRandomFile(filepath.Join(fixture.repository, file), 2000000)
++				}
++				return &cancelRun{fixture: fixture, recorder: cancelAtStep(t, 3)}
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				fixture := run.fixture
++				expectNoEnd(t, run.recorder.take(), ProgressOperationBackup)
++				if fixture.revisionExists(2) {
++					t.Fatalf("The revision 2 has been created despite the cancellation")
++				}
++				for _, name := range []string{"incomplete_snapshot", "incomplete_chunks"} {
++					if cacheFileExists(t, fixture.manager, name) {
++						t.Fatalf("The quick backup has saved %s", name)
++					}
++				}
++				fixture.expectSuccess(fixture.backup(fixture.repository, true), 2)
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			resetCancelAfter(t)
++			baseline := runtime.NumGoroutine()
++			run := tt.prepare(t)
++			run.baseline = baseline
++			tt.fields = fields{
++				snapshotID:         run.fixture.manager.snapshotID,
++				storage:            run.fixture.manager.storage,
++				SnapshotManager:    run.fixture.manager.SnapshotManager,
++				snapshotCache:      run.fixture.manager.snapshotCache,
++				config:             run.fixture.manager.config,
++				nobackupFile:       run.fixture.manager.nobackupFile,
++				filtersFile:        run.fixture.manager.filtersFile,
++				excludeByAttribute: run.fixture.manager.excludeByAttribute,
++				cachePath:          run.fixture.manager.cachePath,
++			}
++			tt.args.top = run.fixture.repository
++			manager := &BackupManager{
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
++			}
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				return manager.Backup(tt.args.top, tt.args.quickMode, tt.args.threads,
++					tt.args.tag, tt.args.showStatistics, tt.args.shadowCopy,
++					tt.args.shadowCopyTimeout, tt.args.enumOnly, tt.args.metadataChunkSize,
++					tt.args.maximumInMemoryEntries)
++			})
++			// The request stays set after the cancellation; it is cleared before the next
++			// operation of the check
++			ResetCancel()
++			expectWorkerErrorsException(t, outcome, tt.wantLogID)
++			if got := outcome.result; got != tt.want {
++				t.Errorf("BackupManager.Backup() = %v, want %v", got, tt.want)
++			}
++			waitForWorkerErrorsGoroutines(t, run.baseline)
++			tt.check(t, run)
++		})
++	}
++}
++
++// TestBackupManager_CopySnapshots_Cancel checks the cancellation of CopySnapshots.  The
++// cases are added to the skeleton generated by gotests: the fields come from the source
++// manager of the case, the other manager is its destination.
++func TestBackupManager_CopySnapshots_Cancel(t *testing.T) {
++	type fields struct {
++		snapshotID         string
++		storage            Storage
++		SnapshotManager    *SnapshotManager
++		snapshotCache      *FileStorage
++		config             *Config
++		nobackupFile       string
++		filtersFile        string
++		excludeByAttribute bool
++		cachePath          string
++	}
++	type args struct {
++		otherManager        *BackupManager
++		snapshotID          string
++		revisionsToBeCopied []int
++		uploadingThreads    int
++		downloadingThreads  int
++	}
++	// One uploading and one downloading thread, so that the copy is blocked adding a
++	// chunk while the chunks before it are copied
++	single := args{snapshotID: "host1", revisionsToBeCopied: []int{1}, uploadingThreads: 1,
++		downloadingThreads: 1}
++	// prepareCopy creates the copy fixture; the upload to the destination with the number
++	// returned by cancelAt requests the cancellation
++	prepareCopy := func(t *testing.T,
++		cancelAt func(fixture *workerErrorsCopyFixture) int64) *cancelRun {
++		fixture, destination := newCancelCopyFixture(t)
++		destination.cancelAt = cancelAt(fixture)
++		return &cancelRun{fixture: fixture.workerErrorsFixture, copyFixture: fixture,
++			cancel: destination, recorder: recordProgress(t)}
++	}
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		want      bool
++		wantLogID string // The log id of the Exception that the copy panics with
++		prepare   func(t *testing.T) *cancelRun
++		check     func(t *testing.T, run *cancelRun)
++	}{
++		{
++			name: "BeforeStart", args: single, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				run := prepareCopy(t, func(*workerErrorsCopyFixture) int64 { return 0 })
++				RequestCancel()
++				return run
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				run.expectNoEvents(t)
++				count, _ := storedChunks(t, run.copyFixture.destinationRaw)
++				if count != 0 || run.copyFixture.copiedRevisionExists() {
++					t.Fatalf("The destination has changed: %d chunks", count)
++				}
++			},
++		},
++		{
++			// The upload 2 requests the cancellation, which the copy sees before adding the
++			// next chunk: with one thread each at most 7 chunks have been added by then
++			name: "FeedLoop", args: single, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				return prepareCopy(t, func(*workerErrorsCopyFixture) int64 { return 2 })
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				fixture := run.copyFixture
++				events := run.recorder.take()
++				expectNoEnd(t, events, ProgressOperationCopy)
++				total := events[0].TotalChunks
++				if total < 20 {
++					t.Fatalf("Only %d chunks to copy", total)
++				}
++				if uploads := run.cancel.uploads.Load(); uploads > 7 || uploads >= total {
++					t.Fatalf("%d of %d chunks have been copied", uploads, total)
++				}
++				fixture.expectNotCopied(run.baseline)
++				fixture.expectCopied(fixture.copy())
++			},
++		},
++		{
++			// The upload of the last chunk requests the cancellation, which the copy sees
++			// only before it writes the revisions
++			name: "BeforeRevisions", args: single, wantLogID: CancelLogID,
++			prepare: func(t *testing.T) *cancelRun {
++				return prepareCopy(t, func(fixture *workerErrorsCopyFixture) int64 {
++					return int64(fixture.chunkCount())
++				})
++			},
++			check: func(t *testing.T, run *cancelRun) {
++				events := run.recorder.take()
++				expectNoEnd(t, events, ProgressOperationCopy)
++				total := int64(run.copyFixture.chunkCount())
++				if uploads := run.cancel.uploads.Load(); events[0].TotalChunks != total ||
++					uploads != total {
++					t.Fatalf("%d of %d chunks have been copied instead of all %d", uploads,
++						events[0].TotalChunks, total)
++				}
++				run.copyFixture.expectNotCopied(run.baseline)
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			resetCancelAfter(t)
++			baseline := runtime.NumGoroutine()
++			run := tt.prepare(t)
++			run.baseline = baseline
++			source := run.copyFixture.manager
++			tt.fields = fields{
++				snapshotID:         source.snapshotID,
++				storage:            source.storage,
++				SnapshotManager:    source.SnapshotManager,
++				snapshotCache:      source.snapshotCache,
++				config:             source.config,
++				nobackupFile:       source.nobackupFile,
++				filtersFile:        source.filtersFile,
++				excludeByAttribute: source.excludeByAttribute,
++				cachePath:          source.cachePath,
++			}
++			tt.args.otherManager = run.copyFixture.destination
++			manager := &BackupManager{
++				snapshotID:         tt.fields.snapshotID,
++				storage:            tt.fields.storage,
++				SnapshotManager:    tt.fields.SnapshotManager,
++				snapshotCache:      tt.fields.snapshotCache,
++				config:             tt.fields.config,
++				nobackupFile:       tt.fields.nobackupFile,
++				filtersFile:        tt.fields.filtersFile,
++				excludeByAttribute: tt.fields.excludeByAttribute,
++				cachePath:          tt.fields.cachePath,
++			}
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				return manager.CopySnapshots(tt.args.otherManager, tt.args.snapshotID,
++					tt.args.revisionsToBeCopied, tt.args.uploadingThreads,
++					tt.args.downloadingThreads)
++			})
++			// The request stays set after the cancellation; it is cleared before the next
++			// operation of the check
++			ResetCancel()
++			expectWorkerErrorsException(t, outcome, tt.wantLogID)
++			if got := outcome.result; got != tt.want {
++				t.Errorf("BackupManager.CopySnapshots() = %v, want %v", got, tt.want)
++			}
++			waitForWorkerErrorsGoroutines(t, run.baseline)
++			tt.check(t, run)
++		})
++	}
++}
+diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
+--- a/src/duplicacy_progress.go	2026-11-10 07:27:41.641165443 +0000
++++ b/src/duplicacy_progress.go	2026-11-10 08:06:22.146774398 +0000
+@@ -97,13 +97,14 @@
+ // goroutines and the goroutine that runs the operation.  Set it before an operation and
+ // don't change it while the operation runs.  It must return without waiting for the
+ // operation, which waits for its worker goroutines to finish their calls.  An operation
+-// that an error or a panic interrupts before its end doesn't report the end, nor does a
+-// backup or a copy that returns false, so a start without an end means a failure.  An
+-// end doesn't mean a success, though: a restore and a check of chunks report their
+-// failures in the end, after which a check of corrupted chunks fails with an error, and
+-// a prune with no revision to delete reports its end and returns false.  An error
+-// before the start, such as an empty repository of a backup, reports no events at all,
+-// and so does a copy with no revisions to copy.  A panic of ProgressFunction is raised
++// that an error, a panic or a cancellation (RequestCancel) interrupts before its end
++// doesn't report the end, nor does a backup or a copy that returns false, so a start
++// without an end means a failure or a cancellation.  An end doesn't mean a success,
++// though: a restore and a check of chunks report their failures in the end, after which
++// a check of corrupted chunks fails with an error, and a prune with no revision to
++// delete reports its end and returns false.  An error or a cancellation before the
++// start, such as an empty repository of a backup, reports no events at all, and so does
++// a copy with no revisions to copy.  A panic of ProgressFunction is raised
+ // by the operation in the goroutine that called it, like any other panic of the
+ // operation; the worker goroutines may still call ProgressFunction after the panic
+ // until the operation returns, but not after that.
