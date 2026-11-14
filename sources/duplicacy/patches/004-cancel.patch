@@ -1,6 +1,6 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-10 11:46:59.681851164 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-10 11:46:59.701851631 +0000
+--- a/src/duplicacy_backupmanager.go	2026-11-13 16:41:14.726080512 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-13 16:41:21.678255044 +0000
 @@ -131,6 +131,11 @@
  func (manager *BackupManager) Backup(top string, quickMode bool, threads int, tag string,
  	showStatistics bool, shadowCopy bool, shadowCopyTimeout int, enumOnly bool, metadataChunkSize int, maximumInMemoryEntries int) bool {
@@ -30,7 +30,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	// If the listing operation is fast and this is an initial backup, list all chunks and
  	// put them in the cache.
-@@ -348,6 +363,13 @@
+@@ -365,6 +380,13 @@
  	var remoteEntry *Entry
  	remoteListingOK := true
  	for {
@@ -44,7 +44,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		localEntry := readLocalEntry()
  		if localEntry == nil {
  			break
-@@ -468,6 +490,9 @@
+@@ -485,6 +507,9 @@
  	}
  
  	var once sync.Once
@@ -53,8 +53,8 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
 +	var saveIncomplete func()
  	if hashMode && !manager.config.dryRun {
  		// In case an error occurs during a hash mode backup, save the incomplete snapshot
- 		RunAtError = func() {
-@@ -475,6 +500,22 @@
+ 		savedAtError = true
+@@ -493,6 +518,22 @@
  				localEntryList.SaveIncompleteSnapshot()
  			})
  		}
@@ -77,7 +77,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	}
  
  	startUploadingTime := time.Now().Unix()
-@@ -533,6 +574,11 @@
+@@ -551,6 +592,11 @@
  	chunkIndex := -1
  	// This function is called when the chunk maker generates a new chunk
  	uploadChunkFunc := func(chunk *Chunk) {
@@ -89,7 +89,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		chunkID := chunk.GetID()
  		chunkSize := chunk.GetLength()
  
-@@ -562,6 +608,10 @@
+@@ -580,6 +626,10 @@
  
  	// These are files to be uploaded; directories and links are excluded
  	for i := range localEntryList.ModifiedEntries {
@@ -100,7 +100,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		entry := &localEntryList.ModifiedEntries[i]
  		LOG_TRACE("PACK_START", "Packing %s", entry.Path)
  		fullPath := joinPath(shadowTop, entry.Path)
-@@ -585,6 +635,11 @@
+@@ -603,6 +653,11 @@
  	// This flushes the chunk maker (forcing all remaining data to be sent in chunks)
  	fileChunkMaker.AddData(nil, uploadChunkFunc)
  	chunkOperator.WaitForCompletion()
@@ -112,7 +112,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	localSnapshot.EndTime = time.Now().Unix()
  
-@@ -735,6 +790,11 @@
+@@ -754,6 +809,11 @@
  func (manager *BackupManager) Restore(top string, revision int, inPlace bool, quickMode bool, threads int, overwrite bool,
  	deleteMode bool, setOwner bool, showStatistics bool, patterns []string, allowFailures bool) int {
  
@@ -124,7 +124,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	startTime := time.Now().Unix()
  
  	LOG_DEBUG("RESTORE_PARAMETERS", "top: %s, revision: %d, in-place: %t, quick: %t, delete: %t",
-@@ -884,6 +944,12 @@
+@@ -903,6 +963,12 @@
  	localListingOK := true
  
  	for {
@@ -137,7 +137,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		remoteEntry, remoteListingOK := readRemoteEntry()
  		if !remoteListingOK {
  			break
-@@ -1026,6 +1092,14 @@
+@@ -1045,6 +1111,14 @@
  
  	// Now download files one by one
  	for _, file := range fileEntries {
@@ -152,7 +152,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		fullPath := joinPath(top, file.Path)
  		stat, _ := os.Stat(fullPath)
-@@ -1095,6 +1169,12 @@
+@@ -1114,6 +1188,12 @@
  		file.RestoreMetadata(fullPath, nil, setOwner)
  	}
  
@@ -165,7 +165,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	if deleteMode && len(patterns) == 0 {
  		// Reverse the order to make sure directories are empty before being deleted
  		for i := range extraFiles {
-@@ -1708,6 +1788,12 @@
+@@ -1727,6 +1807,12 @@
  			}
  
  			if !hasLocalCopy {
@@ -178,7 +178,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  				chunk := chunkDownloader.WaitForChunk(i)
  				if chunk.isBroken {
  					return false, fmt.Errorf("chunk %s is corrupted", manager.config.GetChunkIDFromHash(hash))
-@@ -1772,6 +1858,11 @@
+@@ -1791,6 +1877,11 @@
  func (manager *BackupManager) CopySnapshots(otherManager *BackupManager, snapshotID string,
  	revisionsToBeCopied []int, uploadingThreads int, downloadingThreads int) bool {
  
@@ -190,7 +190,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	// The snapshot sequences are downloaded through the operator of the snapshot manager
  	defer manager.SnapshotManager.useOperator(1, false)()
  
-@@ -1999,6 +2090,13 @@
+@@ -2018,6 +2109,13 @@
  		// one check covers both.  This check has no test of its own: the operators skip the queued tasks after a
  		// failure, so without it the copy only adds the skipped tasks
  		chunkDownloader.failures.raise()
@@ -204,9 +204,9 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		chunkID := manager.config.GetChunkIDFromHash(chunkHash)
  		newChunkID := otherManager.config.GetChunkIDFromHash(chunkHash)
  
-@@ -2021,6 +2119,13 @@
+@@ -2040,6 +2138,13 @@
  	LOG_INFO("SNAPSHOT_COPY", "Copied %d new chunks and skipped %d existing chunks", numberOfCopiedChunks,
- 		len(chunks) - numberOfCopiedChunks)
+ 		len(chunks)-numberOfCopiedChunks)
  
 +	// The chunks have been copied, but a canceled copy writes no revision.  The operators of the copy have been
 +	// stopped above, raising their failures; a failure recorded by the operator of the snapshot manager is raised
@@ -220,7 +220,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			continue
 diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 --- a/src/duplicacy_cancel.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel.go	2026-11-10 14:04:17.904627570 +0000
++++ b/src/duplicacy_cancel.go	2026-11-13 16:41:21.678255044 +0000
 @@ -0,0 +1,132 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -356,8 +356,8 @@ diff -ruN -x .git a/src/duplicacy_cancel.go b/src/duplicacy_cancel.go
 +}
 diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 --- a/src/duplicacy_cancel_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_cancel_test.go	2026-11-10 13:47:22.647326682 +0000
-@@ -0,0 +1,2471 @@
++++ b/src/duplicacy_cancel_test.go	2026-11-13 16:41:21.678255044 +0000
+@@ -0,0 +1,2453 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -615,24 +615,6 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +		}
 +	}
 +	return logs
-+}
-+
-+// openFilesOf returns the paths of the files that the descriptors of the process point
-+// to; ok is false when /proc/self/fd is not available.
-+func openFilesOf(t *testing.T) (paths []string, ok bool) {
-+	t.Helper()
-+	entries, err := os.ReadDir("/proc/self/fd")
-+	if err != nil {
-+		return nil, false
-+	}
-+	for _, entry := range entries {
-+		// A descriptor that is closed in the meantime, like the one of the directory
-+		// itself, fails to resolve
-+		if target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name())); err == nil {
-+			paths = append(paths, target)
-+		}
-+	}
-+	return paths, true
 +}
 +
 +// TestBackupManager_Backup_Cancel checks the cancellation of Backup.  The cases are added
@@ -2830,8 +2812,8 @@ diff -ruN -x .git a/src/duplicacy_cancel_test.go b/src/duplicacy_cancel_test.go
 +	}
 +}
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
---- a/src/duplicacy_progress.go	2026-11-10 11:46:59.685851258 +0000
-+++ b/src/duplicacy_progress.go	2026-11-10 11:46:59.701851631 +0000
+--- a/src/duplicacy_progress.go	2026-11-13 16:41:14.730080611 +0000
++++ b/src/duplicacy_progress.go	2026-11-13 16:41:21.678255044 +0000
 @@ -97,13 +97,14 @@
  // goroutines and the goroutine that runs the operation.  Set it before an operation and
  // don't change it while the operation runs.  It must return without waiting for the
@@ -2855,8 +2837,8 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
  // operation; the worker goroutines may still call ProgressFunction after the panic
  // until the operation returns, but not after that.
 diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
---- a/src/duplicacy_snapshotmanager.go	2026-11-10 11:46:59.685851258 +0000
-+++ b/src/duplicacy_snapshotmanager.go	2026-11-10 13:57:11.596514277 +0000
+--- a/src/duplicacy_snapshotmanager.go	2026-11-13 16:41:14.734080712 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-13 16:41:21.682255144 +0000
 @@ -873,6 +873,11 @@
  func (manager *SnapshotManager) CheckSnapshots(snapshotID string, revisionsToCheck []int, tag string, showStatistics bool, showTabular bool,
  	checkFiles bool, checkChunks, searchFossils bool, resurrect bool, rewriteChunks bool, threads int, allowFailures bool) bool {
@@ -2893,7 +2875,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  			if checkFiles {
  				manager.DownloadSnapshotSequences(snapshot)
-@@ -1235,7 +1250,22 @@
+@@ -1236,7 +1251,22 @@
  		} ()
  	}
  
@@ -2916,7 +2898,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		chunkChannel <- chunkIndex
  	}
  
-@@ -1994,6 +2024,12 @@
+@@ -1995,6 +2025,12 @@
  
  	defer manager.useOperator(threads, true)()
  
@@ -2929,7 +2911,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	// The chunks to fossilize or delete come as a stream, so the totals are unknown
  	if ProgressFunction != nil {
  		ProgressFunction(ProgressEvent{Operation: ProgressOperationPrune, Kind: ProgressKindStart, TotalBytes: -1,
-@@ -2096,6 +2132,10 @@
+@@ -2097,6 +2133,10 @@
  	}
  
  	for _, id := range snapshotIDs {
@@ -2940,7 +2922,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		var revisions []int
  		revisions, err = manager.ListSnapshotRevisions(id)
  		if err != nil {
-@@ -2106,6 +2146,9 @@
+@@ -2107,6 +2147,9 @@
  		sort.Ints(revisions)
  		var snapshots []*Snapshot
  		for _, revision := range revisions {
@@ -2950,7 +2932,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			snapshot := manager.DownloadSnapshot(id, revision)
  			if snapshot != nil {
  				snapshots = append(snapshots, snapshot)
-@@ -2138,6 +2181,16 @@
+@@ -2139,6 +2182,16 @@
  	// Find fossil collections previously created, and delete fossils and temporary files in them if they are
  	// deletable.
  	for _, collectionName := range collections {
@@ -2967,7 +2949,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  		matched := collectionRegex.FindStringSubmatch(collectionName)
  		if matched == nil {
-@@ -2273,6 +2326,13 @@
+@@ -2274,6 +2327,13 @@
  		return true
  	}
  
@@ -2981,7 +2963,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	toBeDeleted := 0
  
  	revisionMap := make(map[int]bool)
-@@ -2287,6 +2347,9 @@
+@@ -2288,6 +2348,9 @@
  
  	// Find the snapshots that need to be deleted
  	for id, snapshots := range allSnapshots {
@@ -2991,7 +2973,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  		if len(snapshotID) > 0 && id != snapshotID {
  			continue
-@@ -2505,6 +2568,11 @@
+@@ -2506,6 +2569,11 @@
  		}
  
  		for _, snapshot := range snapshots {
@@ -3003,7 +2985,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			if !snapshot.Flag {
  				continue
  			}
-@@ -2522,6 +2590,9 @@
+@@ -2523,6 +2591,9 @@
  
  	for _, snapshots := range allSnapshots {
  		for _, snapshot := range snapshots {
@@ -3013,7 +2995,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			if snapshot.Flag {
  				continue
  			}
-@@ -2536,6 +2607,12 @@
+@@ -2537,6 +2608,12 @@
  		}
  	}
  
@@ -3026,7 +3008,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	for chunk, value := range targetChunks {
  		if value {
  			continue
-@@ -2578,6 +2655,11 @@
+@@ -2579,6 +2656,11 @@
  		}
  
  		for _, snapshot := range snapshots {
@@ -3038,7 +3020,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  			if snapshot.Flag {
  				LOG_INFO("SNAPSHOT_DELETE", "Deleting snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
  				continue
-@@ -2591,7 +2673,14 @@
+@@ -2592,7 +2674,14 @@
  		}
  	}
  
@@ -3053,7 +3035,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  		isMetadata := dir == metadataDir
  
-@@ -2600,6 +2689,9 @@
+@@ -2601,6 +2690,9 @@
  		foundChunks := make(map[string]bool)
  
  		allFiles, _ := manager.ListAllFiles(manager.storage, dir)
@@ -3063,7 +3045,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		uniqueFiles := make(map[string]bool)
  		for _, file := range allFiles {
  			if _, found := uniqueFiles[file]; found {
-@@ -2622,6 +2714,7 @@
+@@ -2623,6 +2715,7 @@
  				if exclusive {
  					// In exclusive mode, we assume no other restore operation is running concurrently.
  					manager.chunkOperator.Delete("", dir+file, isMetadata)
@@ -3071,7 +3053,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  					fmt.Fprintf(logFile, "Deleted temporary %s\n", dir+file)
  				} else {
  					collection.AddTemporary(dir + file)
-@@ -2643,6 +2736,7 @@
+@@ -2644,6 +2737,7 @@
  						}
  
  						manager.chunkOperator.Resurrect(chunk, dir+file)
@@ -3079,7 +3061,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  						fmt.Fprintf(logFile, "Found referenced fossil %s\n", dir+file)
  
  					} else {
-@@ -2654,6 +2748,7 @@
+@@ -2655,6 +2749,7 @@
  
  						if exclusive {
  							manager.chunkOperator.Delete(chunk, dir+file, isMetadata)
@@ -3087,7 +3069,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  						} else {
  							collection.AddFossil(dir + file)
  							LOG_DEBUG("FOSSIL_FIND", "Found unreferenced fossil %s", dir+file)
-@@ -2679,6 +2774,7 @@
+@@ -2680,6 +2775,7 @@
  				}
  
  				manager.fossilizeChunk(chunk, dir+file, isMetadata, exclusive)
@@ -3095,7 +3077,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  				if exclusive {
  					fmt.Fprintf(logFile, "Deleted chunk %s (exclusive mode)\n", chunk)
  				} else {
-@@ -2694,6 +2790,7 @@
+@@ -2695,6 +2791,7 @@
  
  				// This is a redundant chunk file (for instance D3/495A8D and D3/49/5A8D )
  				manager.chunkOperator.Delete(chunk, dir+file, isMetadata)

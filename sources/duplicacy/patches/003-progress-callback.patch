@@ -1,7 +1,7 @@
 diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager.go
---- a/src/duplicacy_backupmanager.go	2026-11-10 04:15:37.814826601 +0000
-+++ b/src/duplicacy_backupmanager.go	2026-11-10 05:28:26.364699086 +0000
-@@ -226,6 +226,9 @@
+--- a/src/duplicacy_backupmanager.go	2026-11-13 16:41:09.313944611 +0000
++++ b/src/duplicacy_backupmanager.go	2026-11-13 16:41:09.349945516 +0000
+@@ -227,6 +227,9 @@
  	var totalModifiedFileSize int64    // total size of modified files
  	var uploadedModifiedFileSize int64 // portions that have been uploaded (including cache hits)
  	var preservedFileSize int64 // total size of unmodified files
@@ -11,7 +11,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	localSnapshot := CreateEmptySnapshot(manager.snapshotID)
  	localSnapshot.Revision = remoteSnapshot.Revision + 1
-@@ -400,6 +403,9 @@
+@@ -417,6 +420,9 @@
  				}
  			} else {
  				totalModifiedFileSize += localEntry.Size
@@ -21,7 +21,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  				if localEntry.Size > 0 {
  					localEntry.Size = -1
  				}
-@@ -408,6 +414,9 @@
+@@ -425,6 +431,9 @@
  		} else {
  			// compareResult must be < 0; the local file is new
  			totalModifiedFileSize += localEntry.Size
@@ -31,7 +31,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			if localEntry.Size > 0 {
  					// A size of -1 indicates this is a modified file that will be uploaded
  					localEntry.Size = -1
-@@ -430,6 +439,10 @@
+@@ -447,6 +456,10 @@
  		return false
  	}
  
@@ -42,7 +42,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	fileChunkMaker := CreateFileChunkMaker(manager.config, false)
  
  	keepUploadAlive := int64(1800)
-@@ -491,6 +504,11 @@
+@@ -509,6 +522,11 @@
  		}
  
  		uploadedModifiedFileSize := atomic.AddInt64(&uploadedModifiedFileSize, int64(chunkSize))
@@ -54,9 +54,9 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		if (IsTracing() || showStatistics) && totalModifiedFileSize > 0 {
  			now := time.Now().Unix()
-@@ -629,6 +647,16 @@
- 
+@@ -648,6 +666,16 @@
  	RunAtError = func() {}
+ 	savedAtError = false
  	deleteIncompleteSnapshot(manager.cachePath)
 +	// The end comes after the incomplete snapshot can no longer be saved or left behind by
 +	// a panic of the hook
@@ -71,7 +71,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	totalMetadataChunks := len(localSnapshot.FileSequence) + len(localSnapshot.ChunkSequence) +
  		len(localSnapshot.LengthSequence)
-@@ -757,6 +785,8 @@
+@@ -776,6 +804,8 @@
  	localListingChannel := make(chan *Entry)
  	remoteListingChannel := make(chan *Entry)
  	chunkOperator := CreateChunkOperator(manager.config, manager.storage, manager.snapshotCache, showStatistics, false, threads, allowFailures)
@@ -80,7 +80,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	// The operator is stopped without raising its error so that a panic being propagated is not replaced
  	defer chunkOperator.stopWorkers()
  	// The sequences of the snapshot are downloaded through the operator of the snapshot manager
-@@ -985,6 +1015,10 @@
+@@ -1004,6 +1034,10 @@
  	defer chunkDownloader.Stop()
  
  	chunkDownloader.AddFiles(remoteSnapshot, fileEntries)
@@ -91,7 +91,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	chunkMaker := CreateFileChunkMaker(manager.config, true)
  
-@@ -1087,6 +1121,11 @@
+@@ -1106,6 +1140,11 @@
  		// result.  Download errors are only warnings here, as failures are allowed.
  		chunkDownloader.Stop()
  		chunkOperator.Stop()
@@ -103,7 +103,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  		return failedFileCount
  	}
  
-@@ -1108,6 +1147,10 @@
+@@ -1127,6 +1166,10 @@
  	// The chunks prefetched for files that have been skipped must not keep the workers from stopping
  	chunkDownloader.Stop()
  	chunkOperator.Stop()
@@ -114,7 +114,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  	return 0
  }
-@@ -1168,14 +1211,19 @@
+@@ -1187,14 +1230,19 @@
  	numberOfNewMetadataChunks int, totalUploadedMetadataChunkSize int64,
  	totalUploadedMetadataChunkBytes int64) {
  
@@ -134,7 +134,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  			} else {
  				LOG_DEBUG("CHUNK_EXIST", "Skipped metadata chunk %s in the storage", chunk.GetID())
  			}
-@@ -1894,9 +1942,16 @@
+@@ -1913,9 +1961,16 @@
  
  	LOG_INFO("SNAPSHOT_COPY", "Chunks to copy: %d, to skip: %d, total: %d", len(chunksToCopy), len(chunks) - len(chunksToCopy), len(chunks))
  
@@ -151,7 +151,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	startTime := time.Now()
  
  	// Increased by the uploading goroutines
-@@ -1920,6 +1975,14 @@
+@@ -1939,6 +1994,14 @@
  		}
  
  		atomic.AddInt64(&uploadedBytes, int64(chunkSize))
@@ -166,7 +166,7 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  
  		elapsedTime := time.Now().Sub(startTime).Seconds()
  		speed := int64(float64(atomic.LoadInt64(&uploadedBytes)) / elapsedTime)
-@@ -1969,5 +2032,11 @@
+@@ -1988,5 +2051,11 @@
  		LOG_INFO("SNAPSHOT_COPY", "Copied snapshot %s at revision %d", snapshot.ID, snapshot.Revision)
  	}
  
@@ -179,8 +179,8 @@ diff -ruN -x .git a/src/duplicacy_backupmanager.go b/src/duplicacy_backupmanager
  	return true
  }
 diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator.go
---- a/src/duplicacy_chunkoperator.go	2026-11-10 04:15:37.814826601 +0000
-+++ b/src/duplicacy_chunkoperator.go	2026-11-10 05:28:26.360698983 +0000
+--- a/src/duplicacy_chunkoperator.go	2026-11-13 16:41:09.313944611 +0000
++++ b/src/duplicacy_chunkoperator.go	2026-11-13 16:41:09.349945516 +0000
 @@ -58,6 +58,13 @@
  	allowFailures bool           // Whether to fail on download error, or continue
  	NumberOfFailedChunks int64   // The number of chunks that can't be downloaded
@@ -275,7 +275,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  // Download downloads a chunk from the storage.
  func (operator *ChunkOperator) DownloadChunk(threadIndex int, task ChunkTask) {
  
-@@ -584,6 +611,12 @@
+@@ -585,6 +612,12 @@
  		LOG_DEBUG("CHUNK_DOWNLOAD", "Chunk %s has been downloaded", chunkID)
  	}
  
@@ -290,7 +290,7 @@ diff -ruN -x .git a/src/duplicacy_chunkoperator.go b/src/duplicacy_chunkoperator
  	return
 diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 --- a/src/duplicacy_progress.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_progress.go	2026-11-10 06:15:25.389412409 +0000
++++ b/src/duplicacy_progress.go	2026-11-13 16:41:09.349945516 +0000
 @@ -0,0 +1,110 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -404,8 +404,8 @@ diff -ruN -x .git a/src/duplicacy_progress.go b/src/duplicacy_progress.go
 +var ProgressFunction func(event ProgressEvent)
 diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test.go
 --- a/src/duplicacy_progress_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_progress_test.go	2026-11-10 05:41:02.791792563 +0000
-@@ -0,0 +1,2536 @@
++++ b/src/duplicacy_progress_test.go	2026-11-13 16:41:09.353945616 +0000
+@@ -0,0 +1,2539 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -2353,9 +2353,12 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +			prepare: func(t *testing.T) *progressRun {
 +				run := prepareProgressCheck(t, true)
 +				manager := run.fixture.manager.SnapshotManager
-+				discardStdout(t, func() { manager.PrintFile("host1", 1, "file1") })
++				// PrintFile stops and removes an operator that it has created, so the operator is created beforehand, as
++				// by a program that reuses the snapshot manager
++				manager.CreateChunkOperator(false, false, 1, false)
 +				operator := manager.chunkOperator
-+				if operator == nil {
++				discardStdout(t, func() { manager.PrintFile("host1", 1, "file1") })
++				if manager.chunkOperator != operator {
 +					t.Fatalf("PrintFile has not left the operator")
 +				}
 +				t.Cleanup(operator.stopWorkers)
@@ -2943,8 +2946,8 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
 +	}
 +}
 diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotmanager.go
---- a/src/duplicacy_snapshotmanager.go	2026-11-10 04:15:37.822826795 +0000
-+++ b/src/duplicacy_snapshotmanager.go	2026-11-10 05:28:26.360698983 +0000
+--- a/src/duplicacy_snapshotmanager.go	2026-11-13 16:41:09.317944712 +0000
++++ b/src/duplicacy_snapshotmanager.go	2026-11-13 16:41:09.353945616 +0000
 @@ -191,6 +191,9 @@
  	snapshotCache *FileStorage
  
@@ -3019,7 +3022,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		return true
  	}
  
-@@ -1146,6 +1171,10 @@
+@@ -1147,6 +1172,10 @@
  	var totalDownloadedChunkSize int64
  	var totalDownloadedChunks int64
  	totalChunks := int64(len(chunkHashes))
@@ -3030,7 +3033,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	lastSaveTime := time.Now().Unix()
  
  	chunkChannel := make(chan int, threads)
-@@ -1184,6 +1213,10 @@
+@@ -1185,6 +1214,10 @@
  						} else {
  							verifiedChunksLock.Unlock()
  						}
@@ -3041,7 +3044,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  
  						downloadedChunkSize := atomic.AddInt64(&totalDownloadedChunkSize, int64(chunk.GetLength()))
  						downloadedChunks := atomic.AddInt64(&totalDownloadedChunks, 1)
-@@ -1210,6 +1243,11 @@
+@@ -1211,6 +1244,11 @@
  	wg.Wait()
  	manager.chunkOperator.WaitForCompletion()
  
@@ -3053,7 +3056,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	if manager.chunkOperator.NumberOfFailedChunks > 0 {
  		LOG_ERROR("SNAPSHOT_VERIFY", "%d out of %d chunks are corrupted", manager.chunkOperator.NumberOfFailedChunks, len(*allChunkHashes))
  	} else {
-@@ -1443,6 +1481,7 @@
+@@ -1444,6 +1482,7 @@
  		manager.config.PutChunk(lastChunk)
  	}
  
@@ -3061,7 +3064,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	if corruptedFiles > 0 {
  		LOG_WARN("SNAPSHOT_VERIFY", "Snapshot %s at revision %d contains %d corrupted files",
  			snapshot.ID, snapshot.Revision, corruptedFiles)
-@@ -1955,6 +1994,12 @@
+@@ -1956,6 +1995,12 @@
  
  	defer manager.useOperator(threads, true)()
  
@@ -3074,7 +3077,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  	prefPath := GetDuplicacyPreferencePath()
  	logDir := path.Join(prefPath, "logs")
  	err := os.MkdirAll(logDir, 0700)
-@@ -2222,6 +2267,9 @@
+@@ -2223,6 +2268,9 @@
  	}
  
  	if deleteOnly {
@@ -3084,7 +3087,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		return true
  	}
  
-@@ -2320,6 +2368,9 @@
+@@ -2321,6 +2369,9 @@
  
  	if toBeDeleted == 0 && !exhaustive {
  		LOG_INFO("SNAPSHOT_NONE", "No snapshot to delete")
@@ -3094,7 +3097,7 @@ diff -ruN -x .git a/src/duplicacy_snapshotmanager.go b/src/duplicacy_snapshotman
  		return false
  	}
  
-@@ -2417,10 +2468,20 @@
+@@ -2418,10 +2469,20 @@
  		manager.CleanSnapshotCache(nil, allSnapshots)
  	}
  	manager.chunkOperator.WaitForCompletion()
