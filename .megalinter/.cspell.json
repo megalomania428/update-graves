@@ -1,76 +1,31 @@
 {
   "version": "0.2",
-  "language": "en,ru",
-  "words": [
-    "aoauth",
-    "apksigner",
-    "apktool",
-    "toplevel",
-    "comsplit",
-    "devskim",
-    "donutbrowser",
-    "duplicacy",
-    "earendil",
-    "happ",
-    "jmfederico",
-    "lintignore",
-    "lycheeignore",
-    "modzip",
-    "opencode",
-    "opeview",
-    "pideview",
-    "prpgcessing",
-    "pylintrc",
-    "smali",
-    "snomcy",
-    "tauri",
-    "tstand",
-    "typebox",
-    "wripy",
-    "xattr",
-    "xhigh",
-    "zipalign",
-    "zizmor"
-  ],
-  "dictionaryDefinitions": [
-    {
-      "name": "ru-ru",
-      "path": "/node-cspell/node_modules/@cspell/dict-ru_ru/ru_ru.trie.gz",
-      "description": "Russian Dictionary (Combined)"
-    },
-    {
-      "name": "softwareTerms",
-      "path": "/node-cspell/node_modules/@cspell/dict-software-terms/dict/softwareTerms.txt.gz",
-      "description": "Software terms dictionary"
-    },
-    {
-      "name": "software-tools",
-      "path": "/node-cspell/node_modules/@cspell/dict-software-terms/dict/software-tools.txt",
-      "description": "Software tools dictionary"
-    },
-    {
-      "name": "networking-terms",
-      "path": "/node-cspell/node_modules/@cspell/dict-software-terms/dict/networkingTerms.txt",
-      "description": "Software networking terms dictionary"
-    },
-    {
-      "name": "computing-acronyms",
-      "path": "/node-cspell/node_modules/@cspell/dict-software-terms/dict/computing-acronyms.txt",
-      "description": "Common acronyms related to computing"
-    }
-  ],
-  "dictionaries": [
-    "ru-ru",
-    "softwareTerms",
-    "software-tools",
-    "networking-terms",
-    "computing-acronyms"
-  ],
+  "import": [".cspell-action.json"],
   "ignorePaths": [
     "**/go.mod",
     "**/go.sum",
     "sources/*/patches/**",
     "harness/pi-dev/reminders/**"
   ],
-  "enabled": true
+  "words": [
+    "aoauth",
+    "apksigner",
+    "apktool",
+    "toplevel",
+    "comsplit",
+    "donutbrowser",
+    "duplicacy",
+    "earendil",
+    "happ",
+    "jmfederico",
+    "lintignore",
+    "modzip",
+    "prpgcessing",
+    "smali",
+    "tauri",
+    "tstand",
+    "typebox",
+    "xattr",
+    "zipalign"
+  ]
 }
