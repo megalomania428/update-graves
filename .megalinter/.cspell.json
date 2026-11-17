@@ -11,6 +11,7 @@
     "lintignore",
     "modzip",
     "prpgcessing",
+    "segmentio",
     "typebox"
   ],
   "ignorePaths": ["sources/*/patches/**", "harness/pi-dev/reminders/**"]

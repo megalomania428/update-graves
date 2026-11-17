@@ -2,11 +2,13 @@
 set -euo pipefail
 # cspell:ignore ldflags trimpath goproxy modzip
 # cspell:ignore duplicacy gilbertchen xargs GOARCH lzma gomod endgroup GOARM riscv ppc
+# cspell:ignore GOFLAGS GOMODCACHE GONOSUMDB GOSUMDB modcacherw modcache
 MODULE='duplicacy.invalid/v3'
 OUT_DIR="${GRAVES_OUT_DIR:?}"
 FILE_VERSION="${GRAVES_FILE_VERSION:?}"
 GO_VERSION="v${GRAVES_VERSION:?}"
 MODZIP_DIR="${GRAVES_SOURCE_DIR:?}/scripts/modzip"
+EXTRA_DIR="${GRAVES_SOURCE_DIR:?}/extra-modules"
 STAGE="${1:-}"
 STEP=''
 STEP_START=0
@@ -110,6 +112,25 @@ gomod)
   step_begin 'module zip'
   go -C "${MODZIP_DIR}" run . "${MODULE}" "${GO_VERSION}" "$(pwd)" \
     "${work}/${proxy}" "$(git log -1 --format=%cI)"
+  step_end
+  step_begin 'extra modules'
+  go -C "${MODZIP_DIR}" run . extra "${EXTRA_DIR}" "${work}/${proxy}"
+  step_end
+  step_begin 'consumer check'
+  (
+    check="$(mktemp -d)"
+    trap 'rm -rf "${check}"' EXIT
+    mkdir "${check}/consumer"
+    cd "${check}/consumer"
+    printf 'module consumer.invalid\n\ngo 1.26.0\n\nrequire %s %s\n' "${MODULE}" \
+      "${GO_VERSION}" >go.mod
+    printf 'package consumer\n\nimport _ "%s/src"\n' "${MODULE}" >consumer.go
+    export GOPROXY="file://${work}/${proxy},https://proxy.golang.org,direct"
+    export GONOSUMDB='duplicacy.invalid' GOSUMDB='sum.golang.org'
+    export GOFLAGS="${GOFLAGS:-} -mod=mod -modcacherw" GOMODCACHE="${check}/modcache"
+    go mod tidy
+    go build ./...
+  )
   step_end
   step_begin "archive ${proxy}"
   tar -C "${work}" --use-compress-program='xz -T0 -9e' \

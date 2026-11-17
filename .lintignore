@@ -1,2 +1,3 @@
 *.patch
 /harness/pi-dev/reminders
+/sources/duplicacy/extra-modules/**/*.zip
