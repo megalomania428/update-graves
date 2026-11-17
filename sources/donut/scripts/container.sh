@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # cspell:ignore nullglob msvc xwin nsis lzma libdonutbrowser appimage rustup rustc
-# cspell:ignore RUSTFLAGS
+# cspell:ignore RUSTFLAGS donutbrowser
 # Runs in the toolchain image from the upstream clone: builds GRAVES_TARGET and
 # leaves its only asset in GRAVES_OUT_DIR.
 upstream="${GRAVES_UPSTREAM_DIR:?}"

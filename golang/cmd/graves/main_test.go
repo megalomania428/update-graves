@@ -339,8 +339,30 @@ func TestWorkflowContract(t *testing.T) {
 		}
 	}
 	tests := load("repo-test.yaml")["jobs"].(map[string]any)
-	if _, exists := tests["all-green"]; exists {
-		t.Fatal("obsolete all-green job")
+	allGreen, _ := tests["all-green"].(map[string]any)
+	if fmt.Sprintf("%#v", allGreen["needs"]) !=
+		`[]interface {}{"tests", "linters", "MegaLinter"}` ||
+		allGreen["if"] != "always() && github.event_name == 'pull_request' && "+
+			"(github.event.pull_request.head.repo.full_name == github.repository && "+
+			"github.event.pull_request.user.login != 'dependabot[bot]')" {
+		t.Fatalf("all-green job: needs %v, if %q", allGreen["needs"], allGreen["if"])
+	}
+	pipedSteps := 0
+	for _, raw := range tests["linters"].(map[string]any)["steps"].([]any) {
+		step := raw.(map[string]any)
+		run, _ := step["run"].(string)
+		if !strings.Contains(run, "| bash") {
+			continue
+		}
+		pipedSteps++
+		if step["shell"] != "bash" {
+			t.Fatalf("linters step %q pipes into bash without shell: bash, "+
+				"so a failed download would pass; shell is %v",
+				step["name"], step["shell"])
+		}
+	}
+	if pipedSteps == 0 {
+		t.Fatal("linters job has no step piping a script into bash")
 	}
 	for _, name := range []string{"tests", "linters", "MegaLinter"} {
 		job := tests[name].(map[string]any)

@@ -1,19 +1,9 @@
 {
   "version": "0.2",
   "import": [".cspell-action.json"],
-  "ignorePaths": [
-    "**/go.mod",
-    "**/go.sum",
-    "sources/*/patches/**",
-    "harness/pi-dev/reminders/**"
-  ],
   "words": [
     "aoauth",
-    "apksigner",
-    "apktool",
-    "toplevel",
     "comsplit",
-    "donutbrowser",
     "duplicacy",
     "earendil",
     "happ",
@@ -21,11 +11,7 @@
     "lintignore",
     "modzip",
     "prpgcessing",
-    "smali",
-    "tauri",
-    "tstand",
-    "typebox",
-    "xattr",
-    "zipalign"
-  ]
+    "typebox"
+  ],
+  "ignorePaths": ["sources/*/patches/**", "harness/pi-dev/reminders/**"]
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # cspell:ignore subuid subgid subuids subgids newuidmap newgidmap uidmap apparmor userns
-# cspell:ignore ghcup dotnet hostedtoolcache setuid rustup xwin
+# cspell:ignore ghcup dotnet hostedtoolcache setuid rustup xwin donutbrowser
 # Runs on the runner: builds the toolchain image of GRAVES_TARGET and runs
 # scripts/container.sh in it with the repository and the caches mounted.
 root="${GRAVES_SOURCE_DIR:?}"

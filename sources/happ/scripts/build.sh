@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# cspell:ignore apktool zipalign apksigner nproc pkey pubout noout idsig
+# cspell:ignore apktool zipalign apksigner nproc pkey pubout noout idsig smali
 # cspell:ignore PYTHONDONTWRITEBYTECODE
 TMP_DIR=''
 stage_start() {

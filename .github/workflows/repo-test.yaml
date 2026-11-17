@@ -1,5 +1,5 @@
 # kics-scan disable=555ab8f9-2001-455e-a077-f2d0f41e2fb9
-# cspell:ignore mktemp coverprofile covermode dependabot
+# cspell:ignore mktemp coverprofile covermode dependabot donutbrowser
 ---
 name: repo test
 on:
@@ -71,13 +71,14 @@ jobs:
       - name: lint the repo
         env:
           BRA: master
-          USE_LINTIGNORE: 1
+          USE_LINTIGNORE: true
+        shell: bash
         run: |
           curl -fsL \
-          https://raw.githubusercontent.com/raven428/container-images/refs/heads/${{
+          https://raw.githubusercontent.com/megalomania428/container-images/refs/heads/${{
           env.BRA }}/sources/linters-ubuntu-22_04/check-dir.sh | bash
           curl -fsL \
-          https://raw.githubusercontent.com/raven428/container-images/refs/heads/${{
+          https://raw.githubusercontent.com/megalomania428/container-images/refs/heads/${{
           env.BRA }}/_shared/install/ansible/check-dir.sh | bash
   MegaLinter:
     name: MegaLinter
@@ -100,3 +101,22 @@ jobs:
       # jscpd:ignore-end
       - name: Run MegaLinter
         uses: megalomania428/github-actions/megalinter@master
+  all-green:
+    name: all green
+    # jscpd:ignore-start
+    if: always() && github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    # jscpd:ignore-end
+    needs:
+      - tests
+      - linters
+      - MegaLinter
+    steps:
+      - name: Check dependencies
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")'

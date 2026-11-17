@@ -1,4 +1,5 @@
 ---
+# cspell:ignore tstand
 EXTENDS: .megalinter-action.yml
 TYPESCRIPT_STANDARD_PRE_COMMANDS:
   - command: |

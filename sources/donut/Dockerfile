@@ -1,4 +1,4 @@
-# cspell:ignore rustup noninteractive
+# cspell:ignore rustup noninteractive donutbrowser
 # Toolchain image of one target kind, built on the runner by scripts/build.sh.
 ARG BASE_IMAGE=mirror.gcr.io/ubuntu:22.04
 FROM ${BASE_IMAGE}

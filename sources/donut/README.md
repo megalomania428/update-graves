@@ -1,6 +1,6 @@
 # Donut Browser with patches
 
-<!-- cspell:ignore xwin msvc nsis winfsp unzip powershell -->
+<!-- cspell:ignore xwin msvc nsis winfsp unzip powershell donutbrowser -->
 <!-- markdownlint-disable MD013 -->
 
 [Donut Browser](https://github.com/donutbrowser/donutbrowser) is an anti-detect browser manager built with Tauri. This recipe builds patched Windows x64 and Linux x64 releases from the upstream ref in `build.yaml` and publishes them only to the private `megalomania428/update-bunker` repository.

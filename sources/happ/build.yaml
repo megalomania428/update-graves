@@ -1,4 +1,5 @@
 ---
+# cspell:ignore apktool
 upstream:
   release:
     repo: megalomania428/update-bunker
