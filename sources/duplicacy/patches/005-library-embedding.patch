@@ -1,6 +1,6 @@
 diff -ruN -x .git a/duplicacy/duplicacy_keyring.go b/duplicacy/duplicacy_keyring.go
 --- a/duplicacy/duplicacy_keyring.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/duplicacy/duplicacy_keyring.go	2026-11-17 15:41:54.660519879 +0000
++++ b/duplicacy/duplicacy_keyring.go	2026-11-18 06:11:35.416933890 +0000
 @@ -0,0 +1,25 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -29,7 +29,7 @@ diff -ruN -x .git a/duplicacy/duplicacy_keyring.go b/duplicacy/duplicacy_keyring
 +}
 diff -ruN -x .git a/duplicacy/duplicacy_keyring_test.go b/duplicacy/duplicacy_keyring_test.go
 --- a/duplicacy/duplicacy_keyring_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/duplicacy/duplicacy_keyring_test.go	2026-11-17 15:41:54.668520079 +0000
++++ b/duplicacy/duplicacy_keyring_test.go	2026-11-18 06:11:35.416933890 +0000
 @@ -0,0 +1,33 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -65,8 +65,8 @@ diff -ruN -x .git a/duplicacy/duplicacy_keyring_test.go b/duplicacy/duplicacy_ke
 +	}
 +}
 diff -ruN -x .git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
---- a/duplicacy/duplicacy_main.go	2026-11-17 14:46:06.998764764 +0000
-+++ b/duplicacy/duplicacy_main.go	2026-11-17 15:41:38.872124454 +0000
+--- a/duplicacy/duplicacy_main.go	2026-11-18 06:11:35.340931960 +0000
++++ b/duplicacy/duplicacy_main.go	2026-11-18 06:11:35.416933890 +0000
 @@ -34,6 +34,12 @@
  var ScriptEnabled bool
  var GitCommit = "unofficial"
@@ -82,7 +82,7 @@ diff -ruN -x .git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
  
 diff -ruN -x .git a/duplicacy/duplicacy_main_test.go b/duplicacy/duplicacy_main_test.go
 --- a/duplicacy/duplicacy_main_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/duplicacy/duplicacy_main_test.go	2026-11-17 15:41:54.676520280 +0000
++++ b/duplicacy/duplicacy_main_test.go	2026-11-18 06:11:35.416933890 +0000
 @@ -0,0 +1,49 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -133,10 +133,52 @@ diff -ruN -x .git a/duplicacy/duplicacy_main_test.go b/duplicacy/duplicacy_main_
 +		})
 +	}
 +}
+diff -ruN -x .git a/src/duplicacy_config.go b/src/duplicacy_config.go
+--- a/src/duplicacy_config.go	2026-11-18 06:11:35.344932061 +0000
++++ b/src/duplicacy_config.go	2026-11-18 07:54:29.833517577 +0000
+@@ -158,7 +158,7 @@
+ 	} else if len(publicKey) > 0 {
+ 		parsedKey, err := x509.ParsePKIXPublicKey(publicKey)
+ 		if err != nil {
+-			return fmt.Errorf("Invalid RSA public key in the config: %v", err)
++			return fmt.Errorf("Invalid RSA public key in the config: %w", err)
+ 		}
+ 		config.rsaPublicKey = parsedKey.(*rsa.PublicKey)
+ 		if config.rsaPublicKey == nil {
+@@ -462,7 +462,7 @@
+ 		// Decrypt the config file.  masterKey == nil means no encryption.
+ 		err, _ = configFile.Decrypt(masterKey, "")
+ 		if err != nil {
+-			return nil, false, fmt.Errorf("Failed to retrieve the config file: %v", err)
++			return nil, false, fmt.Errorf("Failed to retrieve the config file: %w", err)
+ 		}
+ 	}
+ 
+@@ -470,7 +470,7 @@
+ 
+ 	err = json.Unmarshal(configFile.GetBytes(), config)
+ 	if err != nil {
+-		return nil, false, fmt.Errorf("Failed to parse the config file: %v", err)
++		return nil, false, fmt.Errorf("Failed to parse the config file: %w", err)
+ 	}
+ 
+ 	storage.SetNestingLevels(config)
+diff -ruN -x .git a/src/duplicacy_dropboxstorage.go b/src/duplicacy_dropboxstorage.go
+--- a/src/duplicacy_dropboxstorage.go	2026-11-18 06:11:35.180927896 +0000
++++ b/src/duplicacy_dropboxstorage.go	2026-11-18 07:54:29.833517577 +0000
+@@ -45,7 +45,7 @@
+ 
+ 	err = storage.CreateDirectory(0, "")
+ 	if err != nil {
+-		return nil, fmt.Errorf("Can't create storage directory: %v", err)
++		return nil, fmt.Errorf("Can't create storage directory: %w", err)
+ 	}
+ 
+ 	storage.DerivedStorage = storage
 diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_test.go
 --- a/src/duplicacy_embedding_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_embedding_test.go	2026-11-17 15:41:54.688520580 +0000
-@@ -0,0 +1,99 @@
++++ b/src/duplicacy_embedding_test.go	2026-11-18 07:56:11.700200937 +0000
+@@ -0,0 +1,603 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -144,9 +186,17 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +package duplicacy
 +
 +import (
++	"bytes"
++	"crypto/x509"
++	"encoding/json"
++	"errors"
++	"fmt"
 +	"log"
++	"net"
 +	"os"
 +	"os/exec"
++	"path/filepath"
++	"reflect"
 +	"strings"
 +	"testing"
 +)
@@ -236,9 +286,538 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +		})
 +	}
 +}
++
++// uncomparableError is an error whose dynamic type has a slice, so that == panics on two
++// interfaces holding it.
++type uncomparableError struct {
++	lines []string
++}
++
++func (err uncomparableError) Error() string {
++	return strings.Join(err.lines, "; ")
++}
++
++// regularFile creates a regular file in a temporary directory of the test and returns its
++// path.
++func regularFile(t *testing.T) string {
++	path := filepath.Join(t.TempDir(), "file")
++	if err := os.WriteFile(path, []byte("file"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	return path
++}
++
++// Test_logf_Embedding checks that the Exception that logf raises, after a log function and
++// without one, holds the last argument of the entry that implements error, or nil if no
++// argument does, and the message formatted as before.
++func Test_logf_Embedding(t *testing.T) {
++	type args struct {
++		level  int
++		logID  string
++		format string
++		v      []interface{}
++	}
++	first, last := errors.New("first failure"), errors.New("last failure")
++	tests := []struct {
++		name string
++		args args
++		// logFunction makes logf raise the Exception after a log function
++		logFunction bool
++		// want is the error that the Exception holds
++		want error
++	}{
++		{
++			name: "no error", logFunction: true,
++			args: args{level: ERROR, logID: "LOG_TEST", format: "%d failures", v: []interface{}{2}},
++		},
++		{
++			name: "no arguments", logFunction: true,
++			args: args{level: FATAL, logID: "LOG_TEST", format: "no failure"},
++		},
++		{
++			name: "nil error", logFunction: true,
++			args: args{level: ERROR, logID: "LOG_TEST", format: "failure: %v",
++				v: []interface{}{error(nil)}},
++		},
++		{
++			name: "one error", logFunction: true,
++			args: args{level: ERROR, logID: "LOG_TEST", format: "failure: %v",
++				v: []interface{}{first}},
++			want: first,
++		},
++		{
++			name: "two errors", logFunction: true,
++			args: args{level: ERROR, logID: "LOG_TEST", format: "%v, then %v",
++				v: []interface{}{first, last}},
++			want: last,
++		},
++		{
++			name: "error before a string", logFunction: true,
++			args: args{level: ASSERT, logID: "LOG_TEST", format: "%v at %s",
++				v: []interface{}{first, "the end"}},
++			want: first,
++		},
++		{
++			name: "no error without a log function",
++			args: args{level: ERROR, logID: "LOG_TEST", format: "%d failures", v: []interface{}{2}},
++		},
++		{
++			name: "two errors without a log function",
++			args: args{level: ERROR, logID: "LOG_TEST", format: "%v, then %v",
++				v: []interface{}{first, last}},
++			want: last,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			saveWorkerErrorsGlobals(t)
++			if tt.logFunction {
++				collectWorkerErrorsLogs()
++			} else {
++				// Without a log function logf prints the entries from the logging level on
++				SetLoggingLevel(ASSERT + 1)
++			}
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				logf(tt.args.level, tt.args.logID, tt.args.format, tt.args.v...)
++				return true
++			})
++			exception, ok := outcome.recovered.(Exception)
++			if !ok {
++				t.Fatalf("logf() panicked with %#v, want an Exception", outcome.recovered)
++			}
++			if got := exception.Unwrap(); got != tt.want {
++				t.Errorf("Exception.Unwrap() = %v, want %v", got, tt.want)
++			}
++			if want := fmt.Sprintf(tt.args.format, tt.args.v...); exception.Message != want {
++				t.Errorf("Exception.Message = %q, want %q", exception.Message, want)
++			}
++		})
++	}
++}
++
++// TestCreateStorage checks that the Exception of a storage that can't be created holds the
++// error of the backend, in which errors.As finds its type, and the message as before, and
++// that an entry without an error leaves the error of the Exception nil.
++func TestCreateStorage(t *testing.T) {
++	type args struct {
++		preference    Preference
++		resetPassword bool
++		threads       int
++	}
++	tests := []struct {
++		name        string
++		args        args
++		wantStorage Storage
++		// url returns the storage URL of the case, which the preference gets
++		url func(t *testing.T) string
++		// wantMessage is the message of the Exception up to the text of its error, with %s
++		// for the storage URL
++		wantMessage string
++		// check returns what is wrong with the error of the Exception, or "" if nothing
++		check func(url string, err error) string
++	}{
++		{
++			name: "SFTP connection refused",
++			args: args{preference: Preference{Name: "default"}, threads: 1},
++			url: func(t *testing.T) string {
++				// A port of the loopback interface that nothing listens on
++				listener, err := net.Listen("tcp", "127.0.0.1:0")
++				if err != nil {
++					t.Fatal(err)
++				}
++				address := listener.Addr().String()
++				listener.Close()
++				return "sftp://" + address + "/x"
++			},
++			wantMessage: "Failed to load the SFTP storage at %s: ",
++			check: func(url string, err error) string {
++				var target *net.OpError
++				if !errors.As(err, &target) {
++					return "errors.As() finds no *net.OpError"
++				}
++				return ""
++			},
++		},
++		{
++			name: "file storage under a regular file",
++			args: args{preference: Preference{Name: "default"}, threads: 1},
++			url: func(t *testing.T) string {
++				return filepath.Join(regularFile(t), "sub")
++			},
++			wantMessage: "Failed to load the file storage at %s: ",
++			check: func(url string, err error) string {
++				var target *os.PathError
++				if !errors.As(err, &target) {
++					return "errors.As() finds no *os.PathError"
++				}
++				return ""
++			},
++		},
++		{
++			name: "file storage at a regular file",
++			args: args{preference: Preference{Name: "default"}, threads: 1},
++			url:  regularFile,
++			// The backend makes an error of its own, which wraps no other error
++			wantMessage: "Failed to load the file storage at %s: ",
++			check: func(url string, err error) string {
++				var target *os.PathError
++				switch {
++				case err == nil:
++					return "no error"
++				case err.Error() != "The storage path "+url+" is a file":
++					return fmt.Sprintf("the text is %q", err.Error())
++				case errors.Unwrap(err) != nil:
++					return "the error wraps another one"
++				case errors.As(err, &target):
++					return "errors.As() finds a *os.PathError"
++				}
++				return ""
++			},
++		},
++		{
++			name: "unrecognizable URL",
++			args: args{preference: Preference{Name: "default"}, threads: 1},
++			url: func(t *testing.T) string {
++				return "unrecognizable"
++			},
++			wantMessage: "Unrecognizable storage URL: %s",
++			check: func(url string, err error) string {
++				if err != nil {
++					return "an error for an entry without one"
++				}
++				return ""
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			saveWorkerErrorsGlobals(t)
++			savedRunInBackground := RunInBackground
++			t.Cleanup(func() {
++				RunInBackground = savedRunInBackground
++			})
++			RunInBackground = true
++			SetDuplicacyPreferencePath(t.TempDir())
++			collectWorkerErrorsLogs()
++			url := tt.url(t)
++			tt.args.preference.StorageURL = url
++			var gotStorage Storage
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				gotStorage = CreateStorage(tt.args.preference, tt.args.resetPassword, tt.args.threads)
++				return true
++			})
++			if !reflect.DeepEqual(gotStorage, tt.wantStorage) {
++				t.Errorf("CreateStorage() = %v, want %v", gotStorage, tt.wantStorage)
++			}
++			expectWorkerErrorsException(t, outcome, "STORAGE_CREATE")
++			exception := outcome.recovered.(Exception)
++			err := exception.Unwrap()
++			want := fmt.Sprintf(tt.wantMessage, url)
++			if err != nil {
++				want += err.Error()
++			}
++			if exception.Message != want {
++				t.Errorf("Exception.Message = %q, want %q", exception.Message, want)
++			}
++			if problem := tt.check(url, err); problem != "" {
++				t.Errorf("Exception.Unwrap() = %#v: %s", err, problem)
++			}
++		})
++	}
++}
++
++// TestDownloadConfig checks that DownloadConfig returns an error of the storage itself, so
++// that errors.Is finds it, and that the errors of a wrong password, a corrupt config and an
++// invalid RSA public key wrap the errors that they are made of, with the text as before.
++func TestDownloadConfig(t *testing.T) {
++	type args struct {
++		storage  Storage
++		password string
++	}
++	saveWorkerErrorsGlobals(t)
++	injected := errors.New("injected config failure")
++	// newStorage returns a fault storage around a file storage with a config encrypted with
++	// password, or not encrypted if password is empty
++	newStorage := func(password string) *faultStorage {
++		storage, err := CreateFileStorage(t.TempDir(), false, 1)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if !ConfigStorage(storage, 16384, 100, 64*1024, 256*1024, 16*1024, password, nil, false, "",
++			0, 0) {
++			t.Fatal("ConfigStorage() failed")
++		}
++		return newFaultStorage(storage)
++	}
++	// rawStorage returns a file storage whose config file has content, not encrypted
++	rawStorage := func(content string) Storage {
++		dir := t.TempDir()
++		storage, err := CreateFileStorage(dir, false, 1)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if err := os.WriteFile(filepath.Join(dir, "config"), []byte(content), 0600); err != nil {
++			t.Fatal(err)
++		}
++		return storage
++	}
++	getFileInfo, downloadFile := newStorage(""), newStorage("")
++	getFileInfo.failWith("GetFileInfo", "config", injected)
++	downloadFile.failWith("DownloadFile", "config", injected)
++	// fail after failWith of the same or a wider prefix injects an error of its own
++	samePrefix, widerPrefix := newStorage(""), newStorage("")
++	samePrefix.failWith("GetFileInfo", "config", injected)
++	samePrefix.fail("GetFileInfo", "config")
++	widerPrefix.failWith("GetFileInfo", "config", injected)
++	widerPrefix.fail("GetFileInfo", "")
++	// The errors that the corrupt config and the invalid RSA public key are made of
++	corrupt, invalidKey := "not a JSON config", `{"rsa-public-key":"00"}`
++	var syntaxError *json.SyntaxError
++	jsonErr := json.Unmarshal([]byte(corrupt), &struct{}{})
++	if !errors.As(jsonErr, &syntaxError) {
++		t.Fatalf("json.Unmarshal(%q) = %v, want a *json.SyntaxError", corrupt, jsonErr)
++	}
++	_, keyErr := x509.ParsePKIXPublicKey([]byte{0})
++	if keyErr == nil {
++		t.Fatal("x509.ParsePKIXPublicKey() accepts a zero byte")
++	}
++	tests := []struct {
++		name            string
++		args            args
++		wantConfig      *Config
++		wantIsEncrypted bool
++		wantErr         bool
++		// wantIs is the error that errors.Is must find in the error, unless nil
++		wantIs error
++		// wantText is the text of the error
++		wantText string
++		// wantDepth is the least number of errors that errors.Unwrap finds one in another,
++		// starting from the error
++		wantDepth int
++		// wantSyntax makes errors.As find a *json.SyntaxError in the error
++		wantSyntax bool
++	}{
++		{
++			name: "failed GetFileInfo", args: args{storage: getFileInfo}, wantErr: true,
++			wantIs: injected, wantText: "injected config failure",
++		},
++		{
++			name: "failed DownloadFile", args: args{storage: downloadFile}, wantErr: true,
++			wantIs: injected, wantText: "injected config failure",
++		},
++		{
++			name: "fail after failWith", args: args{storage: samePrefix}, wantErr: true,
++			wantText: injectedFailure("GetFileInfo", "config").Error(),
++		},
++		{
++			name: "fail of a wider prefix after failWith", args: args{storage: widerPrefix},
++			wantErr: true, wantText: injectedFailure("GetFileInfo", "config").Error(),
++		},
++		{
++			name:    "wrong password",
++			args:    args{storage: newStorage("correct password"), password: "wrong password"},
++			wantErr: true, wantDepth: 1,
++			wantText: "Failed to retrieve the config file: cipher: message authentication failed",
++		},
++		{
++			name: "corrupt config", args: args{storage: rawStorage(corrupt)}, wantErr: true,
++			wantDepth: 1, wantSyntax: true,
++			wantText: "Failed to parse the config file: " + jsonErr.Error(),
++		},
++		{
++			name: "invalid RSA public key", args: args{storage: rawStorage(invalidKey)},
++			wantErr: true, wantDepth: 2,
++			wantText: "Failed to parse the config file: Invalid RSA public key in the config: " +
++				keyErr.Error(),
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			gotConfig, gotIsEncrypted, err := DownloadConfig(tt.args.storage, tt.args.password)
++			if (err != nil) != tt.wantErr {
++				t.Errorf("DownloadConfig() error = %v, wantErr %v", err, tt.wantErr)
++				return
++			}
++			if !reflect.DeepEqual(gotConfig, tt.wantConfig) {
++				t.Errorf("DownloadConfig() gotConfig = %v, want %v", gotConfig, tt.wantConfig)
++			}
++			if gotIsEncrypted != tt.wantIsEncrypted {
++				t.Errorf("DownloadConfig() gotIsEncrypted = %v, want %v", gotIsEncrypted,
++					tt.wantIsEncrypted)
++			}
++			if err.Error() != tt.wantText {
++				t.Errorf("DownloadConfig() error = %q, want %q", err.Error(), tt.wantText)
++			}
++			if tt.wantIs != nil && !errors.Is(err, tt.wantIs) {
++				t.Errorf("errors.Is(%v, %v) = false", err, tt.wantIs)
++			}
++			depth := 0
++			for wrapped := errors.Unwrap(err); wrapped != nil; wrapped = errors.Unwrap(wrapped) {
++				depth++
++			}
++			if depth < tt.wantDepth {
++				t.Errorf("errors.Unwrap() finds %d errors in %v, want at least %d", depth, err,
++					tt.wantDepth)
++			}
++			var target *json.SyntaxError
++			if found := errors.As(err, &target); found != tt.wantSyntax {
++				t.Errorf("errors.As(%v, *json.SyntaxError) = %t, want %t", err, found, tt.wantSyntax)
++			}
++		})
++	}
++}
++
++// Test_workerErrors_raise checks that the panic of a worker with an Exception whose error
++// can't be compared with == is raised in the goroutine that called the operation with the
++// same log id and error, and that wasPrinted, which CatchLogException calls on it, compares
++// it without a panic and finds it only if record has printed it with the stack trace.
++func Test_workerErrors_raise(t *testing.T) {
++	value := Exception{Level: ERROR, LogID: "RAISE_PROBE", Message: "raise probe",
++		Err: uncomparableError{lines: []string{"raise probe cause"}}}
++	tests := []struct {
++		name string
++		// stackTrace enables the stack trace, with which record prints and remembers the
++		// Exception of a worker
++		stackTrace bool
++		// wantPrinted is what wasPrinted returns for the raised Exception
++		wantPrinted bool
++	}{
++		{name: "without the stack trace"},
++		{name: "with the stack trace", stackTrace: true, wantPrinted: true},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			savedStackTrace := printStackTrace
++			printedPanics.Lock()
++			savedPrinted := printedPanics.values
++			printedPanics.values = nil
++			printedPanics.Unlock()
++			t.Cleanup(func() {
++				printStackTrace = savedStackTrace
++				printedPanics.Lock()
++				printedPanics.values = savedPrinted
++				printedPanics.Unlock()
++			})
++			printStackTrace = tt.stackTrace
++			failures := newWorkerErrors()
++			done := make(chan struct{})
++			go func() {
++				defer close(done)
++				defer failures.catch()
++				panic(value)
++			}()
++			<-done
++			printed := false
++			outcome := runWorkerErrorsOperation(t, func() bool {
++				defer func() {
++					recovered := recover()
++					// The frame of raise is still on the stack, as it is for CatchLogException
++					printed = wasPrinted(recovered)
++					panic(recovered)
++				}()
++				failures.raise()
++				return true
++			})
++			expectWorkerErrorsException(t, outcome, value.LogID)
++			got := outcome.recovered.(Exception).Unwrap()
++			var cause uncomparableError
++			if !errors.As(got, &cause) || !reflect.DeepEqual(got, value.Err) {
++				t.Errorf("Exception.Unwrap() = %#v, want %#v", got, value.Err)
++			}
++			if printed != tt.wantPrinted {
++				t.Errorf("wasPrinted() = %t, want %t", printed, tt.wantPrinted)
++			}
++		})
++	}
++}
++
++// TestCatchLogException_Embedding runs a child process that panics under CatchLogException
++// with an Exception whose error can't be compared with ==, as TestCatchLogException does with
++// other values, and checks that the child exits as with any other Exception and that the
++// panic of a worker raised in the goroutine that called the operation prints the stack once.
++func TestCatchLogException_Embedding(t *testing.T) {
++	tests := []struct {
++		name string
++		// mode is the mode of runCatchLogExceptionChild
++		mode string
++		// wantGoroutines is the number of the stderr lines starting with the header of a
++		// goroutine
++		wantGoroutines int
++	}{
++		{name: "MainCause", mode: "main/cause"},
++		{name: "WorkerCause", mode: "worker/cause"},
++		{name: "MainCauseStack", mode: "main/cause/stack", wantGoroutines: 1},
++		{name: "WorkerCauseStack", mode: "worker/cause/stack", wantGoroutines: 1},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			command := exec.Command(os.Args[0], "-test.run=^TestCatchLogException$")
++			command.Env = append(os.Environ(), catchLogExceptionMode+"="+tt.mode)
++			var stdout, stderr bytes.Buffer
++			command.Stdout, command.Stderr = &stdout, &stderr
++			code := 0
++			if err := command.Run(); err != nil {
++				exitError, ok := err.(*exec.ExitError)
++				if !ok {
++					t.Fatalf("Failed to run the child process: %v", err)
++				}
++				code = exitError.ExitCode()
++			}
++			goroutines := 0
++			for _, line := range strings.Split(stderr.String(), "\n") {
++				if strings.HasPrefix(line, "goroutine ") {
++					goroutines++
++				}
++			}
++			if code != 100 || goroutines != tt.wantGoroutines {
++				t.Fatalf("The child exited with %d and printed %d goroutines instead of 100 and %d:\n%s",
++					code, goroutines, tt.wantGoroutines, stderr.String())
++			}
++			if strings.Contains(stderr.String(), "comparing uncomparable") {
++				t.Fatalf("The child compared an uncomparable value:\n%s", stderr.String())
++			}
++			if runs := strings.Count(stdout.String(), "RUN_AT_ERROR\n"); runs != 1 {
++				t.Fatalf("RunAtError has been called %d times instead of once:\n%s", runs, stdout.String())
++			}
++		})
++	}
++}
+diff -ruN -x .git a/src/duplicacy_gcdstorage.go b/src/duplicacy_gcdstorage.go
+--- a/src/duplicacy_gcdstorage.go	2026-11-18 06:11:35.344932061 +0000
++++ b/src/duplicacy_gcdstorage.go	2026-11-18 07:54:29.837517684 +0000
+@@ -340,7 +340,7 @@
+ 			storage.createDirectoryLock.Unlock()
+ 
+ 			if err != nil {
+-				return "", fmt.Errorf("Failed to create directory '%s': %v", current, err)
++				return "", fmt.Errorf("Failed to create directory '%s': %w", current, err)
+ 			}
+ 			currentID, ok = storage.findPathID(current)
+ 			if !ok {
+diff -ruN -x .git a/src/duplicacy_hubicclient.go b/src/duplicacy_hubicclient.go
+--- a/src/duplicacy_hubicclient.go	2026-11-18 06:11:35.184927998 +0000
++++ b/src/duplicacy_hubicclient.go	2026-11-18 07:54:29.841517790 +0000
+@@ -61,7 +61,7 @@
+ 
+ 	token := new(oauth2.Token)
+ 	if err := json.Unmarshal(description, token); err != nil {
+-		return nil, fmt.Errorf("%v: %s", err, description)
++		return nil, fmt.Errorf("%w: %s", err, description)
+ 	}
+ 
+ 	client := &HubicClient{
+@@ -262,7 +262,7 @@
+ 	readCloser.Close()
+ 
+ 	if err = json.NewDecoder(buffer).Decode(&client.Credential); err != nil {
+-		return fmt.Errorf("%v (response: %s)", err, buffer)
++		return fmt.Errorf("%w (response: %s)", err, buffer)
+ 	}
+ 
+ 	return nil
 diff -ruN -x .git a/src/duplicacy_keyring.go b/src/duplicacy_keyring.go
---- a/src/duplicacy_keyring.go	2026-11-17 14:46:06.822760497 +0000
-+++ b/src/duplicacy_keyring.go	2026-11-17 15:41:38.832123452 +0000
+--- a/src/duplicacy_keyring.go	2026-11-18 06:11:35.184927998 +0000
++++ b/src/duplicacy_keyring.go	2026-11-18 06:11:35.416933890 +0000
 @@ -6,16 +6,41 @@
  
  package duplicacy
@@ -299,7 +878,7 @@ diff -ruN -x .git a/src/duplicacy_keyring.go b/src/duplicacy_keyring.go
  	}
 diff -ruN -x .git a/src/duplicacy_keyring_test.go b/src/duplicacy_keyring_test.go
 --- a/src/duplicacy_keyring_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_keyring_test.go	2026-11-17 15:44:54.201016244 +0000
++++ b/src/duplicacy_keyring_test.go	2026-11-18 06:11:35.416933890 +0000
 @@ -0,0 +1,257 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -559,9 +1138,58 @@ diff -ruN -x .git a/src/duplicacy_keyring_test.go b/src/duplicacy_keyring_test.g
 +	}
 +}
 diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
---- a/src/duplicacy_log.go	2026-11-17 14:46:07.002764861 +0000
-+++ b/src/duplicacy_log.go	2026-11-17 16:34:06.400101434 +0000
-@@ -203,8 +203,8 @@
+--- a/src/duplicacy_log.go	2026-11-18 06:11:35.344932061 +0000
++++ b/src/duplicacy_log.go	2026-11-18 07:54:23.057337196 +0000
+@@ -139,13 +139,35 @@
+ 	Level   int
+ 	LogID   string
+ 	Message string
++	// Err is the last argument of the entry that implements error, or nil if no argument
++	// does; Message already has its text if the format prints it
++	Err error
++}
++
++// Unwrap returns the error that the entry has been logged with, or nil, so that errors.As and
++// errors.Is can inspect it.  Exception doesn't implement error, so that a panic with it is
++// printed as before.
++func (e Exception) Unwrap() error {
++	return e.Err
+ }
+ 
+ var logMutex sync.Mutex
+ 
++// lastError returns the last of the arguments of a log entry that implements error, or nil if
++// none does.
++func lastError(v []interface{}) error {
++	for i := len(v) - 1; i >= 0; i-- {
++		if err, ok := v[i].(error); ok {
++			return err
++		}
++	}
++	return nil
++}
++
+ func logf(level int, logID string, format string, v ...interface{}) {
+ 
+ 	message := fmt.Sprintf(format, v...)
++	err := lastError(v)
+ 
+ 	if LogFunction != nil {
+ 		LogFunction(level, logID, message)
+@@ -154,6 +176,7 @@
+ 				Level:   level,
+ 				LogID:   logID,
+ 				Message: message,
++				Err:     err,
+ 			})
+ 		}
+ 		return
+@@ -199,12 +222,13 @@
+ 			Level:   level,
+ 			LogID:   logID,
+ 			Message: message,
++			Err:     err,
+ 		})
  	}
  }
  
@@ -572,7 +1200,7 @@ diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
  type Logger struct {
  	formatRegex *regexp.Regexp
  }
-@@ -224,9 +224,16 @@
+@@ -224,9 +248,16 @@
      return
  }
  
@@ -591,3 +1219,309 @@ diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
  }
  
  const (
+diff -ruN -x .git a/src/duplicacy_oneclient.go b/src/duplicacy_oneclient.go
+--- a/src/duplicacy_oneclient.go	2026-11-18 06:11:35.184927998 +0000
++++ b/src/duplicacy_oneclient.go	2026-11-18 08:48:50.943906233 +0000
+@@ -241,7 +241,7 @@
+ 	if (client.OAConfig == nil) {
+ 		readCloser, _, err := client.call(client.RefreshTokenURL, "POST", client.Token, "")
+ 		if err != nil {
+-			return fmt.Errorf("failed to refresh the access token: %v", err)
++			return fmt.Errorf("failed to refresh the access token: %w", err)
+ 		}
+ 
+ 		defer readCloser.Close()
+@@ -254,7 +254,7 @@
+ 		tokenSource := client.OAConfig.TokenSource(ctx, client.Token)
+ 	    token, err := tokenSource.Token()
+ 	    if err != nil {
+-	        return fmt.Errorf("failed to refresh the access token: %v", err)
++			return fmt.Errorf("failed to refresh the access token: %w", err)
+ 	    }
+ 	    client.Token = token
+ 	}
+diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test.go
+--- a/src/duplicacy_progress_test.go	2026-11-18 06:11:35.360932468 +0000
++++ b/src/duplicacy_progress_test.go	2026-11-18 07:54:23.061337302 +0000
+@@ -809,7 +809,8 @@
+ 			name: "FailedSnapshotFile", args: hash, want: false,
+ 			wantPanic: Exception{Level: ERROR, LogID: "UPLOAD_File",
+ 				Message: "Failed to upload the file snapshots/host1/1: " +
+-					"injected UploadFile failure for snapshots/host1/1"},
++					"injected UploadFile failure for snapshots/host1/1",
++				Err: injectedFailure("UploadFile", "snapshots/host1/1")},
+ 			prepare: func(t *testing.T) *progressRun {
+ 				run := prepareProgressBackup(t)
+ 				run.fixture.storage.fail("UploadFile", "snapshots/host1/1")
+@@ -983,7 +984,7 @@
+ 					tt.args.shadowCopyTimeout, tt.args.enumOnly, tt.args.metadataChunkSize,
+ 					tt.args.maximumInMemoryEntries)
+ 			})
+-			if outcome.recovered != tt.wantPanic {
++			if !samePanic(outcome.recovered, tt.wantPanic) {
+ 				t.Fatalf("BackupManager.Backup() panicked with %#v, want %#v",
+ 					outcome.recovered, tt.wantPanic)
+ 			}
+@@ -1158,7 +1159,8 @@
+ 			name: "FailedSnapshotFile", args: revision1, want: false,
+ 			wantPanic: Exception{Level: ERROR, LogID: "UPLOAD_File",
+ 				Message: "Failed to upload the file snapshots/host1/1: " +
+-					"injected UploadFile failure for snapshots/host1/1"},
++					"injected UploadFile failure for snapshots/host1/1",
++				Err: injectedFailure("UploadFile", "snapshots/host1/1")},
+ 			prepare: func(t *testing.T) *progressRun {
+ 				run := prepareProgressCopy(t, false)
+ 				run.copyFixture.destinationStorage.fail("UploadFile", "snapshots/host1/1")
+@@ -1265,7 +1267,7 @@
+ 					tt.args.revisionsToBeCopied, tt.args.uploadingThreads,
+ 					tt.args.downloadingThreads)
+ 			})
+-			if outcome.recovered != tt.wantPanic {
++			if !samePanic(outcome.recovered, tt.wantPanic) {
+ 				t.Fatalf("BackupManager.CopySnapshots() panicked with %#v, want %#v",
+ 					outcome.recovered, tt.wantPanic)
+ 			}
+@@ -1916,7 +1918,7 @@
+ 					tt.args.patterns, tt.args.allowFailures)
+ 				return got == 0
+ 			})
+-			if outcome.recovered != tt.wantPanic {
++			if !samePanic(outcome.recovered, tt.wantPanic) {
+ 				t.Fatalf("BackupManager.Restore() panicked with %#v, want %#v",
+ 					outcome.recovered, tt.wantPanic)
+ 			}
+@@ -2283,7 +2285,7 @@
+ 			})
+ 			if tt.wantLogID != "" {
+ 				expectWorkerErrorsException(t, outcome, tt.wantLogID)
+-			} else if outcome.recovered != tt.wantPanic {
++			} else if !samePanic(outcome.recovered, tt.wantPanic) {
+ 				t.Fatalf("SnapshotManager.CheckSnapshots() panicked with %#v, want %#v",
+ 					outcome.recovered, tt.wantPanic)
+ 			}
+@@ -2765,7 +2767,7 @@
+ 					tt.args.dryRun, tt.args.deleteOnly, tt.args.collectOnly,
+ 					tt.args.threads)
+ 			})
+-			if outcome.recovered != tt.wantPanic {
++			if !samePanic(outcome.recovered, tt.wantPanic) {
+ 				t.Fatalf("SnapshotManager.PruneSnapshots() panicked with %#v, want %#v",
+ 					outcome.recovered, tt.wantPanic)
+ 			}
+diff -ruN -x .git a/src/duplicacy_sambastorage.go b/src/duplicacy_sambastorage.go
+--- a/src/duplicacy_sambastorage.go	2026-11-18 06:11:35.344932061 +0000
++++ b/src/duplicacy_sambastorage.go	2026-11-18 07:54:29.833517577 +0000
+@@ -65,7 +65,7 @@
+ 
+ 	exist, isDir, _, err := storage.GetFileInfo(0, storageDir)
+ 	if err != nil {
+-		return nil, fmt.Errorf("Failed to check the storage path %s: %v", storageDir, err)
++		return nil, fmt.Errorf("Failed to check the storage path %s: %w", storageDir, err)
+ 	}
+ 
+ 	if !exist {
+diff -ruN -x .git a/src/duplicacy_sftpstorage.go b/src/duplicacy_sftpstorage.go
+--- a/src/duplicacy_sftpstorage.go	2026-11-18 06:11:35.188928099 +0000
++++ b/src/duplicacy_sftpstorage.go	2026-11-18 07:54:29.837517684 +0000
+@@ -92,7 +92,7 @@
+ 
+ 	fileInfo, err := client.Stat(storageDir)
+ 	if err != nil {
+-		return nil, fmt.Errorf("Can't access the storage path %s: %v", storageDir, err)
++		return nil, fmt.Errorf("Can't access the storage path %s: %w", storageDir, err)
+ 	}
+ 
+ 	if !fileInfo.IsDir() {
+diff -ruN -x .git a/src/duplicacy_storjstorage.go b/src/duplicacy_storjstorage.go
+--- a/src/duplicacy_storjstorage.go	2026-11-18 06:11:35.188928099 +0000
++++ b/src/duplicacy_storjstorage.go	2026-11-18 08:48:50.939906139 +0000
+@@ -29,17 +29,17 @@
+     ctx := context.Background()
+     access, err := uplink.RequestAccessWithPassphrase(ctx, satellite, apiKey, passphrase)
+     if err != nil {
+-        return nil, fmt.Errorf("cannot request the access grant: %v", err)
++		return nil, fmt.Errorf("cannot request the access grant: %w", err)
+     }
+ 
+     project, err := uplink.OpenProject(ctx, access)
+     if err != nil {
+-        return nil, fmt.Errorf("cannot open the project: %v", err)
++		return nil, fmt.Errorf("cannot open the project: %w", err)
+     }
+ 
+     _, err = project.StatBucket(ctx, bucket)
+     if err != nil {
+-        return nil, fmt.Errorf("cannot found the bucket: %v", err)
++		return nil, fmt.Errorf("cannot found the bucket: %w", err)
+     }
+ 
+     if storageDir != "" && storageDir[len(storageDir) - 1] != '/' {
+diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_workererrors_log_test.go
+--- a/src/duplicacy_workererrors_log_test.go	2026-11-18 06:11:35.348932163 +0000
++++ b/src/duplicacy_workererrors_log_test.go	2026-11-18 07:54:23.061337302 +0000
+@@ -5,6 +5,7 @@
+ package duplicacy
+ 
+ import (
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"io/fs"
+@@ -202,7 +203,7 @@
+ func expectLogErrorsException(t *testing.T, method string, run *logErrorsRun,
+ 	wantPanic interface{}) {
+ 	t.Helper()
+-	if run.outcome.recovered != wantPanic {
++	if !samePanic(run.outcome.recovered, wantPanic) {
+ 		t.Fatalf("%s panicked with %#v, want %#v", method, run.outcome.recovered, wantPanic)
+ 	}
+ 	// A case with its own log function checks what the log function has received itself
+@@ -229,14 +230,16 @@
+ // corruptFileSequence, which the msgpack decoder fails to read.
+ var fileSequenceError = Exception{Level: ERROR, LogID: "SNAPSHOT_PARSE",
+ 	Message: "Failed to load the snapshot host1 at revision 1: " +
+-		"msgpack: invalid code=6e decoding bytes length"}
++		"msgpack: invalid code=6e decoding bytes length",
++	Err: errors.New("msgpack: invalid code=6e decoding bytes length")}
+ 
+ // snapshotInfoError is the Exception of a failed lookup of the revision file.
+ func snapshotInfoError(snapshotID string, revision int) Exception {
+ 	return Exception{Level: ERROR, LogID: "SNAPSHOT_INFO", Message: fmt.Sprintf(
+ 		"Failed to get the information on the snapshot %s at revision %d: "+
+ 			"injected GetFileInfo failure for snapshots/%s/%d", snapshotID, revision,
+-		snapshotID, revision)}
++		snapshotID, revision),
++		Err: injectedFailure("GetFileInfo", fmt.Sprintf("snapshots/%s/%d", snapshotID, revision))}
+ }
+ 
+ // workerErrorsStorageFiles returns the paths of the files under the directories of the
+@@ -882,7 +885,8 @@
+ 				return &logErrorsRun{fixture: fixture, ownLog: true,
+ 					wantPanic: Exception{Level: ERROR, LogID: "DOWNLOAD_CHUNK",
+ 						Message: fmt.Sprintf("Failed to download the chunk %s: injected DownloadFile failure for %s",
+-							chunkID, fixture.chunkPath(failedChunk, false))}}
++							chunkID, fixture.chunkPath(failedChunk, false)),
++						Err: injectedFailure("DownloadFile", fixture.chunkPath(failedChunk, false))}}
+ 			},
+ 			check: func(t *testing.T, run *logErrorsRun) {
+ 				if atomic.LoadInt32(&swallowed) == 0 {
+@@ -987,7 +991,8 @@
+ 			name: "DestinationListing", args: revision1, want: false,
+ 			wantPanic: Exception{Level: ERROR, LogID: "LIST_FILES",
+ 				Message: "Failed to list the directory chunks/: " +
+-					"injected ListFiles failure for chunks/"},
++					"injected ListFiles failure for chunks/",
++				Err: injectedFailure("ListFiles", "chunks/")},
+ 			prepare: func(t *testing.T) *logErrorsRun {
+ 				fixture := newWorkerErrorsCopyFixture(t)
+ 				fixture.destinationStorage.fail("ListFiles", "chunks/")
+diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererrors_test.go
+--- a/src/duplicacy_workererrors_test.go	2026-11-18 06:11:35.352932264 +0000
++++ b/src/duplicacy_workererrors_test.go	2026-11-18 07:54:23.057337196 +0000
+@@ -47,6 +47,7 @@
+ 	calls    map[string]int         // The number of the calls checked, by operation name
+ 	failAt   map[string]int         // The number of the call to fail, by operation name
+ 	upDelays map[string]func() bool // Conditions that UploadFile waits for, by path prefix
++	errs     map[[2]string]error    // Errors returned instead of the injected ones, by operation and prefix
+ }
+ 
+ func newFaultStorage(storage *FileStorage) *faultStorage {
+@@ -65,9 +66,22 @@
+ func (storage *faultStorage) fail(operation string, prefix string) {
+ 	storage.lock.Lock()
+ 	defer storage.lock.Unlock()
++	delete(storage.errs, [2]string{operation, prefix})
+ 	storage.faults[operation] = append(storage.faults[operation], prefix)
+ }
+ 
++// failWith makes every call of the operation on a path starting with prefix return err itself instead of an error of
++// its own, as fail does otherwise, so that a test can find err with errors.Is.
++func (storage *faultStorage) failWith(operation string, prefix string, err error) {
++	storage.lock.Lock()
++	defer storage.lock.Unlock()
++	if storage.errs == nil {
++		storage.errs = map[[2]string]error{}
++	}
++	storage.faults[operation] = append(storage.faults[operation], prefix)
++	storage.errs[[2]string{operation, prefix}] = err
++}
++
+ // failFindChunk makes every lookup of the chunk fail.
+ func (storage *faultStorage) failFindChunk(chunkID string) {
+ 	storage.lock.Lock()
+@@ -187,17 +201,27 @@
+ 	storage.calls[operation]++
+ 	if n, ok := storage.failAt[operation]; ok && storage.calls[operation] == n {
+ 		storage.injected++
+-		return fmt.Errorf("injected %s failure for %s", operation, filePath)
++		return injectedFailure(operation, filePath)
+ 	}
+-	for _, prefix := range storage.faults[operation] {
+-		if strings.HasPrefix(filePath, prefix) {
++	// The newest setting wins, so that fail after failWith of the same or a wider prefix injects an error of its own
++	faults := storage.faults[operation]
++	for i := len(faults) - 1; i >= 0; i-- {
++		if prefix := faults[i]; strings.HasPrefix(filePath, prefix) {
+ 			storage.injected++
+-			return fmt.Errorf("injected %s failure for %s", operation, filePath)
++			if err := storage.errs[[2]string{operation, prefix}]; err != nil {
++				return err
++			}
++			return injectedFailure(operation, filePath)
+ 		}
+ 	}
+ 	return nil
+ }
+ 
++// injectedFailure returns the error that check injects into a failed call of the operation on filePath.
++func injectedFailure(operation string, filePath string) error {
++	return fmt.Errorf("injected %s failure for %s", operation, filePath)
++}
++
+ func (storage *faultStorage) FindChunk(threadIndex int, chunkID string, isFossil bool,
+ 	isMetadata bool) (filePath string, exist bool, size int64, err error) {
+ 	storage.lock.Lock()
+@@ -376,6 +400,21 @@
+ 	}
+ }
+ 
++// samePanic reports whether an operation has panicked with the expected value.  Exceptions are compared without
++// Err, since every failure makes a new error, and then by Err: both are nil or have the same text.
++func samePanic(recovered interface{}, expected interface{}) bool {
++	got, ok := recovered.(Exception)
++	want, wantOK := expected.(Exception)
++	if !ok || !wantOK {
++		return recovered == expected
++	}
++	if (got.Err == nil) != (want.Err == nil) || got.Err != nil && got.Err.Error() != want.Err.Error() {
++		return false
++	}
++	got.Err, want.Err = nil, nil
++	return got == want
++}
++
+ // waitForWorkerErrorsGoroutines waits up to 2 seconds for the number of goroutines to drop to the baseline.
+ func waitForWorkerErrorsGoroutines(t *testing.T, baseline int) {
+ 	t.Helper()
+@@ -1813,8 +1852,9 @@
+ // runCatchLogExceptionChild panics under 'defer CatchLogException()' as the mode tells: where is 'main' for the
+ // goroutine itself, 'worker' for a goroutine whose panic is recorded and raised again, 'repeat' for a worker panic
+ // whose raising is recovered before the goroutine panics anew with the same value, and 'two' for a worker panic
+-// raised after another one has been recorded and printed; value is 'exception', 'other', 'uncomparable', 'nan',
+-// 'func' or 'struct', the last three not being equal to themselves.
++// raised after another one has been recorded and printed; value is 'exception', 'cause' for an Exception whose error
++// can't be compared with ==, 'other', 'uncomparable', 'nan', 'func' or 'struct', the last three not being equal to
++// themselves.
+ func runCatchLogExceptionChild(mode string) {
+ 	parts := strings.Split(mode, "/")
+ 	RunAtError = func() { fmt.Println("RUN_AT_ERROR") }
+@@ -1825,6 +1865,9 @@
+ 	switch parts[1] {
+ 	case "exception":
+ 		value = Exception{Level: ERROR, LogID: "CATCH_PROBE", Message: "catch probe"}
++	case "cause":
++		value = Exception{Level: ERROR, LogID: "CATCH_PROBE", Message: "catch probe",
++			Err: uncomparableError{lines: []string{"catch probe cause"}}}
+ 	case "other":
+ 		value = "catch-log-exception-probe"
+ 	case "uncomparable":
