@@ -1,6 +1,6 @@
 diff -ruN -x .git a/duplicacy/duplicacy_keyring.go b/duplicacy/duplicacy_keyring.go
 --- a/duplicacy/duplicacy_keyring.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/duplicacy/duplicacy_keyring.go	2026-11-18 06:11:35.416933890 +0000
++++ b/duplicacy/duplicacy_keyring.go	2026-11-18 10:46:37.286960473 +0000
 @@ -0,0 +1,25 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -29,7 +29,7 @@ diff -ruN -x .git a/duplicacy/duplicacy_keyring.go b/duplicacy/duplicacy_keyring
 +}
 diff -ruN -x .git a/duplicacy/duplicacy_keyring_test.go b/duplicacy/duplicacy_keyring_test.go
 --- a/duplicacy/duplicacy_keyring_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/duplicacy/duplicacy_keyring_test.go	2026-11-18 06:11:35.416933890 +0000
++++ b/duplicacy/duplicacy_keyring_test.go	2026-11-18 10:46:37.286960473 +0000
 @@ -0,0 +1,33 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -65,8 +65,8 @@ diff -ruN -x .git a/duplicacy/duplicacy_keyring_test.go b/duplicacy/duplicacy_ke
 +	}
 +}
 diff -ruN -x .git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
---- a/duplicacy/duplicacy_main.go	2026-11-18 06:11:35.340931960 +0000
-+++ b/duplicacy/duplicacy_main.go	2026-11-18 06:11:35.416933890 +0000
+--- a/duplicacy/duplicacy_main.go	2026-11-18 10:46:37.190958326 +0000
++++ b/duplicacy/duplicacy_main.go	2026-11-18 10:46:37.286960473 +0000
 @@ -34,6 +34,12 @@
  var ScriptEnabled bool
  var GitCommit = "unofficial"
@@ -82,7 +82,7 @@ diff -ruN -x .git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
  
 diff -ruN -x .git a/duplicacy/duplicacy_main_test.go b/duplicacy/duplicacy_main_test.go
 --- a/duplicacy/duplicacy_main_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/duplicacy/duplicacy_main_test.go	2026-11-18 06:11:35.416933890 +0000
++++ b/duplicacy/duplicacy_main_test.go	2026-11-18 10:46:37.286960473 +0000
 @@ -0,0 +1,49 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
@@ -134,8 +134,8 @@ diff -ruN -x .git a/duplicacy/duplicacy_main_test.go b/duplicacy/duplicacy_main_
 +	}
 +}
 diff -ruN -x .git a/src/duplicacy_config.go b/src/duplicacy_config.go
---- a/src/duplicacy_config.go	2026-11-18 06:11:35.344932061 +0000
-+++ b/src/duplicacy_config.go	2026-11-18 07:54:29.833517577 +0000
+--- a/src/duplicacy_config.go	2026-11-18 10:46:37.190958326 +0000
++++ b/src/duplicacy_config.go	2026-11-18 10:46:37.290960563 +0000
 @@ -158,7 +158,7 @@
  	} else if len(publicKey) > 0 {
  		parsedKey, err := x509.ParsePKIXPublicKey(publicKey)
@@ -164,8 +164,8 @@ diff -ruN -x .git a/src/duplicacy_config.go b/src/duplicacy_config.go
  
  	storage.SetNestingLevels(config)
 diff -ruN -x .git a/src/duplicacy_dropboxstorage.go b/src/duplicacy_dropboxstorage.go
---- a/src/duplicacy_dropboxstorage.go	2026-11-18 06:11:35.180927896 +0000
-+++ b/src/duplicacy_dropboxstorage.go	2026-11-18 07:54:29.833517577 +0000
+--- a/src/duplicacy_dropboxstorage.go	2026-11-18 10:46:36.990953856 +0000
++++ b/src/duplicacy_dropboxstorage.go	2026-11-18 10:46:37.290960563 +0000
 @@ -45,7 +45,7 @@
  
  	err = storage.CreateDirectory(0, "")
@@ -177,8 +177,8 @@ diff -ruN -x .git a/src/duplicacy_dropboxstorage.go b/src/duplicacy_dropboxstora
  	storage.DerivedStorage = storage
 diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_test.go
 --- a/src/duplicacy_embedding_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_embedding_test.go	2026-11-18 07:56:11.700200937 +0000
-@@ -0,0 +1,603 @@
++++ b/src/duplicacy_embedding_test.go	2026-11-18 12:03:54.681365437 +0000
+@@ -0,0 +1,756 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -187,6 +187,8 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +
 +import (
 +	"bytes"
++	"crypto/ed25519"
++	"crypto/rand"
 +	"crypto/x509"
 +	"encoding/json"
 +	"errors"
@@ -198,7 +200,11 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +	"path/filepath"
 +	"reflect"
 +	"strings"
++	"sync"
 +	"testing"
++
++	"github.com/pkg/sftp"
++	"golang.org/x/crypto/ssh"
 +)
 +
 +// TestStandardLog_Embedding checks that importing the package leaves the standard log as
@@ -395,10 +401,118 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +	}
 +}
 +
++// startSFTPServer starts an SSH server with the SFTP subsystem on the loopback interface,
++// which accepts only the password login of user with password and serves the file system
++// of the process, and returns its address.  The server stops after the test.
++func startSFTPServer(t *testing.T, user string, password string) string {
++	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	hostKey, err := ssh.NewSignerFromKey(privateKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	config := &ssh.ServerConfig{
++		PasswordCallback: func(metadata ssh.ConnMetadata,
++			secret []byte) (*ssh.Permissions, error) {
++			if metadata.User() == user && string(secret) == password {
++				return nil, nil
++			}
++			return nil, fmt.Errorf("password rejected for %q", metadata.User())
++		},
++	}
++	config.AddHostKey(hostKey)
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	var lock sync.Mutex
++	var connections []net.Conn
++	closed := false
++	var group sync.WaitGroup
++	t.Cleanup(func() {
++		listener.Close()
++		lock.Lock()
++		closed = true
++		for _, connection := range connections {
++			connection.Close()
++		}
++		lock.Unlock()
++		group.Wait()
++	})
++	group.Add(1)
++	go func() {
++		defer group.Done()
++		for {
++			connection, err := listener.Accept()
++			if err != nil {
++				return
++			}
++			lock.Lock()
++			if closed {
++				lock.Unlock()
++				connection.Close()
++				return
++			}
++			connections = append(connections, connection)
++			group.Add(1)
++			lock.Unlock()
++			go func() {
++				defer group.Done()
++				serveSFTPConnection(connection, config)
++			}()
++		}
++	}()
++	return listener.Addr().String()
++}
++
++// serveSFTPConnection serves the SFTP subsystem on the session channels of an SSH connection
++// until the connection is closed.
++func serveSFTPConnection(connection net.Conn, config *ssh.ServerConfig) {
++	defer connection.Close()
++	_, channels, requests, err := ssh.NewServerConn(connection, config)
++	if err != nil {
++		return
++	}
++	go ssh.DiscardRequests(requests)
++	for newChannel := range channels {
++		if newChannel.ChannelType() != "session" {
++			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
++			continue
++		}
++		channel, channelRequests, err := newChannel.Accept()
++		if err != nil {
++			return
++		}
++		go func() {
++			for request := range channelRequests {
++				// The payload of a subsystem request is the name as an SSH string
++				sftpSubsystem := string(request.Payload) == "\x00\x00\x00\x04sftp"
++				request.Reply(request.Type == "subsystem" && sftpSubsystem, nil)
++			}
++		}()
++		server, err := sftp.NewServer(channel)
++		if err != nil {
++			channel.Close()
++			continue
++		}
++		server.Serve()
++		server.Close()
++	}
++}
++
 +// TestCreateStorage checks that the Exception of a storage that can't be created holds the
 +// error of the backend, in which errors.As finds its type, and the message as before, and
-+// that an entry without an error leaves the error of the Exception nil.
++// that an entry without an error leaves the error of the Exception nil.  It also checks
++// that with RunInBackground an SFTP storage logs in with the password of the preference.
 +func TestCreateStorage(t *testing.T) {
++	// A random password, so that no other process can log in to the SFTP server of a case
++	randomBytes := make([]byte, 16)
++	if _, err := rand.Read(randomBytes); err != nil {
++		t.Fatal(err)
++	}
++	sftpPassword := fmt.Sprintf("%x", randomBytes)
 +	type args struct {
 +		preference    Preference
 +		resetPassword bool
@@ -415,6 +529,9 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +		wantMessage string
 +		// check returns what is wrong with the error of the Exception, or "" if nothing
 +		check func(url string, err error) string
++		// checkStorage, if set, makes the case expect a storage instead of an Exception and
++		// checks the storage
++		checkStorage func(t *testing.T, storage Storage)
 +	}{
 +		{
 +			name: "SFTP connection refused",
@@ -436,6 +553,34 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +					return "errors.As() finds no *net.OpError"
 +				}
 +				return ""
++			},
++		},
++		{
++			name: "SFTP password in the preference",
++			args: args{preference: Preference{Name: "default",
++				Keys: map[string]string{"ssh_password": sftpPassword}}, threads: 1},
++			url: func(t *testing.T) string {
++				for _, name := range []string{"DUPLICACY_SSH_PASSWORD", "DUPLICACY_SSH_KEY_FILE",
++					"SSH_AUTH_SOCK"} {
++					// t.Setenv restores the variable after the test; the variable must be absent
++					t.Setenv(name, "")
++					os.Unsetenv(name)
++				}
++				// The second slash makes the storage directory absolute
++				return "sftp://user@" + startSFTPServer(t, "user", sftpPassword) + "/" + t.TempDir()
++			},
++			checkStorage: func(t *testing.T, storage Storage) {
++				content := []byte("content")
++				if err := storage.UploadFile(0, "file", content); err != nil {
++					t.Fatalf("UploadFile() = %v", err)
++				}
++				chunk := CreateChunk(CreateConfig(), true)
++				if err := storage.DownloadFile(0, "file", chunk); err != nil {
++					t.Fatalf("DownloadFile() = %v", err)
++				}
++				if !bytes.Equal(chunk.GetBytes(), content) {
++					t.Errorf("DownloadFile() read %q, want %q", chunk.GetBytes(), content)
++				}
 +			},
 +		},
 +		{
@@ -498,7 +643,7 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +			})
 +			RunInBackground = true
 +			SetDuplicacyPreferencePath(t.TempDir())
-+			collectWorkerErrorsLogs()
++			logs := collectWorkerErrorsLogs()
 +			url := tt.url(t)
 +			tt.args.preference.StorageURL = url
 +			var gotStorage Storage
@@ -506,6 +651,14 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +				gotStorage = CreateStorage(tt.args.preference, tt.args.resetPassword, tt.args.threads)
 +				return true
 +			})
++			if tt.checkStorage != nil {
++				if outcome.recovered != nil || gotStorage == nil {
++					t.Fatalf("CreateStorage() = %v, panicked with %#v, log:\n%s", gotStorage, outcome.recovered,
++						logs)
++				}
++				tt.checkStorage(t, gotStorage)
++				return
++			}
 +			if !reflect.DeepEqual(gotStorage, tt.wantStorage) {
 +				t.Errorf("CreateStorage() = %v, want %v", gotStorage, tt.wantStorage)
 +			}
@@ -783,8 +936,8 @@ diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_te
 +	}
 +}
 diff -ruN -x .git a/src/duplicacy_gcdstorage.go b/src/duplicacy_gcdstorage.go
---- a/src/duplicacy_gcdstorage.go	2026-11-18 06:11:35.344932061 +0000
-+++ b/src/duplicacy_gcdstorage.go	2026-11-18 07:54:29.837517684 +0000
+--- a/src/duplicacy_gcdstorage.go	2026-11-18 10:46:37.194958416 +0000
++++ b/src/duplicacy_gcdstorage.go	2026-11-18 10:46:37.290960563 +0000
 @@ -340,7 +340,7 @@
  			storage.createDirectoryLock.Unlock()
  
@@ -795,8 +948,8 @@ diff -ruN -x .git a/src/duplicacy_gcdstorage.go b/src/duplicacy_gcdstorage.go
  			currentID, ok = storage.findPathID(current)
  			if !ok {
 diff -ruN -x .git a/src/duplicacy_hubicclient.go b/src/duplicacy_hubicclient.go
---- a/src/duplicacy_hubicclient.go	2026-11-18 06:11:35.184927998 +0000
-+++ b/src/duplicacy_hubicclient.go	2026-11-18 07:54:29.841517790 +0000
+--- a/src/duplicacy_hubicclient.go	2026-11-18 10:46:36.994953945 +0000
++++ b/src/duplicacy_hubicclient.go	2026-11-18 10:46:37.290960563 +0000
 @@ -61,7 +61,7 @@
  
  	token := new(oauth2.Token)
@@ -816,8 +969,8 @@ diff -ruN -x .git a/src/duplicacy_hubicclient.go b/src/duplicacy_hubicclient.go
  
  	return nil
 diff -ruN -x .git a/src/duplicacy_keyring.go b/src/duplicacy_keyring.go
---- a/src/duplicacy_keyring.go	2026-11-18 06:11:35.184927998 +0000
-+++ b/src/duplicacy_keyring.go	2026-11-18 06:11:35.416933890 +0000
+--- a/src/duplicacy_keyring.go	2026-11-18 10:46:36.994953945 +0000
++++ b/src/duplicacy_keyring.go	2026-11-18 10:46:37.290960563 +0000
 @@ -6,16 +6,41 @@
  
  package duplicacy
@@ -878,8 +1031,8 @@ diff -ruN -x .git a/src/duplicacy_keyring.go b/src/duplicacy_keyring.go
  	}
 diff -ruN -x .git a/src/duplicacy_keyring_test.go b/src/duplicacy_keyring_test.go
 --- a/src/duplicacy_keyring_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/src/duplicacy_keyring_test.go	2026-11-18 06:11:35.416933890 +0000
-@@ -0,0 +1,257 @@
++++ b/src/duplicacy_keyring_test.go	2026-11-18 12:03:54.677365339 +0000
+@@ -0,0 +1,442 @@
 +// Copyright (c) Acrosync LLC. All rights reserved.
 +// Free for personal use and commercial trial
 +// Commercial use requires per-user licenses available from https://duplicacy.com
@@ -890,10 +1043,13 @@ diff -ruN -x .git a/src/duplicacy_keyring_test.go b/src/duplicacy_keyring_test.g
 +
 +import (
 +	"errors"
++	"fmt"
 +	"os"
 +	"path/filepath"
 +	"strings"
 +	"testing"
++
++	"golang.org/x/crypto/ssh"
 +)
 +
 +// errKeyringTest is the error that the keyring hooks of the tests return.
@@ -1137,9 +1293,191 @@ diff -ruN -x .git a/src/duplicacy_keyring_test.go b/src/duplicacy_keyring_test.g
 +		})
 +	}
 +}
++
++// Test_sftpAuthMethods checks that with RunInBackground the SSH authentication methods
++// include the password methods if ssh_password is set in the environment, the preference or
++// the keyring and the public key methods if ssh_key_file is set in one of them or
++// SSH_AUTH_SOCK is, in the order of the methods without RunInBackground, which doesn't read
++// the keyring.
++func Test_sftpAuthMethods(t *testing.T) {
++	password := ssh.PasswordCallback(nil)
++	interactive := ssh.KeyboardInteractive(nil)
++	publicKeys := ssh.PublicKeysCallback(nil)
++	type args struct {
++		preference          Preference
++		keyFile             string
++		passwordAuthMethods []ssh.AuthMethod
++		keyFileAuthMethods  []ssh.AuthMethod
++	}
++	tests := []struct {
++		name string
++		args args
++		want []ssh.AuthMethod
++		// background is the value of RunInBackground
++		background bool
++		// env and keyring are the environment variables and the values of the keyring by key
++		env     map[string]string
++		keyring map[string]string
++		// keys are the keys that the keyring is read with, in order
++		keys []string
++	}{
++		{
++			name:       "password from the environment",
++			args:       args{preference: Preference{Name: "offsite"}},
++			want:       []ssh.AuthMethod{password, interactive},
++			background: true,
++			env:        map[string]string{"DUPLICACY_OFFSITE_SSH_PASSWORD": "secret"},
++			keys:       []string{"offsite_ssh_key_file"},
++		},
++		{
++			name: "password from the preference with the storage name",
++			args: args{preference: Preference{Name: "offsite",
++				Keys: map[string]string{"offsite_ssh_password": "secret"}}},
++			want:       []ssh.AuthMethod{password, interactive},
++			background: true,
++			keys:       []string{"offsite_ssh_key_file"},
++		},
++		{
++			name: "password from the preference without the storage name",
++			args: args{preference: Preference{Name: "offsite",
++				Keys: map[string]string{"ssh_password": "secret"}}},
++			want:       []ssh.AuthMethod{password, interactive},
++			background: true,
++			keys:       []string{"offsite_ssh_key_file"},
++		},
++		{
++			name:       "password from the keyring",
++			args:       args{preference: Preference{Name: "offsite"}},
++			want:       []ssh.AuthMethod{password, interactive},
++			background: true,
++			keyring:    map[string]string{"offsite_ssh_password": "secret"},
++			keys:       []string{"offsite_ssh_password", "offsite_ssh_key_file"},
++		},
++		{
++			name:       "key file from the environment",
++			args:       args{preference: Preference{Name: "offsite"}},
++			want:       []ssh.AuthMethod{publicKeys},
++			background: true,
++			env:        map[string]string{"DUPLICACY_OFFSITE_SSH_KEY_FILE": "/id"},
++			keys:       []string{"offsite_ssh_password"},
++		},
++		{
++			name: "key file from the preference with the storage name",
++			args: args{preference: Preference{Name: "offsite",
++				Keys: map[string]string{"offsite_ssh_key_file": "/id"}}},
++			want:       []ssh.AuthMethod{publicKeys},
++			background: true,
++			keys:       []string{"offsite_ssh_password"},
++		},
++		{
++			name: "key file from the preference without the storage name",
++			args: args{preference: Preference{Name: "offsite",
++				Keys: map[string]string{"ssh_key_file": "/id"}}},
++			want:       []ssh.AuthMethod{publicKeys},
++			background: true,
++			keys:       []string{"offsite_ssh_password"},
++		},
++		{
++			name:       "key file from the keyring",
++			args:       args{preference: Preference{Name: "offsite"}},
++			want:       []ssh.AuthMethod{publicKeys},
++			background: true,
++			keyring:    map[string]string{"offsite_ssh_key_file": "/id"},
++			keys:       []string{"offsite_ssh_password", "offsite_ssh_key_file"},
++		},
++		{
++			name:       "SSH agent only",
++			args:       args{preference: Preference{Name: "default"}},
++			want:       []ssh.AuthMethod{publicKeys},
++			background: true,
++			env:        map[string]string{"SSH_AUTH_SOCK": "/agent"},
++			keys:       []string{"ssh_password", "ssh_key_file"},
++		},
++		{
++			name:       "nothing",
++			args:       args{preference: Preference{Name: "default"}},
++			want:       []ssh.AuthMethod{},
++			background: true,
++			keys:       []string{"ssh_password", "ssh_key_file"},
++		},
++		{
++			name:       "key file from the environment before the password from the keyring",
++			args:       args{preference: Preference{Name: "default"}},
++			want:       []ssh.AuthMethod{publicKeys, password, interactive},
++			background: true,
++			env:        map[string]string{"DUPLICACY_SSH_KEY_FILE": "/id"},
++			keyring:    map[string]string{"ssh_password": "secret"},
++			keys:       []string{"ssh_password"},
++		},
++		{
++			name: "password from the preference before the key file from the keyring",
++			args: args{preference: Preference{Name: "default",
++				Keys: map[string]string{"ssh_password": "secret"}}},
++			want:       []ssh.AuthMethod{password, interactive, publicKeys},
++			background: true,
++			keyring:    map[string]string{"ssh_key_file": "/id"},
++			keys:       []string{"ssh_key_file"},
++		},
++		{
++			name:    "without RunInBackground",
++			args:    args{preference: Preference{Name: "default"}},
++			want:    []ssh.AuthMethod{password, interactive, publicKeys},
++			keyring: map[string]string{"ssh_key_file": "/id"},
++		},
++		{
++			name: "key file from the preference without RunInBackground",
++			args: args{preference: Preference{Name: "default",
++				Keys: map[string]string{"ssh_key_file": "/id"}}},
++			want: []ssh.AuthMethod{publicKeys, password, interactive},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			setKeyringTestGlobals(t)
++			for _, name := range []string{"DUPLICACY_SSH_PASSWORD", "DUPLICACY_SSH_KEY_FILE",
++				"DUPLICACY_OFFSITE_SSH_PASSWORD", "DUPLICACY_OFFSITE_SSH_KEY_FILE", "SSH_AUTH_SOCK"} {
++				// t.Setenv restores the variable after the test; the variable must be absent
++				t.Setenv(name, "")
++				os.Unsetenv(name)
++			}
++			for name, value := range tt.env {
++				t.Setenv(name, value)
++			}
++			RunInBackground = tt.background
++			var keys []string
++			KeyringGet = func(key string) (string, error) {
++				keys = append(keys, key)
++				return tt.keyring[key], nil
++			}
++			// The key file of the environment or the preference, as CreateStorage passes it
++			tt.args.keyFile = GetPasswordFromPreference(tt.args.preference, "ssh_key_file")
++			tt.args.passwordAuthMethods = []ssh.AuthMethod{password, interactive}
++			tt.args.keyFileAuthMethods = []ssh.AuthMethod{publicKeys}
++			got := sftpAuthMethods(tt.args.preference, tt.args.keyFile, tt.args.passwordAuthMethods,
++				tt.args.keyFileAuthMethods)
++			if sftpAuthMethodTypes(got) != sftpAuthMethodTypes(tt.want) {
++				t.Errorf("sftpAuthMethods() = %s, want %s", sftpAuthMethodTypes(got),
++					sftpAuthMethodTypes(tt.want))
++			}
++			if strings.Join(keys, ",") != strings.Join(tt.keys, ",") {
++				t.Errorf("KeyringGet keys = %v, want %v", keys, tt.keys)
++			}
++		})
++	}
++}
++
++// sftpAuthMethodTypes returns the dynamic types of the SSH authentication methods, which
++// tell the password, keyboard interactive and public key methods apart.
++func sftpAuthMethodTypes(methods []ssh.AuthMethod) string {
++	types := []string{}
++	for _, method := range methods {
++		types = append(types, fmt.Sprintf("%T", method))
++	}
++	return "[" + strings.Join(types, " ") + "]"
++}
 diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
---- a/src/duplicacy_log.go	2026-11-18 06:11:35.344932061 +0000
-+++ b/src/duplicacy_log.go	2026-11-18 07:54:23.057337196 +0000
+--- a/src/duplicacy_log.go	2026-11-18 10:46:37.194958416 +0000
++++ b/src/duplicacy_log.go	2026-11-18 10:46:37.290960563 +0000
 @@ -139,13 +139,35 @@
  	Level   int
  	LogID   string
@@ -1220,8 +1558,8 @@ diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
  
  const (
 diff -ruN -x .git a/src/duplicacy_oneclient.go b/src/duplicacy_oneclient.go
---- a/src/duplicacy_oneclient.go	2026-11-18 06:11:35.184927998 +0000
-+++ b/src/duplicacy_oneclient.go	2026-11-18 08:48:50.943906233 +0000
+--- a/src/duplicacy_oneclient.go	2026-11-18 10:46:36.998954034 +0000
++++ b/src/duplicacy_oneclient.go	2026-11-18 10:46:37.290960563 +0000
 @@ -241,7 +241,7 @@
  	if (client.OAConfig == nil) {
  		readCloser, _, err := client.call(client.RefreshTokenURL, "POST", client.Token, "")
@@ -1241,8 +1579,8 @@ diff -ruN -x .git a/src/duplicacy_oneclient.go b/src/duplicacy_oneclient.go
  	    client.Token = token
  	}
 diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test.go
---- a/src/duplicacy_progress_test.go	2026-11-18 06:11:35.360932468 +0000
-+++ b/src/duplicacy_progress_test.go	2026-11-18 07:54:23.061337302 +0000
+--- a/src/duplicacy_progress_test.go	2026-11-18 10:46:37.238959399 +0000
++++ b/src/duplicacy_progress_test.go	2026-11-18 10:46:37.294960651 +0000
 @@ -809,7 +809,8 @@
  			name: "FailedSnapshotFile", args: hash, want: false,
  			wantPanic: Exception{Level: ERROR, LogID: "UPLOAD_File",
@@ -1309,8 +1647,8 @@ diff -ruN -x .git a/src/duplicacy_progress_test.go b/src/duplicacy_progress_test
  					outcome.recovered, tt.wantPanic)
  			}
 diff -ruN -x .git a/src/duplicacy_sambastorage.go b/src/duplicacy_sambastorage.go
---- a/src/duplicacy_sambastorage.go	2026-11-18 06:11:35.344932061 +0000
-+++ b/src/duplicacy_sambastorage.go	2026-11-18 07:54:29.833517577 +0000
+--- a/src/duplicacy_sambastorage.go	2026-11-18 10:46:37.194958416 +0000
++++ b/src/duplicacy_sambastorage.go	2026-11-18 10:46:37.294960651 +0000
 @@ -65,7 +65,7 @@
  
  	exist, isDir, _, err := storage.GetFileInfo(0, storageDir)
@@ -1321,8 +1659,8 @@ diff -ruN -x .git a/src/duplicacy_sambastorage.go b/src/duplicacy_sambastorage.g
  
  	if !exist {
 diff -ruN -x .git a/src/duplicacy_sftpstorage.go b/src/duplicacy_sftpstorage.go
---- a/src/duplicacy_sftpstorage.go	2026-11-18 06:11:35.188928099 +0000
-+++ b/src/duplicacy_sftpstorage.go	2026-11-18 07:54:29.837517684 +0000
+--- a/src/duplicacy_sftpstorage.go	2026-11-18 10:46:36.998954034 +0000
++++ b/src/duplicacy_sftpstorage.go	2026-11-18 10:46:37.294960651 +0000
 @@ -92,7 +92,7 @@
  
  	fileInfo, err := client.Stat(storageDir)
@@ -1332,9 +1670,96 @@ diff -ruN -x .git a/src/duplicacy_sftpstorage.go b/src/duplicacy_sftpstorage.go
  	}
  
  	if !fileInfo.IsDir() {
+diff -ruN -x .git a/src/duplicacy_storage.go b/src/duplicacy_storage.go
+--- a/src/duplicacy_storage.go	2026-11-18 10:46:37.002954123 +0000
++++ b/src/duplicacy_storage.go	2026-11-18 12:03:54.677365339 +0000
+@@ -315,6 +315,42 @@
+ 	return nil
+ }
+ 
++// sftpAuthMethods returns the SSH authentication methods of an SFTP storage in the order of
++// tries: the public key methods first if keyFile, the private key file that the environment
++// or the preference sets, isn't empty, and the password methods first otherwise.  With
++// RunInBackground, which can't ask for a value, it leaves out the password methods unless
++// ssh_password is set in the environment, the preference or the keyring, and the public key
++// methods unless ssh_key_file is set in one of them or SSH_AUTH_SOCK is.
++func sftpAuthMethods(preference Preference, keyFile string,
++	passwordAuthMethods, keyFileAuthMethods []ssh.AuthMethod) []ssh.AuthMethod {
++	if RunInBackground {
++		passwordKey := "ssh_password"
++		keyFileKey := "ssh_key_file"
++		if preference.Name != "default" {
++			passwordKey = preference.Name + "_" + passwordKey
++			keyFileKey = preference.Name + "_" + keyFileKey
++		}
++		if GetPasswordFromPreference(preference, "ssh_password") == "" &&
++			keyringGet(passwordKey) == "" {
++			passwordAuthMethods = nil
++		}
++		if keyFile == "" && keyringGet(keyFileKey) == "" &&
++			os.Getenv("SSH_AUTH_SOCK") == "" {
++			keyFileAuthMethods = nil
++		}
++	}
++
++	authMethods := []ssh.AuthMethod{}
++	if keyFile != "" {
++		authMethods = append(authMethods, keyFileAuthMethods...)
++		authMethods = append(authMethods, passwordAuthMethods...)
++	} else {
++		authMethods = append(authMethods, passwordAuthMethods...)
++		authMethods = append(authMethods, keyFileAuthMethods...)
++	}
++	return authMethods
++}
++
+ // CreateStorage creates a storage object based on the provide storage URL.
+ func CreateStorage(preference Preference, resetPassword bool, threads int) (storage Storage) {
+ 
+@@ -509,7 +545,6 @@
+ 
+ 		}
+ 
+-		authMethods := []ssh.AuthMethod{}
+ 		passwordAuthMethods := []ssh.AuthMethod{
+ 			ssh.PasswordCallback(passwordCallback),
+ 			ssh.KeyboardInteractive(keyboardInteractive),
+@@ -517,30 +552,8 @@
+ 		keyFileAuthMethods := []ssh.AuthMethod{
+ 			ssh.PublicKeysCallback(publicKeysCallback),
+ 		}
+-		if keyFile != "" {
+-			authMethods = append(keyFileAuthMethods, passwordAuthMethods...)
+-		} else {
+-			authMethods = append(passwordAuthMethods, keyFileAuthMethods...)
+-		}
+-
+-		if RunInBackground {
+-
+-			passwordKey := "ssh_password"
+-			keyFileKey := "ssh_key_file"
+-			if preference.Name != "default" {
+-				passwordKey = preference.Name + "_" + passwordKey
+-				keyFileKey = preference.Name + "_" + keyFileKey
+-			}
+-
+-			authMethods = []ssh.AuthMethod{}
+-			if keyringGet(passwordKey) != "" {
+-				authMethods = append(authMethods, ssh.PasswordCallback(passwordCallback))
+-				authMethods = append(authMethods, ssh.KeyboardInteractive(keyboardInteractive))
+-			}
+-			if keyringGet(keyFileKey) != "" || os.Getenv("SSH_AUTH_SOCK") != "" {
+-				authMethods = append(authMethods, ssh.PublicKeysCallback(publicKeysCallback))
+-			}
+-		}
++		authMethods := sftpAuthMethods(preference, keyFile, passwordAuthMethods,
++			keyFileAuthMethods)
+ 
+ 		hostKeyChecker := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+ 			return checkHostKey(hostname, remote, key)
 diff -ruN -x .git a/src/duplicacy_storjstorage.go b/src/duplicacy_storjstorage.go
---- a/src/duplicacy_storjstorage.go	2026-11-18 06:11:35.188928099 +0000
-+++ b/src/duplicacy_storjstorage.go	2026-11-18 08:48:50.939906139 +0000
+--- a/src/duplicacy_storjstorage.go	2026-11-18 10:46:37.006954213 +0000
++++ b/src/duplicacy_storjstorage.go	2026-11-18 10:46:37.294960651 +0000
 @@ -29,17 +29,17 @@
      ctx := context.Background()
      access, err := uplink.RequestAccessWithPassphrase(ctx, satellite, apiKey, passphrase)
@@ -1357,8 +1782,8 @@ diff -ruN -x .git a/src/duplicacy_storjstorage.go b/src/duplicacy_storjstorage.g
  
      if storageDir != "" && storageDir[len(storageDir) - 1] != '/' {
 diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_workererrors_log_test.go
---- a/src/duplicacy_workererrors_log_test.go	2026-11-18 06:11:35.348932163 +0000
-+++ b/src/duplicacy_workererrors_log_test.go	2026-11-18 07:54:23.061337302 +0000
+--- a/src/duplicacy_workererrors_log_test.go	2026-11-18 10:46:37.198958505 +0000
++++ b/src/duplicacy_workererrors_log_test.go	2026-11-18 10:46:37.294960651 +0000
 @@ -5,6 +5,7 @@
  package duplicacy
  
@@ -1416,8 +1841,8 @@ diff -ruN -x .git a/src/duplicacy_workererrors_log_test.go b/src/duplicacy_worke
  				fixture := newWorkerErrorsCopyFixture(t)
  				fixture.destinationStorage.fail("ListFiles", "chunks/")
 diff -ruN -x .git a/src/duplicacy_workererrors_test.go b/src/duplicacy_workererrors_test.go
---- a/src/duplicacy_workererrors_test.go	2026-11-18 06:11:35.352932264 +0000
-+++ b/src/duplicacy_workererrors_test.go	2026-11-18 07:54:23.057337196 +0000
+--- a/src/duplicacy_workererrors_test.go	2026-11-18 10:46:37.202958594 +0000
++++ b/src/duplicacy_workererrors_test.go	2026-11-18 10:46:37.294960651 +0000
 @@ -47,6 +47,7 @@
  	calls    map[string]int         // The number of the calls checked, by operation name
  	failAt   map[string]int         // The number of the call to fail, by operation name
