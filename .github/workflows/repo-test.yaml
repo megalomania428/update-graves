@@ -1,5 +1,5 @@
 # kics-scan disable=555ab8f9-2001-455e-a077-f2d0f41e2fb9
-# cspell:ignore mktemp coverprofile covermode dependabot donutbrowser
+# cspell:ignore mktemp coverprofile covermode dependabot donutbrowser megalipase
 ---
 name: repo test
 on:
@@ -100,6 +100,10 @@ jobs:
           persist-credentials: false
       # jscpd:ignore-end
       - name: Run MegaLinter
+        env:
+          MEGALIPASE: "EDITORCONFIG_EDITORCONFIG_CHECKER_FILTER_REGEX_EXCLUDE"
+          EDITORCONFIG_EDITORCONFIG_CHECKER_FILTER_REGEX_EXCLUDE: "sources/\
+            duplicacy/extra\\-modules/.+.zip"
         uses: megalomania428/github-actions/megalinter@master
   all-green:
     name: all green
