@@ -4,7 +4,7 @@ upstream:
   url: https://github.com/gilbertchen/duplicacy.git
   ref: c8530c4d0fd4b607fd3e0fd98db359f6d7a15a19
   version: 3.3.0
-  patch: 2
+  patch: 3
   patch_width: 3
 targets:
   - name: all

@@ -1,0 +1,593 @@
+diff -ruN -x .git a/duplicacy/duplicacy_keyring.go b/duplicacy/duplicacy_keyring.go
+--- a/duplicacy/duplicacy_keyring.go	1970-01-01 00:00:00.000000000 +0000
++++ b/duplicacy/duplicacy_keyring.go	2026-11-17 15:41:54.660519879 +0000
+@@ -0,0 +1,25 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++//go:build !windows
++
++package main
++
++import (
++	"github.com/gilbertchen/keyring"
++
++	"github.com/gilbertchen/duplicacy/src"
++)
++
++// init lets the library read and store the passwords of the CLI in the keyring of the
++// system with the service "duplicacy", as before the library stopped importing the
++// keyring package.
++func init() {
++	duplicacy.KeyringGet = func(key string) (string, error) {
++		return keyring.Get("duplicacy", key)
++	}
++	duplicacy.KeyringSet = func(key string, value string) error {
++		return keyring.Set("duplicacy", key, value)
++	}
++}
+diff -ruN -x .git a/duplicacy/duplicacy_keyring_test.go b/duplicacy/duplicacy_keyring_test.go
+--- a/duplicacy/duplicacy_keyring_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/duplicacy/duplicacy_keyring_test.go	2026-11-17 15:41:54.668520079 +0000
+@@ -0,0 +1,33 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++//go:build !windows
++
++package main
++
++import (
++	"testing"
++
++	"github.com/gilbertchen/duplicacy/src"
++)
++
++// TestKeyringHooks_Embedding checks that the init() of the CLI sets the keyring hooks of
++// the library, which doesn't set them itself.
++func TestKeyringHooks_Embedding(t *testing.T) {
++	tests := []struct {
++		name string
++		// set reports whether the hook is set after the initialization of the package
++		set bool
++	}{
++		{name: "KeyringGet", set: duplicacy.KeyringGet != nil},
++		{name: "KeyringSet", set: duplicacy.KeyringSet != nil},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			if !tt.set {
++				t.Errorf("%s is nil after the init() of the CLI", tt.name)
++			}
++		})
++	}
++}
+diff -ruN -x .git a/duplicacy/duplicacy_main.go b/duplicacy/duplicacy_main.go
+--- a/duplicacy/duplicacy_main.go	2026-11-17 14:46:06.998764764 +0000
++++ b/duplicacy/duplicacy_main.go	2026-11-17 15:41:38.872124454 +0000
+@@ -34,6 +34,12 @@
+ var ScriptEnabled bool
+ var GitCommit = "unofficial"
+ 
++// init keeps the lines of the standard log in the format of the CLI, since the library no
++// longer redirects the standard log when it is imported.
++func init() {
++	duplicacy.RedirectStandardLog()
++}
++
+ func getRepositoryPreference(context *cli.Context, storageName string) (repository string,
+ 	preference *duplicacy.Preference) {
+ 
+diff -ruN -x .git a/duplicacy/duplicacy_main_test.go b/duplicacy/duplicacy_main_test.go
+--- a/duplicacy/duplicacy_main_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/duplicacy/duplicacy_main_test.go	2026-11-17 15:41:54.676520280 +0000
+@@ -0,0 +1,49 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package main
++
++import (
++	"log"
++	"testing"
++
++	"github.com/gilbertchen/duplicacy/src"
++)
++
++// TestStandardLog_Embedding checks that the init() of the CLI sends the lines of the
++// standard log to the log of Duplicacy, as the library did when it was imported.
++func TestStandardLog_Embedding(t *testing.T) {
++	tests := []struct {
++		name string
++		// line is printed through the standard log
++		line string
++		// logID and message are what LogFunction must receive at the level INFO
++		logID   string
++		message string
++	}{
++		{
++			name: "line with a log id", line: "[TEST_ID] text",
++			logID: "TEST_ID", message: "text",
++		},
++		{
++			name: "line without a log id", line: "plain text",
++			logID: "LOG_DEFAULT", message: "plain text",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			saved := duplicacy.LogFunction
++			t.Cleanup(func() { duplicacy.LogFunction = saved })
++			level, logID, message := -1, "", ""
++			duplicacy.LogFunction = func(l int, id string, m string) {
++				level, logID, message = l, id, m
++			}
++			log.Printf("%s", tt.line)
++			if level != duplicacy.INFO || logID != tt.logID || message != tt.message {
++				t.Errorf("entry = %d %q %q, want %d %q %q", level, logID, message,
++					duplicacy.INFO, tt.logID, tt.message)
++			}
++		})
++	}
++}
+diff -ruN -x .git a/src/duplicacy_embedding_test.go b/src/duplicacy_embedding_test.go
+--- a/src/duplicacy_embedding_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_embedding_test.go	2026-11-17 15:41:54.688520580 +0000
+@@ -0,0 +1,99 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++package duplicacy
++
++import (
++	"log"
++	"os"
++	"os/exec"
++	"strings"
++	"testing"
++)
++
++// TestStandardLog_Embedding checks that importing the package leaves the standard log as
++// the standard library sets it up: the package doesn't redirect it in an init().
++func TestStandardLog_Embedding(t *testing.T) {
++	tests := []struct {
++		name string
++		got  interface{}
++		want interface{}
++	}{
++		{name: "writer", got: log.Writer(), want: os.Stderr},
++		{name: "flags", got: log.Flags(), want: log.LstdFlags},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			if tt.got != tt.want {
++				t.Errorf("%s = %v, want %v", tt.name, tt.got, tt.want)
++			}
++		})
++	}
++}
++
++func TestRedirectStandardLog(t *testing.T) {
++	tests := []struct {
++		name string
++		// line is printed through the standard log
++		line string
++		// want is the entry that LogFunction must receive, as "<level> <log id> <text>"
++		want string
++	}{
++		{name: "line with a log id", line: "[TEST_ID] text", want: "INFO TEST_ID text"},
++		{
++			name: "line without a log id", line: "plain text",
++			want: "INFO LOG_DEFAULT plain text",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			saveWorkerErrorsGlobals(t)
++			savedWriter, savedFlags := log.Writer(), log.Flags()
++			t.Cleanup(func() {
++				log.SetOutput(savedWriter)
++				log.SetFlags(savedFlags)
++			})
++			logs := collectWorkerErrorsLogs()
++			RedirectStandardLog()
++			log.Printf("%s", tt.line)
++			if got := logs.String(); got != tt.want {
++				t.Errorf("log = %q, want %q", got, tt.want)
++			}
++			if got := log.Flags(); got != 0 {
++				t.Errorf("log.Flags() = %v, want 0", got)
++			}
++		})
++	}
++}
++
++// TestDependencies_Embedding checks that neither the package nor its tests depend on the
++// keyring package that the CLI uses and the D-Bus package that it imports, whose init()
++// connects to the D-Bus session bus.
++func TestDependencies_Embedding(t *testing.T) {
++	cmd := exec.Command("go", "list", "-deps", "-test", ".")
++	var stderr strings.Builder
++	cmd.Stderr = &stderr
++	output, err := cmd.Output()
++	if err != nil {
++		t.Fatalf("go list: %v: %s", err, stderr.String())
++	}
++	deps := strings.Fields(string(output))
++	tests := []struct {
++		name string
++		// pkg is a package that must not be among the dependencies
++		pkg string
++	}{
++		{name: "keyring", pkg: "github.com/gilbertchen/keyring"},
++		{name: "D-Bus", pkg: "github.com/godbus/dbus"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			for _, dep := range deps {
++				if dep == tt.pkg {
++					t.Errorf("go list -deps -test . lists %s", tt.pkg)
++				}
++			}
++		})
++	}
++}
+diff -ruN -x .git a/src/duplicacy_keyring.go b/src/duplicacy_keyring.go
+--- a/src/duplicacy_keyring.go	2026-11-17 14:46:06.822760497 +0000
++++ b/src/duplicacy_keyring.go	2026-11-17 15:41:38.832123452 +0000
+@@ -6,16 +6,41 @@
+ 
+ package duplicacy
+ 
+-import (
+-	"github.com/gilbertchen/keyring"
+-)
++// KeyringGet, unless nil, returns the value stored in the keyring under key, such as a
++// password that GetPassword doesn't find in the environment or in Preference.Keys, or the
++// password or the key file of an SFTP storage in the background mode.  The library
++// doesn't set it and doesn't import a keyring, so a program that imports the package
++// doesn't touch the keyring until it sets KeyringGet; the CLI sets it in its init() to
++// keyring.Get of github.com/gilbertchen/keyring with the service "duplicacy".  An empty
++// value means that no value is stored.  A nil KeyringGet is logged at the DEBUG level as
++// a failed read of the keyring and also means that no value is stored.  An error of it is
++// logged the same way, and the value that it returns with the error is used as is, as
++// the value of the keyring was before.  Set it before an operation and don't change
++// it while the operation runs.  Windows builds keep the keyring file of SetKeyringFile
++// and have no KeyringGet.
++var KeyringGet func(key string) (string, error)
++
++// KeyringSet, unless nil, stores value in the keyring under key: SavePassword calls it to
++// save a password, and GetPassword calls it with an empty value to reset a password
++// unless RunInBackground is set.  The library doesn't set it, so nothing is stored in the
++// keyring until the program sets KeyringSet; the CLI sets it in its init() to keyring.Set
++// of github.com/gilbertchen/keyring with the service "duplicacy".  A nil KeyringSet
++// stores nothing, and an error of it is logged at the DEBUG level.  Set it before an
++// operation and don't change it while the operation runs.  Windows builds keep the
++// keyring file of SetKeyringFile and have no KeyringSet.
++var KeyringSet func(key string, value string) error
+ 
+ func SetKeyringFile(path string) {
+ 	// We only use keyring file on Windows
+ }
+ 
+ func keyringGet(key string) (value string) {
+-	value, err := keyring.Get("duplicacy", key)
++	if KeyringGet == nil {
++		LOG_DEBUG("KEYRING_GET", "Failed to get the value from the keyring: %v",
++			"KeyringGet is not set")
++		return ""
++	}
++	value, err := KeyringGet(key)
+ 	if err != nil {
+ 		LOG_DEBUG("KEYRING_GET", "Failed to get the value from the keyring: %v", err)
+ 	}
+@@ -23,7 +48,10 @@
+ }
+ 
+ func keyringSet(key string, value string) {
+-	err := keyring.Set("duplicacy", key, value)
++	if KeyringSet == nil {
++		return
++	}
++	err := KeyringSet(key, value)
+ 	if err != nil {
+ 		LOG_DEBUG("KEYRING_GET", "Failed to store the value to the keyring: %v", err)
+ 	}
+diff -ruN -x .git a/src/duplicacy_keyring_test.go b/src/duplicacy_keyring_test.go
+--- a/src/duplicacy_keyring_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/src/duplicacy_keyring_test.go	2026-11-17 15:44:54.201016244 +0000
+@@ -0,0 +1,257 @@
++// Copyright (c) Acrosync LLC. All rights reserved.
++// Free for personal use and commercial trial
++// Commercial use requires per-user licenses available from https://duplicacy.com
++
++//go:build !windows
++
++package duplicacy
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// errKeyringTest is the error that the keyring hooks of the tests return.
++var errKeyringTest = errors.New("no secret service")
++
++// Log entries of failed keyring calls, as "<level> <log id> <message>" without the cause.
++const (
++	keyringGetFailed = "DEBUG KEYRING_GET Failed to get the value from the keyring: "
++	keyringSetFailed = "DEBUG KEYRING_GET Failed to store the value to the keyring: "
++)
++
++// setKeyringTestGlobals saves the globals that a keyring test changes and restores them
++// after the test, removes the environment variables of the passwords of the tests and
++// returns the collector of the entries that LogFunction receives.
++func setKeyringTestGlobals(t *testing.T) *workerErrorsLogs {
++	saveWorkerErrorsGlobals(t)
++	savedGet, savedSet, savedRunInBackground := KeyringGet, KeyringSet, RunInBackground
++	t.Cleanup(func() {
++		KeyringGet, KeyringSet, RunInBackground = savedGet, savedSet, savedRunInBackground
++	})
++	for _, name := range []string{"DUPLICACY_PASSWORD", "DUPLICACY_OFFSITE_PASSWORD"} {
++		// t.Setenv restores the variable after the test; the variable must be absent
++		t.Setenv(name, "")
++		os.Unsetenv(name)
++	}
++	return collectWorkerErrorsLogs()
++}
++
++// setKeyringTestInput replaces the standard input with a file that contains input and
++// restores it after the test.
++func setKeyringTestInput(t *testing.T, input string) {
++	path := filepath.Join(t.TempDir(), "stdin")
++	if err := os.WriteFile(path, []byte(input), 0600); err != nil {
++		t.Fatal(err)
++	}
++	file, err := os.Open(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	saved := os.Stdin
++	os.Stdin = file
++	t.Cleanup(func() {
++		os.Stdin = saved
++		file.Close()
++	})
++}
++
++// checkKeyringTestLog checks that the log contains the entry want or, if want is empty,
++// no KEYRING_GET entry.
++func checkKeyringTestLog(t *testing.T, logs *workerErrorsLogs, want string) {
++	t.Helper()
++	got := logs.String()
++	if want == "" && strings.Contains(got, "KEYRING_GET") {
++		t.Errorf("log = %q, want no KEYRING_GET entry", got)
++	}
++	if want != "" && !strings.Contains(got, want) {
++		t.Errorf("log = %q, want an entry %q", got, want)
++	}
++}
++
++func TestGetPassword(t *testing.T) {
++	type args struct {
++		preference    Preference
++		passwordType  string
++		prompt        string
++		showPassword  bool
++		resetPassword bool
++	}
++	stored := args{preference: Preference{Name: "default"}, passwordType: "password"}
++	tests := []struct {
++		name string
++		args args
++		want string
++		// background is RunInBackground of the case
++		background bool
++		// hook installs a KeyringGet that returns value and err; without it KeyringGet
++		// is nil
++		hook  bool
++		value string
++		err   error
++		// input is the standard input that the password prompt reads
++		input string
++		// keys are the keys that KeyringGet must receive
++		keys []string
++		// calls are the calls that KeyringSet must receive, as "<key>=<value>"
++		calls []string
++		// log is an entry that the log must contain; empty means no KEYRING_GET entry
++		log string
++	}{
++		{
++			name: "value of the hook",
++			args: stored, want: "secret", background: true,
++			hook: true, value: "secret", keys: []string{"password"},
++		},
++		{
++			name: "value of the hook for a named storage",
++			args: args{preference: Preference{Name: "offsite"}, passwordType: "password"},
++			want: "secret", background: true,
++			hook: true, value: "secret", keys: []string{"offsite_password"},
++		},
++		{
++			name: "nil hook",
++			args: stored, want: "", background: true,
++			log: keyringGetFailed + "KeyringGet is not set",
++		},
++		{
++			name: "error of the hook",
++			args: stored, want: "", background: true,
++			hook: true, err: errKeyringTest, keys: []string{"password"},
++			log: keyringGetFailed + "no secret service",
++		},
++		{
++			name: "value of the hook with an error",
++			args: stored, want: "stale", background: true,
++			hook: true, value: "stale", err: errKeyringTest, keys: []string{"password"},
++			log: keyringGetFailed + "no secret service",
++		},
++		{
++			name: "password reset",
++			args: args{preference: Preference{Name: "default"}, passwordType: "password",
++				showPassword: true, resetPassword: true},
++			want: "typed", hook: true, value: "secret", input: "typed\n",
++			calls: []string{"password="},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			logs := setKeyringTestGlobals(t)
++			RunInBackground = tt.background
++			setKeyringTestInput(t, tt.input)
++			var keys, calls []string
++			KeyringGet = nil
++			if tt.hook {
++				KeyringGet = func(key string) (string, error) {
++					keys = append(keys, key)
++					return tt.value, tt.err
++				}
++			}
++			KeyringSet = func(key string, value string) error {
++				calls = append(calls, key+"="+value)
++				return nil
++			}
++			if got := GetPassword(tt.args.preference, tt.args.passwordType,
++				tt.args.prompt, tt.args.showPassword,
++				tt.args.resetPassword); got != tt.want {
++				t.Errorf("GetPassword() = %v, want %v", got, tt.want)
++			}
++			if strings.Join(keys, ",") != strings.Join(tt.keys, ",") {
++				t.Errorf("KeyringGet keys = %v, want %v", keys, tt.keys)
++			}
++			if strings.Join(calls, ",") != strings.Join(tt.calls, ",") {
++				t.Errorf("KeyringSet calls = %v, want %v", calls, tt.calls)
++			}
++			checkKeyringTestLog(t, logs, tt.log)
++		})
++	}
++}
++
++func TestSavePassword(t *testing.T) {
++	type args struct {
++		preference   Preference
++		passwordType string
++		password     string
++	}
++	saved := args{preference: Preference{Name: "default"}, passwordType: "password",
++		password: "secret"}
++	tests := []struct {
++		name string
++		args args
++		// background is RunInBackground of the case
++		background bool
++		// hook installs a KeyringSet that records its calls and returns err; without it
++		// KeyringSet is nil
++		hook bool
++		err  error
++		// calls are the calls that KeyringSet must receive, as "<key>=<value>"
++		calls []string
++		// log is an entry that the log must contain; empty means no KEYRING_GET entry
++		log string
++	}{
++		{
++			name: "password saved",
++			args: saved, hook: true, calls: []string{"password=secret"},
++		},
++		{
++			name: "password of a named storage saved",
++			args: args{preference: Preference{Name: "offsite"}, passwordType: "password",
++				password: "secret"},
++			hook: true, calls: []string{"offsite_password=secret"},
++		},
++		{
++			name: "background",
++			args: saved, background: true, hook: true,
++		},
++		{
++			name: "empty password",
++			args: args{preference: Preference{Name: "default"}, passwordType: "password"},
++			hook: true,
++		},
++		{
++			name: "password not to be saved",
++			args: args{preference: Preference{Name: "default", DoNotSavePassword: true},
++				passwordType: "password", password: "secret"},
++			hook: true,
++		},
++		{
++			name: "password from the preference",
++			args: args{preference: Preference{Name: "default",
++				Keys: map[string]string{"password": "secret"}},
++				passwordType: "password", password: "secret"},
++			hook: true,
++		},
++		{
++			name: "nil hook",
++			args: saved,
++		},
++		{
++			name: "error of the hook",
++			args: saved, hook: true, err: errKeyringTest,
++			calls: []string{"password=secret"},
++			log:   keyringSetFailed + "no secret service",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			logs := setKeyringTestGlobals(t)
++			RunInBackground = tt.background
++			var calls []string
++			KeyringSet = nil
++			if tt.hook {
++				KeyringSet = func(key string, value string) error {
++					calls = append(calls, key+"="+value)
++					return tt.err
++				}
++			}
++			SavePassword(tt.args.preference, tt.args.passwordType, tt.args.password)
++			if strings.Join(calls, ",") != strings.Join(tt.calls, ",") {
++				t.Errorf("KeyringSet calls = %v, want %v", calls, tt.calls)
++			}
++			checkKeyringTestLog(t, logs, tt.log)
++		})
++	}
++}
+diff -ruN -x .git a/src/duplicacy_log.go b/src/duplicacy_log.go
+--- a/src/duplicacy_log.go	2026-11-17 14:46:07.002764861 +0000
++++ b/src/duplicacy_log.go	2026-11-17 16:34:06.400101434 +0000
+@@ -203,8 +203,8 @@
+ 	}
+ }
+ 
+-// Set up logging for libraries that Duplicacy depends on.  They can call 'log.Printf("[ID] message")'
+-// to produce logs in Duplicacy's format
++// Logger is the standard log writer set by RedirectStandardLog.  After that call, the
++// libraries that Duplicacy depends on write 'log.Printf("[ID] message")' in its format
+ type Logger struct {
+ 	formatRegex *regexp.Regexp
+ }
+@@ -224,9 +224,16 @@
+     return
+ }
+ 
+-func init() {
++// RedirectStandardLog clears the flags of the standard log package and sends its lines to
++// the log of Duplicacy: a line "[ID] text" becomes an INFO entry with the log ID ID and
++// the message text, and any other line an INFO entry LOG_DEFAULT.  The entries go to
++// LogFunction, unless nil, or are printed like the other INFO entries.  The library
++// doesn't call it, so importing the package leaves the standard log as it is; the CLI
++// calls it in its init().  A program may call it to get the same behavior, and
++// log.SetOutput and log.SetFlags undo it.
++func RedirectStandardLog() {
+ 	log.SetFlags(0)
+-	log.SetOutput(&Logger{ formatRegex: regexp.MustCompile(`^\[(.+)\]\s*(.+)`) })
++	log.SetOutput(&Logger{formatRegex: regexp.MustCompile(`^\[(.+)\]\s*(.+)`)})
+ }
+ 
+ const (
