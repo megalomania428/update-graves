@@ -15,14 +15,6 @@ fi
 tree="$1"
 message="$2"
 shift 2
-name="${ORCH_NAME:-Moderator}"
-email="${ORCH_EMAIL:-moderator@models.dev}"
-if [[ -z "${name}" || "${name}" == *$'\n'* ]]; then
-  fail 'bad author name' 2
-fi
-if [[ ! "${email}" =~ ^[^[:space:]\<\>@]+@[^[:space:]\<\>@]+$ ]]; then
-  fail "bad email: ${email}" 2
-fi
 if [[ -z "${message//[[:space:]]/}" || "${message}" == *$'\n'* ||
   "${message}" == *$'\r'* ]]; then
   fail 'message must be a single non-empty line' 2
@@ -51,7 +43,5 @@ else
     fail 'nothing to commit'
   fi
 fi
-GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
-  GIT_COMMITTER_NAME="${name}" GIT_COMMITTER_EMAIL="${email}" \
-  git -C "${tree}" commit --quiet --no-gpg-sign -m "${message}" -- "$@"
+git -C "${tree}" commit --quiet --no-gpg-sign -m "${message}" -- "$@"
 git -C "${tree}" rev-parse HEAD
