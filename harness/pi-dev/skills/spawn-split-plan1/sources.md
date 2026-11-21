@@ -1,0 +1,16 @@
+# Источники скилла
+
+<!-- cspell:ignore Brolund Ellnestam RavenClaude doub gabrielanhaia majiayu mcorbett obra wshobson ревьюер скилл скилла -->
+<!-- markdownlint-disable-file MD013 -->
+
+Не входит в карту чтения `SKILL.md`: только происхождение решений, найденное 2026-11-14.
+
+- `obra/superpowers`, скилл `writing-plans` – <https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md>: структура файлов фиксируется до нарезки задач; блок «Interfaces – Consumes/Produces» у каждой задачи стал разделом «Контракты»; правило размера задачи «резать там, где ревьюер может отклонить одну часть, одобрив соседнюю»; «план длиннее кода – это переписанный код»; самопроверка плана на согласованность имён и типов.
+- `obra/superpowers`, скилл `dispatching-parallel-agents` – <https://github.com/obra/superpowers/blob/main/skills/dispatching-parallel-agents/SKILL.md>: параллельно только независимые домены без общего состояния; задание агенту строится заново, без истории сессии.
+- `wshobson/agents`, скилл `parallel-feature-development` – <https://github.com/wshobson/agents/blob/main/plugins/agent-teams/skills/parallel-feature-development/SKILL.md>: «один владелец на файл», общие и индексные файлы (`__init__.py`, `index.ts`) – у одного владельца или в конце у ведущего, контракт-файлы только на чтение для исполнителей, заглушки зависимостей для параллельной работы.
+- `wshobson/agents`, скилл `task-coordination-strategies` – <https://github.com/wshobson/agents/blob/main/plugins/agent-teams/skills/task-coordination-strategies/SKILL.md>: широкий мелкий граф зависимостей вместо цепочек, схема «независимые задачи → интеграция», поля задания – цель, свои файлы, контракт, приёмка, вне объёма.
+- `decomposing-plans` из реестра `majiayu000/claude-skill-registry` – <https://github.com/majiayu000/claude-skill-registry-data/blob/a21980a5b576646393ed574f158d7dd92fae4c3f/data/decomposing-plans/SKILL.md>: машинный манифест задач рядом с документами и правило «задачи, меняющие один файл, не идут в одной пачке» – здесь `partition.tsv`, `ownership.tsv` и `scope.sh manifest`.
+- `characterization-testing` из `mcorbett51090/RavenClaude` – <https://www.skillsdirectory.com/skills/mcorbett51090-characterization-testing>: фиксировать текущее поведение, включая ошибки, golden master для больших выводов, покрытие зоны изменений до правок – волна 0.
+- Claude Code `/batch` и статья «Claude Code Projects Lets a Coordinator Split Your Task» – <https://code.claude.com/docs/en/agents> и <https://dev.to/gabrielanhaia/claude-code-projects-lets-a-coordinator-split-your-task-splitting-was-the-job-4cpa>: одна задача – одна ветка и worktree; конфликт слияния – симптом плохих швов; перед ревью ветки проверить `git diff --stat` на выход за свои пути – `scope.sh branch`.
+- Mikado Method (Ellnestam, Brolund) в изложении <https://wellaged.dev/posts/mikado-method-ai-agents/>: граф предпосылок, листья выполняются первыми и независимо, код сохраняет рабочее состояние после каждого шага – волны 0 → 1 → 2.
+- Свои успешные серии в `/workspace/vscode/raven/man4llm`: `raven/update-graves/duplicacy/20261102-01-p002`, `raven/mega-doub/20261102-01-refactor2`, `raven/mega-doub/20260915-01-draft` – формат общего документа и документов частей, «Общие правила прогонов», «Типовые развилки», шаблон `task.md`, факты без перепроверки.
