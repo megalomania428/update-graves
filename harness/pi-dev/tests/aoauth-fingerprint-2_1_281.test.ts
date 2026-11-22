@@ -21,14 +21,11 @@ import type {
 } from '@earendil-works/pi-ai'
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic'
 import fingerprintFactory, {
-  applyFingerprintHeaders, applyFingerprintPayload, buildHashFor
+  applyFingerprintHeaders, applyFingerprintPayload, buildHashFor, createSummaryStream,
+  fileDetails, isSummaryPayload, mergeHeaders, ownDetails, prepareSummaryCompaction,
+  prepareSummaryEntries, readSummarySettings, registerSummaryHooks, waitOrAbort,
+  type FingerprintDependencies
 } from '../extensions/aoauth-fingerprint-2_1_281'
-import {
-  createSummaryStream, fileDetails, isSummaryPayload, mergeHeaders, ownDetails,
-  prepareSummaryCompaction, prepareSummaryEntries, readSummarySettings,
-  registerSummaryHooks, waitOrAbort
-} from '../lib/aoauth-summary-2_1_281'
-import type { FingerprintDependencies } from '../lib/aoauth-summary-2_1_281'
 import ordinary from './fixtures/ordinary-281.json'
 type StreamFn = NonNullable<Parameters<typeof compact>[7]>
 type Auth = Awaited<ReturnType<ModelRegistry['getApiKeyAndHeaders']>>

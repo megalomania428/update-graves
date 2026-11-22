@@ -30,7 +30,7 @@ harness/pi-dev/tests/run-tests.sh
 Префикс runtime задаётся `AOAUTH_RUNTIME_NODE_MODULES`, по умолчанию `/home/coder/.local/pi-dev/node_modules`. При другом префиксе одновременно требуется согласованная замена абсолютных paths/typeRoots адресного tsconfig, в том числе на nested agent-core, а не root 1.1.0. Генераторы штатные; временный SDK facade только для адресной инъекции некорректных generator results/подсчёта StreamFn. Native preparation для chain-тестов читается из installed dist, production использует только публичные root exports. Временные файлы удаляются, в репозитории cache/logs не создаются.
 Frozen fixture `fixtures/ordinary-281.json` снята с исходного entrypoint до рефакторинга: known hash `b83`, headers, billing, betas и Opus transformations. Session UUID нормализован, OS/arch зависят от платформы. Один test-файл проверяет ordinary regression, factory integration, реальные fake-fetch adapter bodies, retries/callback counts, перехват повторов runtime, abort/auth, metadata bridges, sentinel/error semantics и ограничения runner. Live LLM requests, полные suites и сборки не выполняются. Runtime реестра в тесте выполняет настоящие `streamSimple` и подготовку запроса `ModelRuntime` над фейковыми provider и auth, а перехват повторов `retry.ts` эмулируется в самом тесте: `retry.ts` лежит вне этого репозитория и в контейнер `run-tests.sh` не монтируется.
 
-Линт выполняется только для изменённого entrypoint, helper, test и loader, без `--fix` и без форматирования сторонних файлов.
+Тесты импортируют fingerprint и summary helpers из одного entrypoint `../extensions/aoauth-fingerprint-2_1_281.ts`. Отдельного модуля для summary нет.
 
 ## compact-context
 

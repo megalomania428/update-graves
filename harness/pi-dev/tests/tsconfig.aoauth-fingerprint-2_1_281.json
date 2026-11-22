@@ -28,7 +28,6 @@
   },
   "files": [
     "../extensions/aoauth-fingerprint-2_1_281.ts",
-    "../lib/aoauth-summary-2_1_281.ts",
     "aoauth-fingerprint-2_1_281.test.ts"
   ]
 }
