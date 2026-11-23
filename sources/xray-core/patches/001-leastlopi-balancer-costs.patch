@@ -1,0 +1,3286 @@
+diff -ruN -x .git a/app/router/balancer_costs.go b/app/router/balancer_costs.go
+--- a/app/router/balancer_costs.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/balancer_costs.go	2026-11-23 13:13:11.722356622 +0000
+@@ -0,0 +1,103 @@
++package router
++
++import (
++	"sort"
++
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/features/routing"
++)
++
++// BalancingCostReporter is implemented by the strategies with weights
++type BalancingCostReporter interface {
++	// CostRules returns the weight rules in the configured order
++	CostRules() []routing.BalancerCostRule
++	// OutboundCosts returns the effective weights of the candidates sorted by tag
++	OutboundCosts(candidates []string) []routing.BalancerOutboundCost
++}
++
++// GetBalancerCosts implements routing.BalancerCostsReader
++func (r *Router) GetBalancerCosts(tag string) (*routing.BalancerCosts, error) {
++	r.mu.Lock()
++	b, ok := r.balancers[tag]
++	r.mu.Unlock()
++	if !ok {
++		return nil, errors.New("cannot find tag")
++	}
++	ret := &routing.BalancerCosts{Strategy: balancingStrategyName(b.strategy)}
++	reporter, ok := b.strategy.(BalancingCostReporter)
++	if !ok {
++		return ret, nil
++	}
++	ret.Rules = reporter.CostRules()
++	candidates, err := b.SelectOutbounds()
++	if err != nil {
++		ret.OutboundsErr = errors.New("unable to select outbounds").Base(err)
++		return ret, nil
++	}
++	ret.Outbounds = reporter.OutboundCosts(candidates)
++	return ret, nil
++}
++
++// balancingStrategyName returns the normalized configuration name of a strategy
++func balancingStrategyName(strategy BalancingStrategy) string {
++	switch strategy.(type) {
++	case *LeastLoadStrategy:
++		return "leastload"
++	case *LeastLoPiStrategy:
++		return "leastlopi"
++	case *LeastPingStrategy:
++		return "leastping"
++	case *RoundRobinStrategy:
++		return "roundrobin"
++	case *RandomStrategy:
++		return "random"
++	}
++	return ""
++}
++
++// CostRules implements BalancingCostReporter
++func (s *LeastLoadStrategy) CostRules() []routing.BalancerCostRule {
++	var ret []routing.BalancerCostRule
++	for _, w := range s.settings.GetCosts() {
++		value := float64(w.GetValue())
++		ret = append(ret, routing.BalancerCostRule{
++			Match:  w.GetMatch(),
++			Regexp: w.GetRegexp(),
++			Value:  &value,
++		})
++	}
++	return ret
++}
++
++// OutboundCosts implements BalancingCostReporter with the weights the ranking applies
++func (s *LeastLoadStrategy) OutboundCosts(candidates []string) []routing.BalancerOutboundCost {
++	var ret []routing.BalancerOutboundCost
++	for _, tag := range sortedCandidates(candidates) {
++		cost := s.costs.Get(tag)
++		ret = append(ret, routing.BalancerOutboundCost{OutboundTag: tag, Cost: &cost})
++	}
++	return ret
++}
++
++// sortedCandidates returns the unique candidates sorted by tag
++func sortedCandidates(candidates []string) []string {
++	tags := append([]string(nil), candidates...)
++	sort.Strings(tags)
++	ret := make([]string, 0, len(tags))
++	for i, tag := range tags {
++		if i > 0 && tag == tags[i-1] {
++			continue
++		}
++		ret = append(ret, tag)
++	}
++	return ret
++}
++
++// copyCost returns a copy of a configured weight
++func copyCost(cost *float64) *float64 {
++	if cost == nil {
++		return nil
++	}
++	v := *cost
++	return &v
++}
+diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_costs_test.go
+--- a/app/router/balancer_costs_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/balancer_costs_test.go	2026-11-23 13:16:32.695203698 +0000
+@@ -0,0 +1,166 @@
++package router
++
++import (
++	"reflect"
++	"testing"
++
++	"github.com/xtls/xray-core/common/serial"
++	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/features/routing"
++)
++
++func TestRouter_GetBalancerCosts(t *testing.T) {
++	type fields struct {
++		rule *BalancingRule
++		ohm  outbound.Manager
++	}
++	type args struct {
++		tag string
++	}
++	tests := []struct {
++		name             string
++		fields           fields
++		args             args
++		want             *routing.BalancerCosts
++		wantErr          bool
++		wantOutboundsErr bool
++	}{
++		{
++			name: "leastLoad reports the weights of its WeightManager for unmeasured candidates",
++			fields: fields{
++				rule: &BalancingRule{
++					Tag:              "b",
++					OutboundSelector: []string{"ax", "cg-", "mh-", "pl"},
++					Strategy:         "leastLoad",
++					StrategySettings: serial.ToTypedMessage(&StrategyLeastLoadConfig{
++						Costs: []*StrategyWeight{
++							{Match: "x5"},
++							{Regexp: true, Match: `^mh-\d+`},
++							{Match: "vl", Value: 2.5},
++							{Match: "zz", Value: 7},
++						},
++					}),
++				},
++				ohm: &fakeHandlerSelector{tags: []string{"ax5b", "cg-vl", "mh-16-vl", "other", "pl"}},
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{
++				Strategy: "leastload",
++				Rules: []routing.BalancerCostRule{
++					{Match: "x5", Value: costOf(0)},
++					{Match: `^mh-\d+`, Regexp: true, Value: costOf(0)},
++					{Match: "vl", Value: costOf(2.5)},
++					{Match: "zz", Value: costOf(7)},
++				},
++				Outbounds: []routing.BalancerOutboundCost{
++					{OutboundTag: "ax5b", Cost: costOf(5)},
++					{OutboundTag: "cg-vl", Cost: costOf(2.5)},
++					{OutboundTag: "mh-16-vl", Cost: costOf(16)},
++					{OutboundTag: "pl", Cost: costOf(1)},
++				},
++			},
++		},
++		{
++			name: "leastLoPi reports configured and effective weights",
++			fields: fields{
++				rule: &BalancingRule{
++					Tag:              "b",
++					OutboundSelector: []string{"cg-", "mh-", "cb-", "zz"},
++					Strategy:         "LeastLoPi",
++					StrategySettings: serial.ToTypedMessage(&StrategyLeastLoPiConfig{
++						Costs: []*StrategyLeastLoPiWeight{
++							{Match: "cg", CostDevi: costOf(0)},
++							{Regexp: true, Match: "^mh-", CostPing: costOf(16)},
++							{Match: "-w", CostPing: costOf(4), CostDevi: costOf(4)},
++						},
++					}),
++				},
++				ohm: &fakeHandlerSelector{tags: []string{"cb-w", "cg-w", "mh-w", "other-w", "zz"}},
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{
++				Strategy: "leastlopi",
++				Rules: []routing.BalancerCostRule{
++					{Match: "cg", CostDevi: costOf(0)},
++					{Match: "^mh-", Regexp: true, CostPing: costOf(16)},
++					{Match: "-w", CostPing: costOf(4), CostDevi: costOf(4)},
++				},
++				Outbounds: []routing.BalancerOutboundCost{
++					{OutboundTag: "cb-w", CostPing: costOf(4), CostDevi: costOf(4)},
++					{OutboundTag: "cg-w", CostPing: costOf(1), CostDevi: costOf(0)},
++					{OutboundTag: "mh-w", CostPing: costOf(16), CostDevi: costOf(1)},
++					{OutboundTag: "zz", CostPing: costOf(1), CostDevi: costOf(1)},
++				},
++			},
++		},
++		{
++			name: "strategy without weights",
++			fields: fields{
++				rule: &BalancingRule{Tag: "b", OutboundSelector: []string{"a"}},
++				ohm:  &fakeHandlerSelector{tags: []string{"a"}},
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{Strategy: "random"},
++		},
++		{
++			name: "leastPing has no weights",
++			fields: fields{
++				rule: &BalancingRule{Tag: "b", OutboundSelector: []string{"a"}, Strategy: "leastPing"},
++				ohm:  &fakeHandlerSelector{tags: []string{"a"}},
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{Strategy: "leastping"},
++		},
++		{
++			name: "unknown balancer",
++			fields: fields{
++				rule: &BalancingRule{Tag: "b", OutboundSelector: []string{"a"}},
++				ohm:  &fakeHandlerSelector{tags: []string{"a"}},
++			},
++			args:    args{tag: "other"},
++			wantErr: true,
++		},
++		{
++			name: "selector error keeps the strategy and the rules",
++			fields: fields{
++				rule: &BalancingRule{
++					Tag:              "b",
++					OutboundSelector: []string{"a"},
++					Strategy:         "leastload",
++					StrategySettings: serial.ToTypedMessage(&StrategyLeastLoadConfig{
++						Costs: []*StrategyWeight{{Match: "a", Value: 3}},
++					}),
++				},
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{
++				Strategy: "leastload",
++				Rules:    []routing.BalancerCostRule{{Match: "a", Value: costOf(3)}},
++			},
++			wantOutboundsErr: true,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			b, err := tt.fields.rule.Build(tt.fields.ohm, nil)
++			if err != nil {
++				t.Fatalf("BalancingRule.Build() error = %v", err)
++			}
++			r := &Router{balancers: map[string]*Balancer{tt.fields.rule.Tag: b}}
++			got, err := r.GetBalancerCosts(tt.args.tag)
++			if (err != nil) != tt.wantErr {
++				t.Fatalf("Router.GetBalancerCosts() error = %v, wantErr %v", err, tt.wantErr)
++			}
++			if err != nil {
++				return
++			}
++			if (got.OutboundsErr != nil) != tt.wantOutboundsErr {
++				t.Fatalf("Router.GetBalancerCosts() OutboundsErr = %v, want error %v", got.OutboundsErr, tt.wantOutboundsErr)
++			}
++			got.OutboundsErr = nil
++			if !reflect.DeepEqual(got, tt.want) {
++				t.Errorf("Router.GetBalancerCosts() = %+v, want %+v", got, tt.want)
++			}
++		})
++	}
++}
+diff -ruN -x .git a/app/router/command/balancer_costs.go b/app/router/command/balancer_costs.go
+--- a/app/router/command/balancer_costs.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/command/balancer_costs.go	2026-11-23 13:13:11.734356912 +0000
+@@ -0,0 +1,34 @@
++package command
++
++import (
++	"context"
++
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/features/routing"
++)
++
++// fillBalancerCosts copies the strategy and the weights of a balancer into msg
++func fillBalancerCosts(ctx context.Context, msg *BalancerMsg, costs *routing.BalancerCosts) {
++	msg.Strategy = costs.Strategy
++	for _, rule := range costs.Rules {
++		msg.CostRules = append(msg.CostRules, &BalancerCostRule{
++			Match:    rule.Match,
++			Regexp:   rule.Regexp,
++			Value:    rule.Value,
++			CostPing: rule.CostPing,
++			CostDevi: rule.CostDevi,
++		})
++	}
++	if costs.OutboundsErr != nil {
++		errors.LogInfoInner(ctx, costs.OutboundsErr, "unable to obtain outbound costs")
++		return
++	}
++	for _, cost := range costs.Outbounds {
++		msg.OutboundCosts = append(msg.OutboundCosts, &BalancerOutboundCost{
++			OutboundTag: cost.OutboundTag,
++			Cost:        cost.Cost,
++			CostPing:    cost.CostPing,
++			CostDevi:    cost.CostDevi,
++		})
++	}
++}
+diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/command/balancer_costs_test.go
+--- a/app/router/command/balancer_costs_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/command/balancer_costs_test.go	2026-11-23 13:16:32.699203794 +0000
+@@ -0,0 +1,123 @@
++package command_test
++
++import (
++	"context"
++	"encoding/json"
++	"testing"
++
++	"github.com/golang/mock/gomock"
++	"github.com/google/go-cmp/cmp"
++	"github.com/xtls/xray-core/app/router"
++	. "github.com/xtls/xray-core/app/router/command"
++	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/infra/conf"
++	"github.com/xtls/xray-core/testing/mocks"
++	"google.golang.org/protobuf/encoding/protojson"
++)
++
++// costsTestRouter has a fixed principle target: the strategies need a running
++// observatory for it
++type costsTestRouter struct {
++	*router.Router
++}
++
++func (r *costsTestRouter) GetPrincipleTarget(tag string) ([]string, error) {
++	return []string{"principle"}, nil
++}
++
++type costsOutboundManager struct {
++	outbound.Manager
++	outbound.HandlerSelector
++}
++
++func Test_routingServer_GetBalancerInfo(t *testing.T) {
++	tests := []struct {
++		name       string
++		balancer   string
++		tags       []string
++		noSelector bool
++		want       string
++	}{
++		{
++			name: "leastLoPi keeps explicit zeros from JSON to gRPC",
++			balancer: `{"tag": "vl-w", "selector": ["cg-", "mh-"], "strategy": {"type": "leastLoPi",
++				"settings": {"costs": [{"match": "^cg-", "regexp": true, "costPing": 0},
++				{"match": "mh-", "costDevi": 0.5}]}}}`,
++			tags: []string{"mh-1", "cg-1"},
++			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastlopi",
++				"costRules": [{"match": "^cg-", "regexp": true, "costPing": 0}, {"match": "mh-", "costDevi": 0.5}],
++				"outboundCosts": [{"outboundTag": "cg-1", "costPing": 0, "costDevi": 1},
++				{"outboundTag": "mh-1", "costPing": 1, "costDevi": 0.5}]}`,
++		},
++		{
++			name: "leastLoad reports implicit and default weights",
++			balancer: `{"tag": "vl-w", "selector": ["cg-"], "strategy": {"type": "leastLoad",
++				"settings": {"costs": [{"match": "cg-(\\d+)", "regexp": true}, {"match": "vl", "value": 3}]}}}`,
++			tags: []string{"cg-16-vl", "cg-x"},
++			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastload",
++				"costRules": [{"match": "cg-(\\d+)", "regexp": true, "value": 0}, {"match": "vl", "value": 3}],
++				"outboundCosts": [{"outboundTag": "cg-16-vl", "cost": 16}, {"outboundTag": "cg-x", "cost": 1}]}`,
++		},
++		{
++			name:     "random has no weights",
++			balancer: `{"tag": "vl-w", "selector": ["cg-"]}`,
++			tags:     []string{"cg-1"},
++			want:     `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "random"}`,
++		},
++		{
++			name: "selector error drops only outboundCosts",
++			balancer: `{"tag": "vl-w", "selector": ["cg-"], "strategy": {"type": "leastLoad",
++				"settings": {"costs": [{"match": "vl", "value": 3}]}}}`,
++			noSelector: true,
++			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastload",
++				"costRules": [{"match": "vl", "value": 3}]}`,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			rule := new(conf.BalancingRule)
++			if err := json.Unmarshal([]byte(tt.balancer), rule); err != nil {
++				t.Fatalf("json.Unmarshal() error = %v", err)
++			}
++			balancer, err := rule.Build()
++			if err != nil {
++				t.Fatalf("BalancingRule.Build() error = %v", err)
++			}
++			mockCtl := gomock.NewController(t)
++			defer mockCtl.Finish()
++			var ohm outbound.Manager = mocks.NewOutboundManager(mockCtl)
++			if !tt.noSelector {
++				mockHs := mocks.NewOutboundHandlerSelector(mockCtl)
++				mockHs.EXPECT().Select(gomock.Any()).Return(tt.tags).AnyTimes()
++				ohm = &costsOutboundManager{Manager: ohm, HandlerSelector: mockHs}
++			}
++			r := new(router.Router)
++			config := &router.Config{BalancingRule: []*router.BalancingRule{balancer}}
++			if err := r.Init(context.TODO(), config, mocks.NewDNSClient(mockCtl), ohm, nil); err != nil {
++				t.Fatalf("Router.Init() error = %v", err)
++			}
++			resp, err := NewRoutingServer(&costsTestRouter{Router: r}, nil).GetBalancerInfo(
++				context.Background(), &GetBalancerInfoRequest{Tag: "vl-w"})
++			if err != nil {
++				t.Fatalf("GetBalancerInfo() error = %v", err)
++			}
++			data, err := protojson.Marshal(resp)
++			if err != nil {
++				t.Fatalf("protojson.Marshal() error = %v", err)
++			}
++			var got struct {
++				Balancer interface{} `json:"balancer"`
++			}
++			if err := json.Unmarshal(data, &got); err != nil {
++				t.Fatalf("json.Unmarshal() error = %v", err)
++			}
++			var want interface{}
++			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
++				t.Fatalf("json.Unmarshal() error = %v", err)
++			}
++			if diff := cmp.Diff(want, got.Balancer); diff != "" {
++				t.Errorf("GetBalancerInfo() balancer mismatch (-want +got):\n%s", diff)
++			}
++		})
++	}
++}
+diff -ruN -x .git a/app/router/command/command.go b/app/router/command/command.go
+--- a/app/router/command/command.go	2026-11-23 13:11:53.576472386 +0000
++++ b/app/router/command/command.go	2026-11-23 13:13:26.154704646 +0000
+@@ -43,6 +43,15 @@
+ 			}
+ 		}
+ 	}
++
++	if cr, ok := s.router.(routing.BalancerCostsReader); ok {
++		costs, err := cr.GetBalancerCosts(request.GetTag())
++		if err != nil {
++			errors.LogInfoInner(ctx, err, "unable to obtain balancer costs")
++		} else {
++			fillBalancerCosts(ctx, ret.Balancer, costs)
++		}
++	}
+ 	return &ret, nil
+ }
+ 
+diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/command.pb.go
+--- a/app/router/command/command.pb.go	2026-11-23 13:11:53.576472386 +0000
++++ b/app/router/command/command.pb.go	2026-11-23 13:16:03.166473245 +0000
+@@ -379,6 +379,156 @@
+ 	return ""
+ }
+ 
++// BalancerCostRule is a weight rule of the balancer strategy in the configured
++// order: value for leastLoad, cost_ping and cost_devi for leastLoPi.
++type BalancerCostRule struct {
++	state         protoimpl.MessageState
++	sizeCache     protoimpl.SizeCache
++	unknownFields protoimpl.UnknownFields
++
++	Match    string   `protobuf:"bytes,1,opt,name=match,proto3" json:"match,omitempty"`
++	Regexp   bool     `protobuf:"varint,2,opt,name=regexp,proto3" json:"regexp,omitempty"`
++	Value    *float64 `protobuf:"fixed64,3,opt,name=value,proto3,oneof" json:"value,omitempty"`
++	CostPing *float64 `protobuf:"fixed64,4,opt,name=cost_ping,json=costPing,proto3,oneof" json:"cost_ping,omitempty"`
++	CostDevi *float64 `protobuf:"fixed64,5,opt,name=cost_devi,json=costDevi,proto3,oneof" json:"cost_devi,omitempty"`
++}
++
++func (x *BalancerCostRule) Reset() {
++	*x = BalancerCostRule{}
++	mi := &file_app_router_command_command_proto_msgTypes[5]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *BalancerCostRule) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*BalancerCostRule) ProtoMessage() {}
++
++func (x *BalancerCostRule) ProtoReflect() protoreflect.Message {
++	mi := &file_app_router_command_command_proto_msgTypes[5]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use BalancerCostRule.ProtoReflect.Descriptor instead.
++func (*BalancerCostRule) Descriptor() ([]byte, []int) {
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{5}
++}
++
++func (x *BalancerCostRule) GetMatch() string {
++	if x != nil {
++		return x.Match
++	}
++	return ""
++}
++
++func (x *BalancerCostRule) GetRegexp() bool {
++	if x != nil {
++		return x.Regexp
++	}
++	return false
++}
++
++func (x *BalancerCostRule) GetValue() float64 {
++	if x != nil && x.Value != nil {
++		return *x.Value
++	}
++	return 0
++}
++
++func (x *BalancerCostRule) GetCostPing() float64 {
++	if x != nil && x.CostPing != nil {
++		return *x.CostPing
++	}
++	return 0
++}
++
++func (x *BalancerCostRule) GetCostDevi() float64 {
++	if x != nil && x.CostDevi != nil {
++		return *x.CostDevi
++	}
++	return 0
++}
++
++// BalancerOutboundCost is the effective weight of a balancer candidate, not its
++// square root: cost for leastLoad, cost_ping and cost_devi for leastLoPi.
++type BalancerOutboundCost struct {
++	state         protoimpl.MessageState
++	sizeCache     protoimpl.SizeCache
++	unknownFields protoimpl.UnknownFields
++
++	OutboundTag string   `protobuf:"bytes,1,opt,name=outbound_tag,json=outboundTag,proto3" json:"outbound_tag,omitempty"`
++	Cost        *float64 `protobuf:"fixed64,2,opt,name=cost,proto3,oneof" json:"cost,omitempty"`
++	CostPing    *float64 `protobuf:"fixed64,3,opt,name=cost_ping,json=costPing,proto3,oneof" json:"cost_ping,omitempty"`
++	CostDevi    *float64 `protobuf:"fixed64,4,opt,name=cost_devi,json=costDevi,proto3,oneof" json:"cost_devi,omitempty"`
++}
++
++func (x *BalancerOutboundCost) Reset() {
++	*x = BalancerOutboundCost{}
++	mi := &file_app_router_command_command_proto_msgTypes[6]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *BalancerOutboundCost) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*BalancerOutboundCost) ProtoMessage() {}
++
++func (x *BalancerOutboundCost) ProtoReflect() protoreflect.Message {
++	mi := &file_app_router_command_command_proto_msgTypes[6]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use BalancerOutboundCost.ProtoReflect.Descriptor instead.
++func (*BalancerOutboundCost) Descriptor() ([]byte, []int) {
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{6}
++}
++
++func (x *BalancerOutboundCost) GetOutboundTag() string {
++	if x != nil {
++		return x.OutboundTag
++	}
++	return ""
++}
++
++func (x *BalancerOutboundCost) GetCost() float64 {
++	if x != nil && x.Cost != nil {
++		return *x.Cost
++	}
++	return 0
++}
++
++func (x *BalancerOutboundCost) GetCostPing() float64 {
++	if x != nil && x.CostPing != nil {
++		return *x.CostPing
++	}
++	return 0
++}
++
++func (x *BalancerOutboundCost) GetCostDevi() float64 {
++	if x != nil && x.CostDevi != nil {
++		return *x.CostDevi
++	}
++	return 0
++}
++
+ type BalancerMsg struct {
+ 	state         protoimpl.MessageState
+ 	sizeCache     protoimpl.SizeCache
+@@ -386,11 +536,16 @@
+ 
+ 	Override        *OverrideInfo        `protobuf:"bytes,5,opt,name=override,proto3" json:"override,omitempty"`
+ 	PrincipleTarget *PrincipleTargetInfo `protobuf:"bytes,6,opt,name=principle_target,json=principleTarget,proto3" json:"principle_target,omitempty"`
++	// normalized strategy name of the running balancer
++	Strategy  string              `protobuf:"bytes,7,opt,name=strategy,proto3" json:"strategy,omitempty"`
++	CostRules []*BalancerCostRule `protobuf:"bytes,8,rep,name=cost_rules,json=costRules,proto3" json:"cost_rules,omitempty"`
++	// candidates of the balancer selectors sorted by tag
++	OutboundCosts []*BalancerOutboundCost `protobuf:"bytes,9,rep,name=outbound_costs,json=outboundCosts,proto3" json:"outbound_costs,omitempty"`
+ }
+ 
+ func (x *BalancerMsg) Reset() {
+ 	*x = BalancerMsg{}
+-	mi := &file_app_router_command_command_proto_msgTypes[5]
++	mi := &file_app_router_command_command_proto_msgTypes[7]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -402,7 +557,7 @@
+ func (*BalancerMsg) ProtoMessage() {}
+ 
+ func (x *BalancerMsg) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[5]
++	mi := &file_app_router_command_command_proto_msgTypes[7]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -415,7 +570,7 @@
+ 
+ // Deprecated: Use BalancerMsg.ProtoReflect.Descriptor instead.
+ func (*BalancerMsg) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{5}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{7}
+ }
+ 
+ func (x *BalancerMsg) GetOverride() *OverrideInfo {
+@@ -432,6 +587,27 @@
+ 	return nil
+ }
+ 
++func (x *BalancerMsg) GetStrategy() string {
++	if x != nil {
++		return x.Strategy
++	}
++	return ""
++}
++
++func (x *BalancerMsg) GetCostRules() []*BalancerCostRule {
++	if x != nil {
++		return x.CostRules
++	}
++	return nil
++}
++
++func (x *BalancerMsg) GetOutboundCosts() []*BalancerOutboundCost {
++	if x != nil {
++		return x.OutboundCosts
++	}
++	return nil
++}
++
+ type GetBalancerInfoRequest struct {
+ 	state         protoimpl.MessageState
+ 	sizeCache     protoimpl.SizeCache
+@@ -442,7 +618,7 @@
+ 
+ func (x *GetBalancerInfoRequest) Reset() {
+ 	*x = GetBalancerInfoRequest{}
+-	mi := &file_app_router_command_command_proto_msgTypes[6]
++	mi := &file_app_router_command_command_proto_msgTypes[8]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -454,7 +630,7 @@
+ func (*GetBalancerInfoRequest) ProtoMessage() {}
+ 
+ func (x *GetBalancerInfoRequest) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[6]
++	mi := &file_app_router_command_command_proto_msgTypes[8]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -467,7 +643,7 @@
+ 
+ // Deprecated: Use GetBalancerInfoRequest.ProtoReflect.Descriptor instead.
+ func (*GetBalancerInfoRequest) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{6}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{8}
+ }
+ 
+ func (x *GetBalancerInfoRequest) GetTag() string {
+@@ -487,7 +663,7 @@
+ 
+ func (x *GetBalancerInfoResponse) Reset() {
+ 	*x = GetBalancerInfoResponse{}
+-	mi := &file_app_router_command_command_proto_msgTypes[7]
++	mi := &file_app_router_command_command_proto_msgTypes[9]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -499,7 +675,7 @@
+ func (*GetBalancerInfoResponse) ProtoMessage() {}
+ 
+ func (x *GetBalancerInfoResponse) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[7]
++	mi := &file_app_router_command_command_proto_msgTypes[9]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -512,7 +688,7 @@
+ 
+ // Deprecated: Use GetBalancerInfoResponse.ProtoReflect.Descriptor instead.
+ func (*GetBalancerInfoResponse) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{7}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{9}
+ }
+ 
+ func (x *GetBalancerInfoResponse) GetBalancer() *BalancerMsg {
+@@ -533,7 +709,7 @@
+ 
+ func (x *OverrideBalancerTargetRequest) Reset() {
+ 	*x = OverrideBalancerTargetRequest{}
+-	mi := &file_app_router_command_command_proto_msgTypes[8]
++	mi := &file_app_router_command_command_proto_msgTypes[10]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -545,7 +721,7 @@
+ func (*OverrideBalancerTargetRequest) ProtoMessage() {}
+ 
+ func (x *OverrideBalancerTargetRequest) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[8]
++	mi := &file_app_router_command_command_proto_msgTypes[10]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -558,7 +734,7 @@
+ 
+ // Deprecated: Use OverrideBalancerTargetRequest.ProtoReflect.Descriptor instead.
+ func (*OverrideBalancerTargetRequest) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{8}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{10}
+ }
+ 
+ func (x *OverrideBalancerTargetRequest) GetBalancerTag() string {
+@@ -583,7 +759,7 @@
+ 
+ func (x *OverrideBalancerTargetResponse) Reset() {
+ 	*x = OverrideBalancerTargetResponse{}
+-	mi := &file_app_router_command_command_proto_msgTypes[9]
++	mi := &file_app_router_command_command_proto_msgTypes[11]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -595,7 +771,7 @@
+ func (*OverrideBalancerTargetResponse) ProtoMessage() {}
+ 
+ func (x *OverrideBalancerTargetResponse) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[9]
++	mi := &file_app_router_command_command_proto_msgTypes[11]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -608,7 +784,7 @@
+ 
+ // Deprecated: Use OverrideBalancerTargetResponse.ProtoReflect.Descriptor instead.
+ func (*OverrideBalancerTargetResponse) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{9}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{11}
+ }
+ 
+ type AddRuleRequest struct {
+@@ -622,7 +798,7 @@
+ 
+ func (x *AddRuleRequest) Reset() {
+ 	*x = AddRuleRequest{}
+-	mi := &file_app_router_command_command_proto_msgTypes[10]
++	mi := &file_app_router_command_command_proto_msgTypes[12]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -634,7 +810,7 @@
+ func (*AddRuleRequest) ProtoMessage() {}
+ 
+ func (x *AddRuleRequest) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[10]
++	mi := &file_app_router_command_command_proto_msgTypes[12]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -647,7 +823,7 @@
+ 
+ // Deprecated: Use AddRuleRequest.ProtoReflect.Descriptor instead.
+ func (*AddRuleRequest) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{10}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{12}
+ }
+ 
+ func (x *AddRuleRequest) GetConfig() *serial.TypedMessage {
+@@ -672,7 +848,7 @@
+ 
+ func (x *AddRuleResponse) Reset() {
+ 	*x = AddRuleResponse{}
+-	mi := &file_app_router_command_command_proto_msgTypes[11]
++	mi := &file_app_router_command_command_proto_msgTypes[13]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -684,7 +860,7 @@
+ func (*AddRuleResponse) ProtoMessage() {}
+ 
+ func (x *AddRuleResponse) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[11]
++	mi := &file_app_router_command_command_proto_msgTypes[13]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -697,7 +873,7 @@
+ 
+ // Deprecated: Use AddRuleResponse.ProtoReflect.Descriptor instead.
+ func (*AddRuleResponse) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{11}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{13}
+ }
+ 
+ type RemoveRuleRequest struct {
+@@ -710,7 +886,7 @@
+ 
+ func (x *RemoveRuleRequest) Reset() {
+ 	*x = RemoveRuleRequest{}
+-	mi := &file_app_router_command_command_proto_msgTypes[12]
++	mi := &file_app_router_command_command_proto_msgTypes[14]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -722,7 +898,7 @@
+ func (*RemoveRuleRequest) ProtoMessage() {}
+ 
+ func (x *RemoveRuleRequest) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[12]
++	mi := &file_app_router_command_command_proto_msgTypes[14]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -735,7 +911,7 @@
+ 
+ // Deprecated: Use RemoveRuleRequest.ProtoReflect.Descriptor instead.
+ func (*RemoveRuleRequest) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{12}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{14}
+ }
+ 
+ func (x *RemoveRuleRequest) GetRuleTag() string {
+@@ -753,7 +929,7 @@
+ 
+ func (x *RemoveRuleResponse) Reset() {
+ 	*x = RemoveRuleResponse{}
+-	mi := &file_app_router_command_command_proto_msgTypes[13]
++	mi := &file_app_router_command_command_proto_msgTypes[15]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -765,7 +941,7 @@
+ func (*RemoveRuleResponse) ProtoMessage() {}
+ 
+ func (x *RemoveRuleResponse) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[13]
++	mi := &file_app_router_command_command_proto_msgTypes[15]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -778,7 +954,7 @@
+ 
+ // Deprecated: Use RemoveRuleResponse.ProtoReflect.Descriptor instead.
+ func (*RemoveRuleResponse) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{13}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{15}
+ }
+ 
+ type Config struct {
+@@ -789,7 +965,7 @@
+ 
+ func (x *Config) Reset() {
+ 	*x = Config{}
+-	mi := &file_app_router_command_command_proto_msgTypes[14]
++	mi := &file_app_router_command_command_proto_msgTypes[16]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -801,7 +977,7 @@
+ func (*Config) ProtoMessage() {}
+ 
+ func (x *Config) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_command_command_proto_msgTypes[14]
++	mi := &file_app_router_command_command_proto_msgTypes[16]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -814,7 +990,7 @@
+ 
+ // Deprecated: Use Config.ProtoReflect.Descriptor instead.
+ func (*Config) Descriptor() ([]byte, []int) {
+-	return file_app_router_command_command_proto_rawDescGZIP(), []int{14}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{16}
+ }
+ 
+ var File_app_router_command_command_proto protoreflect.FileDescriptor
+@@ -882,98 +1058,134 @@
+ 	0x67, 0x18, 0x01, 0x20, 0x03, 0x28, 0x09, 0x52, 0x03, 0x74, 0x61, 0x67, 0x22, 0x26, 0x0a, 0x0c,
+ 	0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x16, 0x0a, 0x06,
+ 	0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06, 0x74, 0x61,
+-	0x72, 0x67, 0x65, 0x74, 0x22, 0xa9, 0x01, 0x0a, 0x0b, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
+-	0x72, 0x4d, 0x73, 0x67, 0x12, 0x41, 0x0a, 0x08, 0x6f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65,
+-	0x18, 0x05, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x25, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
++	0x72, 0x67, 0x65, 0x74, 0x22, 0xc5, 0x01, 0x0a, 0x10, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
++	0x72, 0x43, 0x6f, 0x73, 0x74, 0x52, 0x75, 0x6c, 0x65, 0x12, 0x14, 0x0a, 0x05, 0x6d, 0x61, 0x74,
++	0x63, 0x68, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x6d, 0x61, 0x74, 0x63, 0x68, 0x12,
++	0x16, 0x0a, 0x06, 0x72, 0x65, 0x67, 0x65, 0x78, 0x70, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52,
++	0x06, 0x72, 0x65, 0x67, 0x65, 0x78, 0x70, 0x12, 0x19, 0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65,
++	0x18, 0x03, 0x20, 0x01, 0x28, 0x01, 0x48, 0x00, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x88,
++	0x01, 0x01, 0x12, 0x20, 0x0a, 0x09, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x18,
++	0x04, 0x20, 0x01, 0x28, 0x01, 0x48, 0x01, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x50, 0x69, 0x6e,
++	0x67, 0x88, 0x01, 0x01, 0x12, 0x20, 0x0a, 0x09, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76,
++	0x69, 0x18, 0x05, 0x20, 0x01, 0x28, 0x01, 0x48, 0x02, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x44,
++	0x65, 0x76, 0x69, 0x88, 0x01, 0x01, 0x42, 0x08, 0x0a, 0x06, 0x5f, 0x76, 0x61, 0x6c, 0x75, 0x65,
++	0x42, 0x0c, 0x0a, 0x0a, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x42, 0x0c,
++	0x0a, 0x0a, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x22, 0xbb, 0x01, 0x0a,
++	0x14, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e,
++	0x64, 0x43, 0x6f, 0x73, 0x74, 0x12, 0x21, 0x0a, 0x0c, 0x6f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e,
++	0x64, 0x5f, 0x74, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0b, 0x6f, 0x75, 0x74,
++	0x62, 0x6f, 0x75, 0x6e, 0x64, 0x54, 0x61, 0x67, 0x12, 0x17, 0x0a, 0x04, 0x63, 0x6f, 0x73, 0x74,
++	0x18, 0x02, 0x20, 0x01, 0x28, 0x01, 0x48, 0x00, 0x52, 0x04, 0x63, 0x6f, 0x73, 0x74, 0x88, 0x01,
++	0x01, 0x12, 0x20, 0x0a, 0x09, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x18, 0x03,
++	0x20, 0x01, 0x28, 0x01, 0x48, 0x01, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x50, 0x69, 0x6e, 0x67,
++	0x88, 0x01, 0x01, 0x12, 0x20, 0x0a, 0x09, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69,
++	0x18, 0x04, 0x20, 0x01, 0x28, 0x01, 0x48, 0x02, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x44, 0x65,
++	0x76, 0x69, 0x88, 0x01, 0x01, 0x42, 0x07, 0x0a, 0x05, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x42, 0x0c,
++	0x0a, 0x0a, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x42, 0x0c, 0x0a, 0x0a,
++	0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x22, 0xe5, 0x02, 0x0a, 0x0b, 0x42,
++	0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4d, 0x73, 0x67, 0x12, 0x41, 0x0a, 0x08, 0x6f, 0x76,
++	0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x25, 0x2e, 0x78,
++	0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63,
++	0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x49,
++	0x6e, 0x66, 0x6f, 0x52, 0x08, 0x6f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x12, 0x57, 0x0a,
++	0x10, 0x70, 0x72, 0x69, 0x6e, 0x63, 0x69, 0x70, 0x6c, 0x65, 0x5f, 0x74, 0x61, 0x72, 0x67, 0x65,
++	0x74, 0x18, 0x06, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x2c, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
++	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e,
++	0x64, 0x2e, 0x50, 0x72, 0x69, 0x6e, 0x63, 0x69, 0x70, 0x6c, 0x65, 0x54, 0x61, 0x72, 0x67, 0x65,
++	0x74, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x0f, 0x70, 0x72, 0x69, 0x6e, 0x63, 0x69, 0x70, 0x6c, 0x65,
++	0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x12, 0x1a, 0x0a, 0x08, 0x73, 0x74, 0x72, 0x61, 0x74, 0x65,
++	0x67, 0x79, 0x18, 0x07, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x73, 0x74, 0x72, 0x61, 0x74, 0x65,
++	0x67, 0x79, 0x12, 0x48, 0x0a, 0x0a, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x72, 0x75, 0x6c, 0x65, 0x73,
++	0x18, 0x08, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x29, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
+ 	0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64,
+-	0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x08, 0x6f,
+-	0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x12, 0x57, 0x0a, 0x10, 0x70, 0x72, 0x69, 0x6e, 0x63,
+-	0x69, 0x70, 0x6c, 0x65, 0x5f, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x06, 0x20, 0x01, 0x28,
+-	0x0b, 0x32, 0x2c, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
+-	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x50, 0x72, 0x69, 0x6e,
+-	0x63, 0x69, 0x70, 0x6c, 0x65, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x49, 0x6e, 0x66, 0x6f, 0x52,
+-	0x0f, 0x70, 0x72, 0x69, 0x6e, 0x63, 0x69, 0x70, 0x6c, 0x65, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74,
+-	0x22, 0x2a, 0x0a, 0x16, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49,
+-	0x6e, 0x66, 0x6f, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x10, 0x0a, 0x03, 0x74, 0x61,
+-	0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x74, 0x61, 0x67, 0x22, 0x5b, 0x0a, 0x17,
+-	0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52,
+-	0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x40, 0x0a, 0x08, 0x62, 0x61, 0x6c, 0x61, 0x6e,
+-	0x63, 0x65, 0x72, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x24, 0x2e, 0x78, 0x72, 0x61, 0x79,
+-	0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d,
+-	0x61, 0x6e, 0x64, 0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4d, 0x73, 0x67, 0x52,
+-	0x08, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x22, 0x59, 0x0a, 0x1d, 0x4f, 0x76, 0x65,
+-	0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72,
+-	0x67, 0x65, 0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x20, 0x0a, 0x0b, 0x62, 0x61,
+-	0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
+-	0x0b, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67, 0x12, 0x16, 0x0a, 0x06,
+-	0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06, 0x74, 0x61,
+-	0x72, 0x67, 0x65, 0x74, 0x22, 0x20, 0x0a, 0x1e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65,
+-	0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65,
+-	0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x6e, 0x0a, 0x0e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c,
+-	0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x38, 0x0a, 0x06, 0x63, 0x6f, 0x6e, 0x66,
+-	0x69, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x20, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
+-	0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e, 0x73, 0x65, 0x72, 0x69, 0x61, 0x6c, 0x2e, 0x54, 0x79,
+-	0x70, 0x65, 0x64, 0x4d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x52, 0x06, 0x63, 0x6f, 0x6e, 0x66,
+-	0x69, 0x67, 0x12, 0x22, 0x0a, 0x0c, 0x73, 0x68, 0x6f, 0x75, 0x6c, 0x64, 0x41, 0x70, 0x70, 0x65,
+-	0x6e, 0x64, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52, 0x0c, 0x73, 0x68, 0x6f, 0x75, 0x6c, 0x64,
+-	0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x22, 0x11, 0x0a, 0x0f, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c,
+-	0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x2d, 0x0a, 0x11, 0x52, 0x65, 0x6d,
+-	0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x18,
+-	0x0a, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
+-	0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x22, 0x14, 0x0a, 0x12, 0x52, 0x65, 0x6d, 0x6f,
+-	0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x08,
+-	0x0a, 0x06, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x32, 0xbf, 0x05, 0x0a, 0x0e, 0x52, 0x6f, 0x75,
+-	0x74, 0x69, 0x6e, 0x67, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x7b, 0x0a, 0x15, 0x53,
+-	0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53,
+-	0x74, 0x61, 0x74, 0x73, 0x12, 0x35, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e,
+-	0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x53,
+-	0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53,
+-	0x74, 0x61, 0x74, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x27, 0x2e, 0x78, 0x72,
++	0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x43, 0x6f, 0x73, 0x74, 0x52, 0x75, 0x6c,
++	0x65, 0x52, 0x09, 0x63, 0x6f, 0x73, 0x74, 0x52, 0x75, 0x6c, 0x65, 0x73, 0x12, 0x54, 0x0a, 0x0e,
++	0x6f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e, 0x64, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x73, 0x18, 0x09,
++	0x20, 0x03, 0x28, 0x0b, 0x32, 0x2d, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e,
++	0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x42,
++	0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e, 0x64, 0x43,
++	0x6f, 0x73, 0x74, 0x52, 0x0d, 0x6f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e, 0x64, 0x43, 0x6f, 0x73,
++	0x74, 0x73, 0x22, 0x2a, 0x0a, 0x16, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
++	0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x10, 0x0a, 0x03,
++	0x74, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x74, 0x61, 0x67, 0x22, 0x5b,
++	0x0a, 0x17, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66,
++	0x6f, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x40, 0x0a, 0x08, 0x62, 0x61, 0x6c,
++	0x61, 0x6e, 0x63, 0x65, 0x72, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x24, 0x2e, 0x78, 0x72,
+ 	0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f,
+-	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x43, 0x6f, 0x6e,
+-	0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x30, 0x01, 0x12, 0x61, 0x0a, 0x09, 0x54, 0x65, 0x73, 0x74,
+-	0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x29, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
+-	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
+-	0x54, 0x65, 0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
+-	0x1a, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
+-	0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69,
+-	0x6e, 0x67, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x12, 0x76, 0x0a, 0x0f, 0x47,
+-	0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x2f,
+-	0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72,
+-	0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61,
+-	0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a,
+-	0x30, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65,
+-	0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c,
+-	0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
+-	0x65, 0x22, 0x00, 0x12, 0x8b, 0x01, 0x0a, 0x16, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65,
+-	0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x12, 0x36,
+-	0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72,
+-	0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64,
+-	0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52,
+-	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x37, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
++	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4d, 0x73,
++	0x67, 0x52, 0x08, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x22, 0x59, 0x0a, 0x1d, 0x4f,
++	0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54,
++	0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x20, 0x0a, 0x0b,
++	0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28,
++	0x09, 0x52, 0x0b, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67, 0x12, 0x16,
++	0x0a, 0x06, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06,
++	0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x22, 0x20, 0x0a, 0x1e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69,
++	0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74,
++	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x6e, 0x0a, 0x0e, 0x41, 0x64, 0x64, 0x52,
++	0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x38, 0x0a, 0x06, 0x63, 0x6f,
++	0x6e, 0x66, 0x69, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x20, 0x2e, 0x78, 0x72, 0x61,
++	0x79, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e, 0x73, 0x65, 0x72, 0x69, 0x61, 0x6c, 0x2e,
++	0x54, 0x79, 0x70, 0x65, 0x64, 0x4d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x52, 0x06, 0x63, 0x6f,
++	0x6e, 0x66, 0x69, 0x67, 0x12, 0x22, 0x0a, 0x0c, 0x73, 0x68, 0x6f, 0x75, 0x6c, 0x64, 0x41, 0x70,
++	0x70, 0x65, 0x6e, 0x64, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52, 0x0c, 0x73, 0x68, 0x6f, 0x75,
++	0x6c, 0x64, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x22, 0x11, 0x0a, 0x0f, 0x41, 0x64, 0x64, 0x52,
++	0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x2d, 0x0a, 0x11, 0x52,
++	0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
++	0x12, 0x18, 0x0a, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28,
++	0x09, 0x52, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x22, 0x14, 0x0a, 0x12, 0x52, 0x65,
++	0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65,
++	0x22, 0x08, 0x0a, 0x06, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x32, 0xbf, 0x05, 0x0a, 0x0e, 0x52,
++	0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x7b, 0x0a,
++	0x15, 0x53, 0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e,
++	0x67, 0x53, 0x74, 0x61, 0x74, 0x73, 0x12, 0x35, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
+ 	0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64,
+-	0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
+-	0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22,
+-	0x00, 0x12, 0x5e, 0x0a, 0x07, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x12, 0x27, 0x2e, 0x78,
+-	0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63,
+-	0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65,
+-	0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x28, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
+-	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
+-	0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22,
+-	0x00, 0x12, 0x67, 0x0a, 0x0a, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x12,
+-	0x2a, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65,
+-	0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65,
+-	0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x2b, 0x2e, 0x78, 0x72,
+-	0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f,
+-	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65,
+-	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x42, 0x67, 0x0a, 0x1b, 0x63, 0x6f,
+-	0x6d, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65,
+-	0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x50, 0x01, 0x5a, 0x2c, 0x67, 0x69, 0x74,
+-	0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x78, 0x74, 0x6c, 0x73, 0x2f, 0x78, 0x72, 0x61,
+-	0x79, 0x2d, 0x63, 0x6f, 0x72, 0x65, 0x2f, 0x61, 0x70, 0x70, 0x2f, 0x72, 0x6f, 0x75, 0x74, 0x65,
+-	0x72, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0xaa, 0x02, 0x17, 0x58, 0x72, 0x61, 0x79,
+-	0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x43, 0x6f, 0x6d, 0x6d,
+-	0x61, 0x6e, 0x64, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
++	0x2e, 0x53, 0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e,
++	0x67, 0x53, 0x74, 0x61, 0x74, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x27, 0x2e,
++	0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e,
++	0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x43,
++	0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x30, 0x01, 0x12, 0x61, 0x0a, 0x09, 0x54, 0x65,
++	0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x29, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
++	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e,
++	0x64, 0x2e, 0x54, 0x65, 0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65,
++	0x73, 0x74, 0x1a, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f,
++	0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75,
++	0x74, 0x69, 0x6e, 0x67, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x12, 0x76, 0x0a,
++	0x0f, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f,
++	0x12, 0x2f, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
++	0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x47, 0x65, 0x74, 0x42, 0x61,
++	0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73,
++	0x74, 0x1a, 0x30, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
++	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x47, 0x65, 0x74, 0x42,
++	0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x73, 0x70, 0x6f,
++	0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x8b, 0x01, 0x0a, 0x16, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69,
++	0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74,
++	0x12, 0x36, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
++	0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72,
++	0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65,
++	0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x37, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
++	0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61,
++	0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e,
++	0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
++	0x65, 0x22, 0x00, 0x12, 0x5e, 0x0a, 0x07, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x12, 0x27,
++	0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72,
++	0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65,
++	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x28, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
++	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e,
++	0x64, 0x2e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
++	0x65, 0x22, 0x00, 0x12, 0x67, 0x0a, 0x0a, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c,
++	0x65, 0x12, 0x2a, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
++	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f,
++	0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x2b, 0x2e,
++	0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e,
++	0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75,
++	0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x42, 0x67, 0x0a, 0x1b,
++	0x63, 0x6f, 0x6d, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
++	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x50, 0x01, 0x5a, 0x2c, 0x67,
++	0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x78, 0x74, 0x6c, 0x73, 0x2f, 0x78,
++	0x72, 0x61, 0x79, 0x2d, 0x63, 0x6f, 0x72, 0x65, 0x2f, 0x61, 0x70, 0x70, 0x2f, 0x72, 0x6f, 0x75,
++	0x74, 0x65, 0x72, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0xaa, 0x02, 0x17, 0x58, 0x72,
++	0x61, 0x79, 0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x43, 0x6f,
++	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+ }
+ 
+ var (
+@@ -988,52 +1200,56 @@
+ 	return file_app_router_command_command_proto_rawDescData
+ }
+ 
+-var file_app_router_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
++var file_app_router_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+ var file_app_router_command_command_proto_goTypes = []any{
+ 	(*RoutingContext)(nil),                 // 0: xray.app.router.command.RoutingContext
+ 	(*SubscribeRoutingStatsRequest)(nil),   // 1: xray.app.router.command.SubscribeRoutingStatsRequest
+ 	(*TestRouteRequest)(nil),               // 2: xray.app.router.command.TestRouteRequest
+ 	(*PrincipleTargetInfo)(nil),            // 3: xray.app.router.command.PrincipleTargetInfo
+ 	(*OverrideInfo)(nil),                   // 4: xray.app.router.command.OverrideInfo
+-	(*BalancerMsg)(nil),                    // 5: xray.app.router.command.BalancerMsg
+-	(*GetBalancerInfoRequest)(nil),         // 6: xray.app.router.command.GetBalancerInfoRequest
+-	(*GetBalancerInfoResponse)(nil),        // 7: xray.app.router.command.GetBalancerInfoResponse
+-	(*OverrideBalancerTargetRequest)(nil),  // 8: xray.app.router.command.OverrideBalancerTargetRequest
+-	(*OverrideBalancerTargetResponse)(nil), // 9: xray.app.router.command.OverrideBalancerTargetResponse
+-	(*AddRuleRequest)(nil),                 // 10: xray.app.router.command.AddRuleRequest
+-	(*AddRuleResponse)(nil),                // 11: xray.app.router.command.AddRuleResponse
+-	(*RemoveRuleRequest)(nil),              // 12: xray.app.router.command.RemoveRuleRequest
+-	(*RemoveRuleResponse)(nil),             // 13: xray.app.router.command.RemoveRuleResponse
+-	(*Config)(nil),                         // 14: xray.app.router.command.Config
+-	nil,                                    // 15: xray.app.router.command.RoutingContext.AttributesEntry
+-	(net.Network)(0),                       // 16: xray.common.net.Network
+-	(*serial.TypedMessage)(nil),            // 17: xray.common.serial.TypedMessage
++	(*BalancerCostRule)(nil),               // 5: xray.app.router.command.BalancerCostRule
++	(*BalancerOutboundCost)(nil),           // 6: xray.app.router.command.BalancerOutboundCost
++	(*BalancerMsg)(nil),                    // 7: xray.app.router.command.BalancerMsg
++	(*GetBalancerInfoRequest)(nil),         // 8: xray.app.router.command.GetBalancerInfoRequest
++	(*GetBalancerInfoResponse)(nil),        // 9: xray.app.router.command.GetBalancerInfoResponse
++	(*OverrideBalancerTargetRequest)(nil),  // 10: xray.app.router.command.OverrideBalancerTargetRequest
++	(*OverrideBalancerTargetResponse)(nil), // 11: xray.app.router.command.OverrideBalancerTargetResponse
++	(*AddRuleRequest)(nil),                 // 12: xray.app.router.command.AddRuleRequest
++	(*AddRuleResponse)(nil),                // 13: xray.app.router.command.AddRuleResponse
++	(*RemoveRuleRequest)(nil),              // 14: xray.app.router.command.RemoveRuleRequest
++	(*RemoveRuleResponse)(nil),             // 15: xray.app.router.command.RemoveRuleResponse
++	(*Config)(nil),                         // 16: xray.app.router.command.Config
++	nil,                                    // 17: xray.app.router.command.RoutingContext.AttributesEntry
++	(net.Network)(0),                       // 18: xray.common.net.Network
++	(*serial.TypedMessage)(nil),            // 19: xray.common.serial.TypedMessage
+ }
+ var file_app_router_command_command_proto_depIdxs = []int32{
+-	16, // 0: xray.app.router.command.RoutingContext.Network:type_name -> xray.common.net.Network
+-	15, // 1: xray.app.router.command.RoutingContext.Attributes:type_name -> xray.app.router.command.RoutingContext.AttributesEntry
++	18, // 0: xray.app.router.command.RoutingContext.Network:type_name -> xray.common.net.Network
++	17, // 1: xray.app.router.command.RoutingContext.Attributes:type_name -> xray.app.router.command.RoutingContext.AttributesEntry
+ 	0,  // 2: xray.app.router.command.TestRouteRequest.RoutingContext:type_name -> xray.app.router.command.RoutingContext
+ 	4,  // 3: xray.app.router.command.BalancerMsg.override:type_name -> xray.app.router.command.OverrideInfo
+ 	3,  // 4: xray.app.router.command.BalancerMsg.principle_target:type_name -> xray.app.router.command.PrincipleTargetInfo
+-	5,  // 5: xray.app.router.command.GetBalancerInfoResponse.balancer:type_name -> xray.app.router.command.BalancerMsg
+-	17, // 6: xray.app.router.command.AddRuleRequest.config:type_name -> xray.common.serial.TypedMessage
+-	1,  // 7: xray.app.router.command.RoutingService.SubscribeRoutingStats:input_type -> xray.app.router.command.SubscribeRoutingStatsRequest
+-	2,  // 8: xray.app.router.command.RoutingService.TestRoute:input_type -> xray.app.router.command.TestRouteRequest
+-	6,  // 9: xray.app.router.command.RoutingService.GetBalancerInfo:input_type -> xray.app.router.command.GetBalancerInfoRequest
+-	8,  // 10: xray.app.router.command.RoutingService.OverrideBalancerTarget:input_type -> xray.app.router.command.OverrideBalancerTargetRequest
+-	10, // 11: xray.app.router.command.RoutingService.AddRule:input_type -> xray.app.router.command.AddRuleRequest
+-	12, // 12: xray.app.router.command.RoutingService.RemoveRule:input_type -> xray.app.router.command.RemoveRuleRequest
+-	0,  // 13: xray.app.router.command.RoutingService.SubscribeRoutingStats:output_type -> xray.app.router.command.RoutingContext
+-	0,  // 14: xray.app.router.command.RoutingService.TestRoute:output_type -> xray.app.router.command.RoutingContext
+-	7,  // 15: xray.app.router.command.RoutingService.GetBalancerInfo:output_type -> xray.app.router.command.GetBalancerInfoResponse
+-	9,  // 16: xray.app.router.command.RoutingService.OverrideBalancerTarget:output_type -> xray.app.router.command.OverrideBalancerTargetResponse
+-	11, // 17: xray.app.router.command.RoutingService.AddRule:output_type -> xray.app.router.command.AddRuleResponse
+-	13, // 18: xray.app.router.command.RoutingService.RemoveRule:output_type -> xray.app.router.command.RemoveRuleResponse
+-	13, // [13:19] is the sub-list for method output_type
+-	7,  // [7:13] is the sub-list for method input_type
+-	7,  // [7:7] is the sub-list for extension type_name
+-	7,  // [7:7] is the sub-list for extension extendee
+-	0,  // [0:7] is the sub-list for field type_name
++	5,  // 5: xray.app.router.command.BalancerMsg.cost_rules:type_name -> xray.app.router.command.BalancerCostRule
++	6,  // 6: xray.app.router.command.BalancerMsg.outbound_costs:type_name -> xray.app.router.command.BalancerOutboundCost
++	7,  // 7: xray.app.router.command.GetBalancerInfoResponse.balancer:type_name -> xray.app.router.command.BalancerMsg
++	19, // 8: xray.app.router.command.AddRuleRequest.config:type_name -> xray.common.serial.TypedMessage
++	1,  // 9: xray.app.router.command.RoutingService.SubscribeRoutingStats:input_type -> xray.app.router.command.SubscribeRoutingStatsRequest
++	2,  // 10: xray.app.router.command.RoutingService.TestRoute:input_type -> xray.app.router.command.TestRouteRequest
++	8,  // 11: xray.app.router.command.RoutingService.GetBalancerInfo:input_type -> xray.app.router.command.GetBalancerInfoRequest
++	10, // 12: xray.app.router.command.RoutingService.OverrideBalancerTarget:input_type -> xray.app.router.command.OverrideBalancerTargetRequest
++	12, // 13: xray.app.router.command.RoutingService.AddRule:input_type -> xray.app.router.command.AddRuleRequest
++	14, // 14: xray.app.router.command.RoutingService.RemoveRule:input_type -> xray.app.router.command.RemoveRuleRequest
++	0,  // 15: xray.app.router.command.RoutingService.SubscribeRoutingStats:output_type -> xray.app.router.command.RoutingContext
++	0,  // 16: xray.app.router.command.RoutingService.TestRoute:output_type -> xray.app.router.command.RoutingContext
++	9,  // 17: xray.app.router.command.RoutingService.GetBalancerInfo:output_type -> xray.app.router.command.GetBalancerInfoResponse
++	11, // 18: xray.app.router.command.RoutingService.OverrideBalancerTarget:output_type -> xray.app.router.command.OverrideBalancerTargetResponse
++	13, // 19: xray.app.router.command.RoutingService.AddRule:output_type -> xray.app.router.command.AddRuleResponse
++	15, // 20: xray.app.router.command.RoutingService.RemoveRule:output_type -> xray.app.router.command.RemoveRuleResponse
++	15, // [15:21] is the sub-list for method output_type
++	9,  // [9:15] is the sub-list for method input_type
++	9,  // [9:9] is the sub-list for extension type_name
++	9,  // [9:9] is the sub-list for extension extendee
++	0,  // [0:9] is the sub-list for field type_name
+ }
+ 
+ func init() { file_app_router_command_command_proto_init() }
+@@ -1041,13 +1257,15 @@
+ 	if File_app_router_command_command_proto != nil {
+ 		return
+ 	}
++	file_app_router_command_command_proto_msgTypes[5].OneofWrappers = []any{}
++	file_app_router_command_command_proto_msgTypes[6].OneofWrappers = []any{}
+ 	type x struct{}
+ 	out := protoimpl.TypeBuilder{
+ 		File: protoimpl.DescBuilder{
+ 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+ 			RawDescriptor: file_app_router_command_command_proto_rawDesc,
+ 			NumEnums:      0,
+-			NumMessages:   16,
++			NumMessages:   18,
+ 			NumExtensions: 0,
+ 			NumServices:   1,
+ 		},
+diff -ruN -x .git a/app/router/command/command.proto b/app/router/command/command.proto
+--- a/app/router/command/command.proto	2026-11-23 13:11:53.576472386 +0000
++++ b/app/router/command/command.proto	2026-11-23 13:13:26.154704646 +0000
+@@ -69,9 +69,33 @@
+   string target = 2;
+ }
+ 
++// BalancerCostRule is a weight rule of the balancer strategy in the configured
++// order: value for leastLoad, cost_ping and cost_devi for leastLoPi.
++message BalancerCostRule {
++  string match = 1;
++  bool regexp = 2;
++  optional double value = 3;
++  optional double cost_ping = 4;
++  optional double cost_devi = 5;
++}
++
++// BalancerOutboundCost is the effective weight of a balancer candidate, not its
++// square root: cost for leastLoad, cost_ping and cost_devi for leastLoPi.
++message BalancerOutboundCost {
++  string outbound_tag = 1;
++  optional double cost = 2;
++  optional double cost_ping = 3;
++  optional double cost_devi = 4;
++}
++
+ message BalancerMsg {
+   OverrideInfo override = 5;
+   PrincipleTargetInfo principle_target = 6;
++  // normalized strategy name of the running balancer
++  string strategy = 7;
++  repeated BalancerCostRule cost_rules = 8;
++  // candidates of the balancer selectors sorted by tag
++  repeated BalancerOutboundCost outbound_costs = 9;
+ }
+ 
+ message GetBalancerInfoRequest {
+diff -ruN -x .git a/app/router/config.go b/app/router/config.go
+--- a/app/router/config.go	2026-11-23 13:11:53.580472482 +0000
++++ b/app/router/config.go	2026-11-23 14:33:18.522462686 +0000
+@@ -140,6 +140,29 @@
+ 			fallbackTag: br.FallbackTag,
+ 			strategy:    leastLoadStrategy,
+ 		}, nil
++	case "leastlopi":
++		s := &StrategyLeastLoPiConfig{}
++		if br.StrategySettings != nil {
++			i, err := br.StrategySettings.GetInstance()
++			if err != nil {
++				return nil, err
++			}
++			var ok bool
++			s, ok = i.(*StrategyLeastLoPiConfig)
++			if !ok {
++				return nil, errors.New("not a StrategyLeastLoPiConfig").AtError()
++			}
++		}
++		leastLoPiStrategy, err := NewLeastLoPiStrategy(s)
++		if err != nil {
++			return nil, err
++		}
++		return &Balancer{
++			selectors:   br.OutboundSelector,
++			ohm:         ohm,
++			fallbackTag: br.FallbackTag,
++			strategy:    leastLoPiStrategy,
++		}, nil
+ 	case "random":
+ 		fallthrough
+ 	case "":
+diff -ruN -x .git a/app/router/config.pb.go b/app/router/config.pb.go
+--- a/app/router/config.pb.go	2026-11-23 13:11:53.580472482 +0000
++++ b/app/router/config.pb.go	2026-11-23 13:16:03.138473096 +0000
+@@ -132,7 +132,7 @@
+ 
+ // Deprecated: Use Config_DomainStrategy.Descriptor instead.
+ func (Config_DomainStrategy) EnumDescriptor() ([]byte, []int) {
+-	return file_app_router_config_proto_rawDescGZIP(), []int{10, 0}
++	return file_app_router_config_proto_rawDescGZIP(), []int{12, 0}
+ }
+ 
+ // Domain for routing decision.
+@@ -867,6 +867,150 @@
+ 	return 0
+ }
+ 
++type StrategyLeastLoPiWeight struct {
++	state         protoimpl.MessageState
++	sizeCache     protoimpl.SizeCache
++	unknownFields protoimpl.UnknownFields
++
++	Regexp bool   `protobuf:"varint,1,opt,name=regexp,proto3" json:"regexp,omitempty"`
++	Match  string `protobuf:"bytes,2,opt,name=match,proto3" json:"match,omitempty"`
++	// weight of the average RTT, 1 when not set
++	CostPing *float64 `protobuf:"fixed64,3,opt,name=cost_ping,json=costPing,proto3,oneof" json:"cost_ping,omitempty"`
++	// weight of the RTT deviation, 1 when not set
++	CostDevi *float64 `protobuf:"fixed64,4,opt,name=cost_devi,json=costDevi,proto3,oneof" json:"cost_devi,omitempty"`
++}
++
++func (x *StrategyLeastLoPiWeight) Reset() {
++	*x = StrategyLeastLoPiWeight{}
++	mi := &file_app_router_config_proto_msgTypes[10]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *StrategyLeastLoPiWeight) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*StrategyLeastLoPiWeight) ProtoMessage() {}
++
++func (x *StrategyLeastLoPiWeight) ProtoReflect() protoreflect.Message {
++	mi := &file_app_router_config_proto_msgTypes[10]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use StrategyLeastLoPiWeight.ProtoReflect.Descriptor instead.
++func (*StrategyLeastLoPiWeight) Descriptor() ([]byte, []int) {
++	return file_app_router_config_proto_rawDescGZIP(), []int{10}
++}
++
++func (x *StrategyLeastLoPiWeight) GetRegexp() bool {
++	if x != nil {
++		return x.Regexp
++	}
++	return false
++}
++
++func (x *StrategyLeastLoPiWeight) GetMatch() string {
++	if x != nil {
++		return x.Match
++	}
++	return ""
++}
++
++func (x *StrategyLeastLoPiWeight) GetCostPing() float64 {
++	if x != nil && x.CostPing != nil {
++		return *x.CostPing
++	}
++	return 0
++}
++
++func (x *StrategyLeastLoPiWeight) GetCostDevi() float64 {
++	if x != nil && x.CostDevi != nil {
++		return *x.CostDevi
++	}
++	return 0
++}
++
++type StrategyLeastLoPiConfig struct {
++	state         protoimpl.MessageState
++	sizeCache     protoimpl.SizeCache
++	unknownFields protoimpl.UnknownFields
++
++	// weight settings, the first matched rule sets both weights
++	Costs []*StrategyLeastLoPiWeight `protobuf:"bytes,1,rep,name=costs,proto3" json:"costs,omitempty"`
++	// score baselines for selecting, int64 values of time.Duration
++	Baselines []int64 `protobuf:"varint,2,rep,packed,name=baselines,proto3" json:"baselines,omitempty"`
++	// expected nodes count to select
++	Expected int32 `protobuf:"varint,3,opt,name=expected,proto3" json:"expected,omitempty"`
++	// max acceptable rtt of the unweighted delay, filter away high delay nodes. default 0
++	MaxRTT int64 `protobuf:"varint,4,opt,name=maxRTT,proto3" json:"maxRTT,omitempty"`
++}
++
++func (x *StrategyLeastLoPiConfig) Reset() {
++	*x = StrategyLeastLoPiConfig{}
++	mi := &file_app_router_config_proto_msgTypes[11]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *StrategyLeastLoPiConfig) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*StrategyLeastLoPiConfig) ProtoMessage() {}
++
++func (x *StrategyLeastLoPiConfig) ProtoReflect() protoreflect.Message {
++	mi := &file_app_router_config_proto_msgTypes[11]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use StrategyLeastLoPiConfig.ProtoReflect.Descriptor instead.
++func (*StrategyLeastLoPiConfig) Descriptor() ([]byte, []int) {
++	return file_app_router_config_proto_rawDescGZIP(), []int{11}
++}
++
++func (x *StrategyLeastLoPiConfig) GetCosts() []*StrategyLeastLoPiWeight {
++	if x != nil {
++		return x.Costs
++	}
++	return nil
++}
++
++func (x *StrategyLeastLoPiConfig) GetBaselines() []int64 {
++	if x != nil {
++		return x.Baselines
++	}
++	return nil
++}
++
++func (x *StrategyLeastLoPiConfig) GetExpected() int32 {
++	if x != nil {
++		return x.Expected
++	}
++	return 0
++}
++
++func (x *StrategyLeastLoPiConfig) GetMaxRTT() int64 {
++	if x != nil {
++		return x.MaxRTT
++	}
++	return 0
++}
++
+ type Config struct {
+ 	state         protoimpl.MessageState
+ 	sizeCache     protoimpl.SizeCache
+@@ -879,7 +1023,7 @@
+ 
+ func (x *Config) Reset() {
+ 	*x = Config{}
+-	mi := &file_app_router_config_proto_msgTypes[10]
++	mi := &file_app_router_config_proto_msgTypes[12]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -891,7 +1035,7 @@
+ func (*Config) ProtoMessage() {}
+ 
+ func (x *Config) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_config_proto_msgTypes[10]
++	mi := &file_app_router_config_proto_msgTypes[12]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -904,7 +1048,7 @@
+ 
+ // Deprecated: Use Config.ProtoReflect.Descriptor instead.
+ func (*Config) Descriptor() ([]byte, []int) {
+-	return file_app_router_config_proto_rawDescGZIP(), []int{10}
++	return file_app_router_config_proto_rawDescGZIP(), []int{12}
+ }
+ 
+ func (x *Config) GetDomainStrategy() Config_DomainStrategy {
+@@ -943,7 +1087,7 @@
+ 
+ func (x *Domain_Attribute) Reset() {
+ 	*x = Domain_Attribute{}
+-	mi := &file_app_router_config_proto_msgTypes[11]
++	mi := &file_app_router_config_proto_msgTypes[13]
+ 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 	ms.StoreMessageInfo(mi)
+ }
+@@ -955,7 +1099,7 @@
+ func (*Domain_Attribute) ProtoMessage() {}
+ 
+ func (x *Domain_Attribute) ProtoReflect() protoreflect.Message {
+-	mi := &file_app_router_config_proto_msgTypes[11]
++	mi := &file_app_router_config_proto_msgTypes[13]
+ 	if x != nil {
+ 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+ 		if ms.LoadMessageInfo() == nil {
+@@ -1146,30 +1290,52 @@
+ 	0x6d, 0x61, 0x78, 0x52, 0x54, 0x54, 0x18, 0x05, 0x20, 0x01, 0x28, 0x03, 0x52, 0x06, 0x6d, 0x61,
+ 	0x78, 0x52, 0x54, 0x54, 0x12, 0x1c, 0x0a, 0x09, 0x74, 0x6f, 0x6c, 0x65, 0x72, 0x61, 0x6e, 0x63,
+ 	0x65, 0x18, 0x06, 0x20, 0x01, 0x28, 0x02, 0x52, 0x09, 0x74, 0x6f, 0x6c, 0x65, 0x72, 0x61, 0x6e,
+-	0x63, 0x65, 0x22, 0x9b, 0x02, 0x0a, 0x06, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x12, 0x4f, 0x0a,
+-	0x0f, 0x64, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x5f, 0x73, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79,
+-	0x18, 0x01, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x26, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
+-	0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x2e,
+-	0x44, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x52, 0x0e,
+-	0x64, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x12, 0x30,
+-	0x0a, 0x04, 0x72, 0x75, 0x6c, 0x65, 0x18, 0x02, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x1c, 0x2e, 0x78,
+-	0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x52,
+-	0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x04, 0x72, 0x75, 0x6c, 0x65,
+-	0x12, 0x45, 0x0a, 0x0e, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x69, 0x6e, 0x67, 0x5f, 0x72, 0x75,
+-	0x6c, 0x65, 0x18, 0x03, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x1e, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
+-	0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e,
+-	0x63, 0x69, 0x6e, 0x67, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x0d, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63,
+-	0x69, 0x6e, 0x67, 0x52, 0x75, 0x6c, 0x65, 0x22, 0x47, 0x0a, 0x0e, 0x44, 0x6f, 0x6d, 0x61, 0x69,
+-	0x6e, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x12, 0x08, 0x0a, 0x04, 0x41, 0x73, 0x49,
+-	0x73, 0x10, 0x00, 0x12, 0x09, 0x0a, 0x05, 0x55, 0x73, 0x65, 0x49, 0x70, 0x10, 0x01, 0x12, 0x10,
+-	0x0a, 0x0c, 0x49, 0x70, 0x49, 0x66, 0x4e, 0x6f, 0x6e, 0x4d, 0x61, 0x74, 0x63, 0x68, 0x10, 0x02,
+-	0x12, 0x0e, 0x0a, 0x0a, 0x49, 0x70, 0x4f, 0x6e, 0x44, 0x65, 0x6d, 0x61, 0x6e, 0x64, 0x10, 0x03,
+-	0x42, 0x4f, 0x0a, 0x13, 0x63, 0x6f, 0x6d, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
+-	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x50, 0x01, 0x5a, 0x24, 0x67, 0x69, 0x74, 0x68, 0x75,
+-	0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x78, 0x74, 0x6c, 0x73, 0x2f, 0x78, 0x72, 0x61, 0x79, 0x2d,
+-	0x63, 0x6f, 0x72, 0x65, 0x2f, 0x61, 0x70, 0x70, 0x2f, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0xaa,
+-	0x02, 0x0f, 0x58, 0x72, 0x61, 0x79, 0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65,
+-	0x72, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
++	0x63, 0x65, 0x22, 0xa7, 0x01, 0x0a, 0x17, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x4c,
++	0x65, 0x61, 0x73, 0x74, 0x4c, 0x6f, 0x50, 0x69, 0x57, 0x65, 0x69, 0x67, 0x68, 0x74, 0x12, 0x16,
++	0x0a, 0x06, 0x72, 0x65, 0x67, 0x65, 0x78, 0x70, 0x18, 0x01, 0x20, 0x01, 0x28, 0x08, 0x52, 0x06,
++	0x72, 0x65, 0x67, 0x65, 0x78, 0x70, 0x12, 0x14, 0x0a, 0x05, 0x6d, 0x61, 0x74, 0x63, 0x68, 0x18,
++	0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x6d, 0x61, 0x74, 0x63, 0x68, 0x12, 0x20, 0x0a, 0x09,
++	0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x18, 0x03, 0x20, 0x01, 0x28, 0x01, 0x48,
++	0x00, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x50, 0x69, 0x6e, 0x67, 0x88, 0x01, 0x01, 0x12, 0x20,
++	0x0a, 0x09, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x18, 0x04, 0x20, 0x01, 0x28,
++	0x01, 0x48, 0x01, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x44, 0x65, 0x76, 0x69, 0x88, 0x01, 0x01,
++	0x42, 0x0c, 0x0a, 0x0a, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x42, 0x0c,
++	0x0a, 0x0a, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x22, 0xab, 0x01, 0x0a,
++	0x17, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x4c, 0x65, 0x61, 0x73, 0x74, 0x4c, 0x6f,
++	0x50, 0x69, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x12, 0x3e, 0x0a, 0x05, 0x63, 0x6f, 0x73, 0x74,
++	0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x28, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
++	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65,
++	0x67, 0x79, 0x4c, 0x65, 0x61, 0x73, 0x74, 0x4c, 0x6f, 0x50, 0x69, 0x57, 0x65, 0x69, 0x67, 0x68,
++	0x74, 0x52, 0x05, 0x63, 0x6f, 0x73, 0x74, 0x73, 0x12, 0x1c, 0x0a, 0x09, 0x62, 0x61, 0x73, 0x65,
++	0x6c, 0x69, 0x6e, 0x65, 0x73, 0x18, 0x02, 0x20, 0x03, 0x28, 0x03, 0x52, 0x09, 0x62, 0x61, 0x73,
++	0x65, 0x6c, 0x69, 0x6e, 0x65, 0x73, 0x12, 0x1a, 0x0a, 0x08, 0x65, 0x78, 0x70, 0x65, 0x63, 0x74,
++	0x65, 0x64, 0x18, 0x03, 0x20, 0x01, 0x28, 0x05, 0x52, 0x08, 0x65, 0x78, 0x70, 0x65, 0x63, 0x74,
++	0x65, 0x64, 0x12, 0x16, 0x0a, 0x06, 0x6d, 0x61, 0x78, 0x52, 0x54, 0x54, 0x18, 0x04, 0x20, 0x01,
++	0x28, 0x03, 0x52, 0x06, 0x6d, 0x61, 0x78, 0x52, 0x54, 0x54, 0x22, 0x9b, 0x02, 0x0a, 0x06, 0x43,
++	0x6f, 0x6e, 0x66, 0x69, 0x67, 0x12, 0x4f, 0x0a, 0x0f, 0x64, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x5f,
++	0x73, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0e, 0x32, 0x26,
++	0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72,
++	0x2e, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x2e, 0x44, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x53, 0x74,
++	0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x52, 0x0e, 0x64, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x53, 0x74,
++	0x72, 0x61, 0x74, 0x65, 0x67, 0x79, 0x12, 0x30, 0x0a, 0x04, 0x72, 0x75, 0x6c, 0x65, 0x18, 0x02,
++	0x20, 0x03, 0x28, 0x0b, 0x32, 0x1c, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e,
++	0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x52, 0x75,
++	0x6c, 0x65, 0x52, 0x04, 0x72, 0x75, 0x6c, 0x65, 0x12, 0x45, 0x0a, 0x0e, 0x62, 0x61, 0x6c, 0x61,
++	0x6e, 0x63, 0x69, 0x6e, 0x67, 0x5f, 0x72, 0x75, 0x6c, 0x65, 0x18, 0x03, 0x20, 0x03, 0x28, 0x0b,
++	0x32, 0x1e, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
++	0x65, 0x72, 0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x69, 0x6e, 0x67, 0x52, 0x75, 0x6c, 0x65,
++	0x52, 0x0d, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x69, 0x6e, 0x67, 0x52, 0x75, 0x6c, 0x65, 0x22,
++	0x47, 0x0a, 0x0e, 0x44, 0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x53, 0x74, 0x72, 0x61, 0x74, 0x65, 0x67,
++	0x79, 0x12, 0x08, 0x0a, 0x04, 0x41, 0x73, 0x49, 0x73, 0x10, 0x00, 0x12, 0x09, 0x0a, 0x05, 0x55,
++	0x73, 0x65, 0x49, 0x70, 0x10, 0x01, 0x12, 0x10, 0x0a, 0x0c, 0x49, 0x70, 0x49, 0x66, 0x4e, 0x6f,
++	0x6e, 0x4d, 0x61, 0x74, 0x63, 0x68, 0x10, 0x02, 0x12, 0x0e, 0x0a, 0x0a, 0x49, 0x70, 0x4f, 0x6e,
++	0x44, 0x65, 0x6d, 0x61, 0x6e, 0x64, 0x10, 0x03, 0x42, 0x4f, 0x0a, 0x13, 0x63, 0x6f, 0x6d, 0x2e,
++	0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x50,
++	0x01, 0x5a, 0x24, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x78, 0x74,
++	0x6c, 0x73, 0x2f, 0x78, 0x72, 0x61, 0x79, 0x2d, 0x63, 0x6f, 0x72, 0x65, 0x2f, 0x61, 0x70, 0x70,
++	0x2f, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0xaa, 0x02, 0x0f, 0x58, 0x72, 0x61, 0x79, 0x2e, 0x41,
++	0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f,
++	0x33,
+ }
+ 
+ var (
+@@ -1185,7 +1351,7 @@
+ }
+ 
+ var file_app_router_config_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+-var file_app_router_config_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
++var file_app_router_config_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+ var file_app_router_config_proto_goTypes = []any{
+ 	(Domain_Type)(0),                // 0: xray.app.router.Domain.Type
+ 	(Config_DomainStrategy)(0),      // 1: xray.app.router.Config.DomainStrategy
+@@ -1199,37 +1365,40 @@
+ 	(*BalancingRule)(nil),           // 9: xray.app.router.BalancingRule
+ 	(*StrategyWeight)(nil),          // 10: xray.app.router.StrategyWeight
+ 	(*StrategyLeastLoadConfig)(nil), // 11: xray.app.router.StrategyLeastLoadConfig
+-	(*Config)(nil),                  // 12: xray.app.router.Config
+-	(*Domain_Attribute)(nil),        // 13: xray.app.router.Domain.Attribute
+-	nil,                             // 14: xray.app.router.RoutingRule.AttributesEntry
+-	(*net.PortList)(nil),            // 15: xray.common.net.PortList
+-	(net.Network)(0),                // 16: xray.common.net.Network
+-	(*serial.TypedMessage)(nil),     // 17: xray.common.serial.TypedMessage
++	(*StrategyLeastLoPiWeight)(nil), // 12: xray.app.router.StrategyLeastLoPiWeight
++	(*StrategyLeastLoPiConfig)(nil), // 13: xray.app.router.StrategyLeastLoPiConfig
++	(*Config)(nil),                  // 14: xray.app.router.Config
++	(*Domain_Attribute)(nil),        // 15: xray.app.router.Domain.Attribute
++	nil,                             // 16: xray.app.router.RoutingRule.AttributesEntry
++	(*net.PortList)(nil),            // 17: xray.common.net.PortList
++	(net.Network)(0),                // 18: xray.common.net.Network
++	(*serial.TypedMessage)(nil),     // 19: xray.common.serial.TypedMessage
+ }
+ var file_app_router_config_proto_depIdxs = []int32{
+ 	0,  // 0: xray.app.router.Domain.type:type_name -> xray.app.router.Domain.Type
+-	13, // 1: xray.app.router.Domain.attribute:type_name -> xray.app.router.Domain.Attribute
++	15, // 1: xray.app.router.Domain.attribute:type_name -> xray.app.router.Domain.Attribute
+ 	3,  // 2: xray.app.router.GeoIP.cidr:type_name -> xray.app.router.CIDR
+ 	4,  // 3: xray.app.router.GeoIPList.entry:type_name -> xray.app.router.GeoIP
+ 	2,  // 4: xray.app.router.GeoSite.domain:type_name -> xray.app.router.Domain
+ 	6,  // 5: xray.app.router.GeoSiteList.entry:type_name -> xray.app.router.GeoSite
+ 	2,  // 6: xray.app.router.RoutingRule.domain:type_name -> xray.app.router.Domain
+ 	4,  // 7: xray.app.router.RoutingRule.geoip:type_name -> xray.app.router.GeoIP
+-	15, // 8: xray.app.router.RoutingRule.port_list:type_name -> xray.common.net.PortList
+-	16, // 9: xray.app.router.RoutingRule.networks:type_name -> xray.common.net.Network
++	17, // 8: xray.app.router.RoutingRule.port_list:type_name -> xray.common.net.PortList
++	18, // 9: xray.app.router.RoutingRule.networks:type_name -> xray.common.net.Network
+ 	4,  // 10: xray.app.router.RoutingRule.source_geoip:type_name -> xray.app.router.GeoIP
+-	15, // 11: xray.app.router.RoutingRule.source_port_list:type_name -> xray.common.net.PortList
+-	14, // 12: xray.app.router.RoutingRule.attributes:type_name -> xray.app.router.RoutingRule.AttributesEntry
+-	17, // 13: xray.app.router.BalancingRule.strategy_settings:type_name -> xray.common.serial.TypedMessage
++	17, // 11: xray.app.router.RoutingRule.source_port_list:type_name -> xray.common.net.PortList
++	16, // 12: xray.app.router.RoutingRule.attributes:type_name -> xray.app.router.RoutingRule.AttributesEntry
++	19, // 13: xray.app.router.BalancingRule.strategy_settings:type_name -> xray.common.serial.TypedMessage
+ 	10, // 14: xray.app.router.StrategyLeastLoadConfig.costs:type_name -> xray.app.router.StrategyWeight
+-	1,  // 15: xray.app.router.Config.domain_strategy:type_name -> xray.app.router.Config.DomainStrategy
+-	8,  // 16: xray.app.router.Config.rule:type_name -> xray.app.router.RoutingRule
+-	9,  // 17: xray.app.router.Config.balancing_rule:type_name -> xray.app.router.BalancingRule
+-	18, // [18:18] is the sub-list for method output_type
+-	18, // [18:18] is the sub-list for method input_type
+-	18, // [18:18] is the sub-list for extension type_name
+-	18, // [18:18] is the sub-list for extension extendee
+-	0,  // [0:18] is the sub-list for field type_name
++	12, // 15: xray.app.router.StrategyLeastLoPiConfig.costs:type_name -> xray.app.router.StrategyLeastLoPiWeight
++	1,  // 16: xray.app.router.Config.domain_strategy:type_name -> xray.app.router.Config.DomainStrategy
++	8,  // 17: xray.app.router.Config.rule:type_name -> xray.app.router.RoutingRule
++	9,  // 18: xray.app.router.Config.balancing_rule:type_name -> xray.app.router.BalancingRule
++	19, // [19:19] is the sub-list for method output_type
++	19, // [19:19] is the sub-list for method input_type
++	19, // [19:19] is the sub-list for extension type_name
++	19, // [19:19] is the sub-list for extension extendee
++	0,  // [0:19] is the sub-list for field type_name
+ }
+ 
+ func init() { file_app_router_config_proto_init() }
+@@ -1241,7 +1410,8 @@
+ 		(*RoutingRule_Tag)(nil),
+ 		(*RoutingRule_BalancingTag)(nil),
+ 	}
+-	file_app_router_config_proto_msgTypes[11].OneofWrappers = []any{
++	file_app_router_config_proto_msgTypes[10].OneofWrappers = []any{}
++	file_app_router_config_proto_msgTypes[13].OneofWrappers = []any{
+ 		(*Domain_Attribute_BoolValue)(nil),
+ 		(*Domain_Attribute_IntValue)(nil),
+ 	}
+@@ -1251,7 +1421,7 @@
+ 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
+ 			RawDescriptor: file_app_router_config_proto_rawDesc,
+ 			NumEnums:      2,
+-			NumMessages:   13,
++			NumMessages:   15,
+ 			NumExtensions: 0,
+ 			NumServices:   0,
+ 		},
+diff -ruN -x .git a/app/router/config.proto b/app/router/config.proto
+--- a/app/router/config.proto	2026-11-23 13:11:53.580472482 +0000
++++ b/app/router/config.proto	2026-11-23 13:13:26.154704646 +0000
+@@ -139,6 +139,26 @@
+   float tolerance = 6;
+ }
+ 
++message StrategyLeastLoPiWeight {
++  bool regexp = 1;
++  string match = 2;
++  // weight of the average RTT, 1 when not set
++  optional double cost_ping = 3;
++  // weight of the RTT deviation, 1 when not set
++  optional double cost_devi = 4;
++}
++
++message StrategyLeastLoPiConfig {
++  // weight settings, the first matched rule sets both weights
++  repeated StrategyLeastLoPiWeight costs = 1;
++  // score baselines for selecting, int64 values of time.Duration
++  repeated int64 baselines = 2;
++  // expected nodes count to select
++  int32 expected = 3;
++  // max acceptable rtt of the unweighted delay, filter away high delay nodes. default 0
++  int64 maxRTT = 4;
++}
++
+ message Config {
+   enum DomainStrategy {
+     // Use domain as is.
+diff -ruN -x .git a/app/router/config_test.go b/app/router/config_test.go
+--- a/app/router/config_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/config_test.go	2026-11-23 15:03:57.192099587 +0000
+@@ -0,0 +1,83 @@
++package router
++
++import (
++	"testing"
++
++	"github.com/xtls/xray-core/common/serial"
++	"google.golang.org/protobuf/proto"
++)
++
++func TestBalancingRule_Build(t *testing.T) {
++	type fields struct {
++		Tag              string
++		OutboundSelector []string
++		Strategy         string
++		StrategySettings *serial.TypedMessage
++		FallbackTag      string
++	}
++	tests := []struct {
++		name         string
++		fields       fields
++		wantSettings *StrategyLeastLoPiConfig
++		wantErr      bool
++	}{
++		{
++			name: "leastlopi without strategy settings takes the defaults",
++			fields: fields{
++				Tag:              "vl-w",
++				OutboundSelector: []string{"a"},
++				Strategy:         "leastlopi",
++				FallbackTag:      "blocked",
++			},
++			wantSettings: &StrategyLeastLoPiConfig{},
++		},
++		{
++			name: "leastLoPi with strategy settings",
++			fields: fields{
++				Tag:              "vl-w",
++				OutboundSelector: []string{"a"},
++				Strategy:         "leastLoPi",
++				StrategySettings: serial.ToTypedMessage(&StrategyLeastLoPiConfig{Expected: 2}),
++			},
++			wantSettings: &StrategyLeastLoPiConfig{Expected: 2},
++		},
++		{
++			name: "leastlopi with settings of another strategy",
++			fields: fields{
++				Tag:              "vl-w",
++				OutboundSelector: []string{"a"},
++				Strategy:         "leastlopi",
++				StrategySettings: serial.ToTypedMessage(&StrategyLeastLoadConfig{}),
++			},
++			wantErr: true,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			br := &BalancingRule{
++				Tag:              tt.fields.Tag,
++				OutboundSelector: tt.fields.OutboundSelector,
++				Strategy:         tt.fields.Strategy,
++				StrategySettings: tt.fields.StrategySettings,
++				FallbackTag:      tt.fields.FallbackTag,
++			}
++			got, err := br.Build(nil, nil)
++			if (err != nil) != tt.wantErr {
++				t.Fatalf("BalancingRule.Build() error = %v, wantErr %v", err, tt.wantErr)
++			}
++			if tt.wantErr {
++				return
++			}
++			strategy, ok := got.strategy.(*LeastLoPiStrategy)
++			if !ok {
++				t.Fatalf("BalancingRule.Build() strategy = %T, want *LeastLoPiStrategy", got.strategy)
++			}
++			if !proto.Equal(strategy.settings, tt.wantSettings) {
++				t.Errorf("BalancingRule.Build() settings = %v, want %v", strategy.settings, tt.wantSettings)
++			}
++			if got.fallbackTag != tt.fields.FallbackTag {
++				t.Errorf("BalancingRule.Build() fallbackTag = %q, want %q", got.fallbackTag, tt.fields.FallbackTag)
++			}
++		})
++	}
++}
+diff -ruN -x .git a/app/router/strategy_leastlopi.go b/app/router/strategy_leastlopi.go
+--- a/app/router/strategy_leastlopi.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/strategy_leastlopi.go	2026-11-23 14:46:28.730077241 +0000
+@@ -0,0 +1,328 @@
++package router
++
++import (
++	"context"
++	"math"
++	"regexp"
++	"sort"
++	"strconv"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/xtls/xray-core/app/observatory"
++	"github.com/xtls/xray-core/common/dice"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/features/extension"
++	"github.com/xtls/xray-core/features/routing"
++)
++
++// LeastLoPiStrategy picks outbounds by the weighted sum of the average RTT and its
++// deviation: score = average * sqrt(costPing) + deviation * sqrt(costDevi)
++type LeastLoPiStrategy struct {
++	settings *StrategyLeastLoPiConfig
++	rules    []*leastLoPiRule
++
++	mu    sync.Mutex
++	cache map[string]leastLoPiCost
++
++	observerMu sync.Mutex
++	observer   extension.Observatory
++
++	ctx context.Context
++}
++
++// leastLoPiRule is a compiled weight rule, a nil weight is not configured
++type leastLoPiRule struct {
++	match    string
++	re       *regexp.Regexp
++	costPing *float64
++	costDevi *float64
++}
++
++// leastLoPiCost holds the effective weights of an outbound
++type leastLoPiCost struct {
++	ping float64
++	devi float64
++}
++
++// lopiNode is a snapshot of an outbound status with its score in nanoseconds
++type lopiNode struct {
++	Tag       string
++	CountAll  int64
++	CountFail int64
++	Average   float64
++	Score     float64
++}
++
++// NewLeastLoPiStrategy creates a new LeastLoPiStrategy with settings
++func NewLeastLoPiStrategy(settings *StrategyLeastLoPiConfig) (*LeastLoPiStrategy, error) {
++	rules, err := compileLeastLoPiRules(settings.GetCosts())
++	if err != nil {
++		return nil, err
++	}
++	return &LeastLoPiStrategy{
++		settings: settings,
++		rules:    rules,
++		cache:    make(map[string]leastLoPiCost),
++	}, nil
++}
++
++// Validate checks the weight rules of the settings
++func (c *StrategyLeastLoPiConfig) Validate() error {
++	_, err := compileLeastLoPiRules(c.GetCosts())
++	return err
++}
++
++func compileLeastLoPiRules(costs []*StrategyLeastLoPiWeight) ([]*leastLoPiRule, error) {
++	rules := make([]*leastLoPiRule, 0, len(costs))
++	for i, w := range costs {
++		if w.GetMatch() == "" {
++			return nil, errors.New("leastLoPi: costs[", i, "]: empty match")
++		}
++		rule := &leastLoPiRule{match: w.Match, costPing: w.CostPing, costDevi: w.CostDevi}
++		if w.Regexp {
++			re, err := regexp.Compile(w.Match)
++			if err != nil {
++				return nil, errors.New("leastLoPi: costs[", i, "]: invalid regexp ", strconv.Quote(w.Match)).Base(err)
++			}
++			rule.re = re
++		}
++		if problem := leastLoPiCostProblem(w.CostPing); problem != "" {
++			return nil, errors.New("leastLoPi: costs[", i, "]: costPing ", problem)
++		}
++		if problem := leastLoPiCostProblem(w.CostDevi); problem != "" {
++			return nil, errors.New("leastLoPi: costs[", i, "]: costDevi ", problem)
++		}
++		if w.CostPing != nil && w.CostDevi != nil && *w.CostPing == 0 && *w.CostDevi == 0 {
++			return nil, errors.New("leastLoPi: costs[", i, "]: costPing and costDevi are both 0")
++		}
++		rules = append(rules, rule)
++	}
++	return rules, nil
++}
++
++// leastLoPiCostProblem describes why a configured weight is invalid, "" if it is valid
++func leastLoPiCostProblem(cost *float64) string {
++	switch {
++	case cost == nil:
++		return ""
++	case math.IsNaN(*cost) || math.IsInf(*cost, 0):
++		return "must be finite"
++	case *cost < 0:
++		return "must not be negative"
++	}
++	return ""
++}
++
++func (s *LeastLoPiStrategy) InjectContext(ctx context.Context) {
++	s.ctx = ctx
++}
++
++// GetPrincipleTarget implements BalancingPrincipleTarget
++func (s *LeastLoPiStrategy) GetPrincipleTarget(candidates []string) []string {
++	var ret []string
++	for _, v := range s.pickOutbounds(candidates) {
++		ret = append(ret, v.Tag)
++	}
++	return ret
++}
++
++// PickOutbound implements BalancingStrategy
++func (s *LeastLoPiStrategy) PickOutbound(candidates []string) string {
++	selects := s.pickOutbounds(candidates)
++	count := len(selects)
++	if count == 0 {
++		// goes to fallbackTag
++		return ""
++	}
++	return selects[dice.Roll(count)].Tag
++}
++
++func (s *LeastLoPiStrategy) pickOutbounds(candidates []string) []*lopiNode {
++	return s.selectLeastLoPi(s.getNodes(candidates))
++}
++
++// selectLeastLoPi selects nodes by Expected and Baselines like selectLeastLoad
++// of LeastLoadStrategy, comparing the baselines with the scores
++func (s *LeastLoPiStrategy) selectLeastLoPi(nodes []*lopiNode) []*lopiNode {
++	if len(nodes) == 0 {
++		errors.LogInfo(s.ctx, "least load pi: no qualified outbound")
++		return nil
++	}
++	expected := int(s.settings.GetExpected())
++	availableCount := len(nodes)
++	if expected > availableCount {
++		return nodes
++	}
++	if expected <= 0 {
++		expected = 1
++	}
++	baselines := s.settings.GetBaselines()
++	if len(baselines) == 0 {
++		return nodes[:expected]
++	}
++	count := 0
++	// go through all base line until find expected selects
++	for _, b := range baselines {
++		baseline := float64(b)
++		for i := count; i < availableCount; i++ {
++			if nodes[i].Score >= baseline {
++				break
++			}
++			count = i + 1
++		}
++		// don't continue if find expected selects
++		if count >= expected {
++			errors.LogDebug(s.ctx, "least load pi: applied baseline: ", time.Duration(b))
++			break
++		}
++	}
++	if s.settings.GetExpected() > 0 && count < expected {
++		count = expected
++	}
++	return nodes[:count]
++}
++
++// getObserver looks up the registered observatory without changing the state of the
++// core; a missing observatory is not cached, so the next call looks it up again
++func (s *LeastLoPiStrategy) getObserver() extension.Observatory {
++	s.observerMu.Lock()
++	defer s.observerMu.Unlock()
++	if s.observer != nil {
++		return s.observer
++	}
++	if s.ctx == nil {
++		return nil
++	}
++	instance := core.FromContext(s.ctx)
++	if instance == nil {
++		return nil
++	}
++	feature := instance.GetFeature(extension.ObservatoryType())
++	if observer, ok := feature.(extension.Observatory); ok {
++		s.observer = observer
++	}
++	return s.observer
++}
++
++func (s *LeastLoPiStrategy) getNodes(candidates []string) []*lopiNode {
++	observer := s.getObserver()
++	if observer == nil {
++		errors.LogInfo(s.ctx, "least load pi: no observatory")
++		return nil
++	}
++	observeResult, err := observer.GetObservation(s.ctx)
++	if err != nil {
++		errors.LogInfoInner(s.ctx, err, "cannot get observation")
++		return nil
++	}
++	results, ok := observeResult.(*observatory.ObservationResult)
++	if !ok {
++		errors.LogInfo(s.ctx, "least load pi: unexpected observation result")
++		return nil
++	}
++	maxRTT := time.Duration(s.settings.GetMaxRTT())
++	outbounds := outboundList(candidates)
++	var ret []*lopiNode
++	for _, v := range results.Status {
++		if !(v.Alive && (v.Delay < maxRTT.Milliseconds() || maxRTT == 0) && outbounds.contains(v.OutboundTag)) {
++			continue
++		}
++		average := float64(v.Delay) * float64(time.Millisecond)
++		deviation := 0.0
++		record := &lopiNode{Tag: v.OutboundTag}
++		if hp := v.HealthPing; hp != nil {
++			average = float64(hp.Average)
++			deviation = float64(hp.Deviation)
++			record.CountAll = hp.All
++			record.CountFail = hp.Fail
++		}
++		record.Average = average
++		record.Score = s.getCost(v.OutboundTag).score(average, deviation)
++		ret = append(ret, record)
++	}
++	leastLoPiSort(ret)
++	return ret
++}
++
++// getCost returns the weights of the first matched rule, 1 for a weight not configured
++func (s *LeastLoPiStrategy) getCost(tag string) leastLoPiCost {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if cost, ok := s.cache[tag]; ok {
++		return cost
++	}
++	cost := leastLoPiCost{ping: 1, devi: 1}
++	for _, rule := range s.rules {
++		if !rule.matches(tag) {
++			continue
++		}
++		if rule.costPing != nil {
++			cost.ping = *rule.costPing
++		}
++		if rule.costDevi != nil {
++			cost.devi = *rule.costDevi
++		}
++		break
++	}
++	s.cache[tag] = cost
++	return cost
++}
++
++func (r *leastLoPiRule) matches(tag string) bool {
++	if r.re != nil {
++		return r.re.MatchString(tag)
++	}
++	return strings.Contains(tag, r.match)
++}
++
++func (c leastLoPiCost) score(average, deviation float64) float64 {
++	return average*math.Sqrt(c.ping) + deviation*math.Sqrt(c.devi)
++}
++
++func leastLoPiSort(nodes []*lopiNode) {
++	sort.Slice(nodes, func(i, j int) bool {
++		left := nodes[i]
++		right := nodes[j]
++		if left.Score != right.Score {
++			return left.Score < right.Score
++		}
++		if left.Average != right.Average {
++			return left.Average < right.Average
++		}
++		if left.CountFail != right.CountFail {
++			return left.CountFail < right.CountFail
++		}
++		if left.CountAll != right.CountAll {
++			return left.CountAll > right.CountAll
++		}
++		return left.Tag < right.Tag
++	})
++}
++
++// CostRules implements BalancingCostReporter
++func (s *LeastLoPiStrategy) CostRules() []routing.BalancerCostRule {
++	var ret []routing.BalancerCostRule
++	for _, rule := range s.rules {
++		ret = append(ret, routing.BalancerCostRule{
++			Match:    rule.match,
++			Regexp:   rule.re != nil,
++			CostPing: copyCost(rule.costPing),
++			CostDevi: copyCost(rule.costDevi),
++		})
++	}
++	return ret
++}
++
++// OutboundCosts implements BalancingCostReporter with the weights the ranking applies
++func (s *LeastLoPiStrategy) OutboundCosts(candidates []string) []routing.BalancerOutboundCost {
++	var ret []routing.BalancerOutboundCost
++	for _, tag := range sortedCandidates(candidates) {
++		cost := s.getCost(tag)
++		ping, devi := cost.ping, cost.devi
++		ret = append(ret, routing.BalancerOutboundCost{OutboundTag: tag, CostPing: &ping, CostDevi: &devi})
++	}
++	return ret
++}
+diff -ruN -x .git a/app/router/strategy_leastlopi_test.go b/app/router/strategy_leastlopi_test.go
+--- a/app/router/strategy_leastlopi_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/strategy_leastlopi_test.go	2026-11-23 15:03:57.192099587 +0000
+@@ -0,0 +1,841 @@
++package router
++
++import (
++	"context"
++	"math"
++	"reflect"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/observatory"
++	"github.com/xtls/xray-core/core"
++	"github.com/xtls/xray-core/features/extension"
++	"github.com/xtls/xray-core/features/outbound"
++	"google.golang.org/protobuf/proto"
++)
++
++// fakeObservatory returns a fixed observation
++type fakeObservatory struct {
++	status []*observatory.OutboundStatus
++}
++
++func (o *fakeObservatory) Type() interface{} { return extension.ObservatoryType() }
++
++func (o *fakeObservatory) Start() error { return nil }
++
++func (o *fakeObservatory) Close() error { return nil }
++
++func (o *fakeObservatory) GetObservation(context.Context) (proto.Message, error) {
++	return &observatory.ObservationResult{Status: o.status}, nil
++}
++
++// fakeHandlerSelector selects the tags with any of the selector prefixes
++type fakeHandlerSelector struct {
++	outbound.Manager
++	tags []string
++}
++
++func (s *fakeHandlerSelector) Select(selectors []string) []string {
++	var ret []string
++	for _, tag := range s.tags {
++		for _, selector := range selectors {
++			if strings.HasPrefix(tag, selector) {
++				ret = append(ret, tag)
++				break
++			}
++		}
++	}
++	return ret
++}
++
++func costOf(v float64) *float64 { return &v }
++
++func burstStatus(tag string, average, deviation time.Duration, all, fail int64) *observatory.OutboundStatus {
++	return &observatory.OutboundStatus{
++		OutboundTag: tag,
++		Alive:       all != fail,
++		Delay:       average.Milliseconds(),
++		HealthPing: &observatory.HealthPingMeasurementResult{
++			All:       all,
++			Fail:      fail,
++			Average:   int64(average),
++			Deviation: int64(deviation),
++			Min:       int64(average),
++			Max:       int64(average),
++		},
++	}
++}
++
++func plainStatus(tag string, alive bool, delay int64) *observatory.OutboundStatus {
++	return &observatory.OutboundStatus{OutboundTag: tag, Alive: alive, Delay: delay}
++}
++
++func newTestLeastLoPi(t *testing.T, settings *StrategyLeastLoPiConfig, status []*observatory.OutboundStatus) *LeastLoPiStrategy {
++	t.Helper()
++	s, err := NewLeastLoPiStrategy(settings)
++	if err != nil {
++		t.Fatalf("NewLeastLoPiStrategy() error = %v", err)
++	}
++	s.InjectContext(context.Background())
++	s.observer = &fakeObservatory{status: status}
++	return s
++}
++
++func TestLeastLoPiStrategy_GetPrincipleTarget(t *testing.T) {
++	ms := time.Millisecond
++	type fields struct {
++		settings *StrategyLeastLoPiConfig
++		status   []*observatory.OutboundStatus
++	}
++	type args struct {
++		candidates []string
++	}
++	tests := []struct {
++		name   string
++		fields fields
++		args   args
++		want   []string
++	}{
++		{
++			name: "weighted average beats a slow outbound without deviation",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected: 1,
++					Costs: []*StrategyLeastLoPiWeight{
++						{Regexp: true, Match: "^cg-vl-w$", CostPing: costOf(1), CostDevi: costOf(1)},
++						{Regexp: true, Match: "^mh-vl-w$", CostPing: costOf(16), CostDevi: costOf(1)},
++						{Regexp: true, Match: "^cb-vl-w$", CostPing: costOf(4096), CostDevi: costOf(4096)},
++					},
++				},
++				status: []*observatory.OutboundStatus{
++					burstStatus("cg-vl-w", 1500*ms, 0, 10, 0),
++					burstStatus("mh-vl-w", 150*ms, 45*ms, 10, 0),
++				},
++			},
++			args: args{candidates: []string{"cg-vl-w", "mh-vl-w"}},
++			want: []string{"mh-vl-w"},
++		},
++		{
++			name: "default weights add the average and the deviation",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{},
++				status: []*observatory.OutboundStatus{
++					burstStatus("a", 100*ms, 50*ms, 10, 0),
++					burstStatus("b", 120*ms, 10*ms, 10, 0),
++				},
++			},
++			args: args{candidates: []string{"a", "b"}},
++			want: []string{"b"},
++		},
++		{
++			name: "zero costPing keeps only the deviation",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Costs: []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(0)}},
++				},
++				status: []*observatory.OutboundStatus{
++					burstStatus("a", 1000*ms, 10*ms, 10, 0),
++					burstStatus("b", 100*ms, 50*ms, 10, 0),
++				},
++			},
++			args: args{candidates: []string{"a", "b"}},
++			want: []string{"a"},
++		},
++		{
++			name: "zero costDevi keeps only the average",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Costs: []*StrategyLeastLoPiWeight{{Match: "a", CostDevi: costOf(0)}},
++				},
++				status: []*observatory.OutboundStatus{
++					burstStatus("a", 100*ms, 900*ms, 10, 0),
++					burstStatus("b", 150*ms, 0, 10, 0),
++				},
++			},
++			args: args{candidates: []string{"a", "b"}},
++			want: []string{"a"},
++		},
++		{
++			name: "plain observatory has no deviation",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Costs: []*StrategyLeastLoPiWeight{{Match: "b", CostPing: costOf(4)}},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 300),
++					plainStatus("b", true, 200),
++				},
++			},
++			args: args{candidates: []string{"a", "b"}},
++			want: []string{"a"},
++		},
++		{
++			name: "zero costPing without HealthPing ties by the delay",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected: 2,
++					Costs:    []*StrategyLeastLoPiWeight{{Match: "-", CostPing: costOf(0)}},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a-1", true, 300),
++					plainStatus("b-1", true, 200),
++				},
++			},
++			args: args{candidates: []string{"a-1", "b-1"}},
++			want: []string{"b-1", "a-1"},
++		},
++		{
++			name: "dead, unmeasured and foreign outbounds take no part",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{Expected: 3},
++				status: []*observatory.OutboundStatus{
++					burstStatus("a", 100*ms, 0, 5, 5),
++					burstStatus("b", 200*ms, 0, 5, 0),
++					plainStatus("d", false, 99999999),
++					plainStatus("x", true, 10),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c", "d"}},
++			want: []string{"b"},
++		},
++		{
++			name: "maxRTT is strict and limits the unweighted delay",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected: 3,
++					MaxRTT:   int64(200 * ms),
++					Costs:    []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(100)}},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 199),
++					plainStatus("b", true, 200),
++					burstStatus("c", 250*ms, 0, 5, 0),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c"}},
++			want: []string{"a"},
++		},
++		{
++			name: "expected selects several best outbounds",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{Expected: 2},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 100),
++					plainStatus("b", true, 50),
++					plainStatus("c", true, 200),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c"}},
++			want: []string{"b", "a"},
++		},
++		{
++			name: "score equal to the baseline is not under it",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{Baselines: []int64{int64(100 * ms)}},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 100),
++					plainStatus("b", true, 50),
++				},
++			},
++			args: args{candidates: []string{"a", "b"}},
++			want: []string{"b"},
++		},
++		{
++			name: "baselines compare the score in the configured order",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected:  2,
++					Baselines: []int64{int64(100 * ms), int64(210 * ms)},
++					Costs:     []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(0.25)}},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 400),
++					plainStatus("b", true, 50),
++					plainStatus("c", true, 250),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c"}},
++			want: []string{"b", "a"},
++		},
++		{
++			name: "a heavy weight puts the score over the baseline despite a low average",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Baselines: []int64{int64(150 * ms)},
++					Costs:     []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(16)}},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 50),
++					plainStatus("b", true, 120),
++					plainStatus("e", true, 130),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "e"}},
++			want: []string{"b", "e"},
++		},
++		{
++			name: "a light weight puts the score under the baseline despite a high average",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Baselines: []int64{int64(150 * ms)},
++					Costs:     []*StrategyLeastLoPiWeight{{Match: "c", CostPing: costOf(0.0625)}},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("c", true, 400),
++					plainStatus("d", true, 90),
++					plainStatus("e", true, 95),
++					plainStatus("f", true, 300),
++				},
++			},
++			args: args{candidates: []string{"c", "d", "e", "f"}},
++			want: []string{"d", "e", "c"},
++		},
++		{
++			name: "a wide first baseline takes more outbounds than expected",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected:  1,
++					Baselines: []int64{int64(100 * ms), int64(300 * ms)},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 10),
++					plainStatus("b", true, 20),
++					plainStatus("c", true, 30),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c"}},
++			want: []string{"a", "b", "c"},
++		},
++		{
++			name: "a later baseline widens the pool up to its count",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected:  2,
++					Baselines: []int64{int64(10 * ms), int64(100 * ms)},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 5),
++					plainStatus("b", true, 50),
++					plainStatus("c", true, 60),
++					plainStatus("d", true, 150),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c", "d"}},
++			want: []string{"a", "b", "c"},
++		},
++		{
++			name: "baselines not in ascending order keep the configured order",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Baselines: []int64{int64(60 * ms), int64(20 * ms)},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 5),
++					plainStatus("b", true, 50),
++					plainStatus("c", true, 150),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c"}},
++			want: []string{"a", "b"},
++		},
++		{
++			name: "expected fills the pool when the baselines take fewer outbounds",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Expected:  3,
++					Baselines: []int64{int64(20 * ms)},
++				},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 5),
++					plainStatus("b", true, 50),
++					plainStatus("c", true, 150),
++					plainStatus("d", true, 250),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c", "d"}},
++			want: []string{"a", "b", "c"},
++		},
++		{
++			name: "no score under the baselines without expected gives an empty pool",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{Baselines: []int64{int64(10 * ms)}},
++				status:   []*observatory.OutboundStatus{plainStatus("a", true, 50)},
++			},
++			args: args{candidates: []string{"a"}},
++			want: nil,
++		},
++		{
++			name: "equal scores go by the average, failures, probes and tag",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{Expected: 5},
++				status: []*observatory.OutboundStatus{
++					burstStatus("e", 100*ms, 0, 10, 1),
++					burstStatus("d", 100*ms, 0, 10, 0),
++					burstStatus("c", 100*ms, 0, 20, 0),
++					burstStatus("b", 100*ms, 0, 20, 0),
++					burstStatus("a", 90*ms, 10*ms, 10, 0),
++				},
++			},
++			args: args{candidates: []string{"a", "b", "c", "d", "e"}},
++			want: []string{"a", "b", "c", "d", "e"},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			s := newTestLeastLoPi(t, tt.fields.settings, tt.fields.status)
++			if got := s.GetPrincipleTarget(tt.args.candidates); !reflect.DeepEqual(got, tt.want) {
++				t.Errorf("LeastLoPiStrategy.GetPrincipleTarget() = %v, want %v", got, tt.want)
++			}
++		})
++	}
++}
++
++func TestLeastLoPiStrategy_getNodes(t *testing.T) {
++	ms := time.Millisecond
++	type fields struct {
++		settings *StrategyLeastLoPiConfig
++		status   []*observatory.OutboundStatus
++	}
++	type args struct {
++		candidates []string
++	}
++	tests := []struct {
++		name   string
++		fields fields
++		args   args
++		want   []*lopiNode
++	}{
++		{
++			name: "scores in nanoseconds",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{
++					Costs: []*StrategyLeastLoPiWeight{
++						{Regexp: true, Match: "^cg-vl-w$", CostPing: costOf(1), CostDevi: costOf(1)},
++						{Regexp: true, Match: "^mh-vl-w$", CostPing: costOf(16), CostDevi: costOf(1)},
++					},
++				},
++				status: []*observatory.OutboundStatus{
++					burstStatus("cg-vl-w", 1500*ms, 0, 10, 0),
++					burstStatus("mh-vl-w", 150*ms, 45*ms, 10, 2),
++					plainStatus("pl", true, 300),
++				},
++			},
++			args: args{candidates: []string{"cg-vl-w", "mh-vl-w", "pl"}},
++			want: []*lopiNode{
++				{Tag: "pl", Average: float64(300 * ms), Score: float64(300 * ms)},
++				{Tag: "mh-vl-w", CountAll: 10, CountFail: 2, Average: float64(150 * ms), Score: float64(645 * ms)},
++				{Tag: "cg-vl-w", CountAll: 10, Average: float64(1500 * ms), Score: float64(1500 * ms)},
++			},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			s := newTestLeastLoPi(t, tt.fields.settings, tt.fields.status)
++			if got := s.getNodes(tt.args.candidates); !reflect.DeepEqual(got, tt.want) {
++				t.Errorf("LeastLoPiStrategy.getNodes() = %+v, want %+v", got, tt.want)
++			}
++		})
++	}
++}
++
++func TestLeastLoPiStrategy_PickOutbound(t *testing.T) {
++	type fields struct {
++		settings *StrategyLeastLoPiConfig
++		status   []*observatory.OutboundStatus
++	}
++	type args struct {
++		candidates []string
++	}
++	tests := []struct {
++		name      string
++		fields    fields
++		args      args
++		wantOneOf []string
++	}{
++		{
++			name:      "empty pool returns no tag",
++			fields:    fields{settings: &StrategyLeastLoPiConfig{}},
++			args:      args{candidates: []string{"a"}},
++			wantOneOf: []string{""},
++		},
++		{
++			name: "single candidate",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{},
++				status:   []*observatory.OutboundStatus{plainStatus("a", true, 50)},
++			},
++			args:      args{candidates: []string{"a"}},
++			wantOneOf: []string{"a"},
++		},
++		{
++			name: "several candidates are picked from the pool only",
++			fields: fields{
++				settings: &StrategyLeastLoPiConfig{Expected: 2},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a", true, 50),
++					plainStatus("b", true, 60),
++					plainStatus("c", true, 70),
++				},
++			},
++			args:      args{candidates: []string{"a", "b", "c"}},
++			wantOneOf: []string{"a", "b"},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			s := newTestLeastLoPi(t, tt.fields.settings, tt.fields.status)
++			picked := make(map[string]bool)
++			for i := 0; i < 100; i++ {
++				got := s.PickOutbound(tt.args.candidates)
++				found := false
++				for _, want := range tt.wantOneOf {
++					found = found || got == want
++				}
++				if !found {
++					t.Fatalf("LeastLoPiStrategy.PickOutbound() = %q, want one of %q", got, tt.wantOneOf)
++				}
++				picked[got] = true
++			}
++			for _, want := range tt.wantOneOf {
++				if !picked[want] {
++					t.Errorf("LeastLoPiStrategy.PickOutbound() never picked %q in 100 calls", want)
++				}
++			}
++		})
++	}
++}
++
++func TestBalancer_PickOutbound(t *testing.T) {
++	type fields struct {
++		status      []*observatory.OutboundStatus
++		tags        []string
++		fallbackTag string
++		override    string
++	}
++	tests := []struct {
++		name    string
++		fields  fields
++		want    string
++		wantErr bool
++	}{
++		{
++			name: "leastLoPi empty pool goes to fallbackTag",
++			fields: fields{
++				status:      []*observatory.OutboundStatus{plainStatus("a", false, 99999999)},
++				tags:        []string{"a"},
++				fallbackTag: "blocked",
++			},
++			want: "blocked",
++		},
++		{
++			name: "leastLoPi empty pool without fallbackTag is an error",
++			fields: fields{
++				tags: []string{"a"},
++			},
++			wantErr: true,
++		},
++		{
++			name: "override has priority over leastLoPi",
++			fields: fields{
++				status:      []*observatory.OutboundStatus{plainStatus("a", true, 50)},
++				tags:        []string{"a"},
++				fallbackTag: "blocked",
++				override:    "manual",
++			},
++			want: "manual",
++		},
++		{
++			name: "leastLoPi picks the alive candidate",
++			fields: fields{
++				status:      []*observatory.OutboundStatus{plainStatus("a", true, 50)},
++				tags:        []string{"a"},
++				fallbackTag: "blocked",
++			},
++			want: "a",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			b := &Balancer{
++				selectors:   []string{""},
++				strategy:    newTestLeastLoPi(t, &StrategyLeastLoPiConfig{}, tt.fields.status),
++				ohm:         &fakeHandlerSelector{tags: tt.fields.tags},
++				fallbackTag: tt.fields.fallbackTag,
++			}
++			if tt.fields.override != "" {
++				b.override.Put(tt.fields.override)
++			}
++			got, err := b.PickOutbound()
++			if (err != nil) != tt.wantErr {
++				t.Fatalf("Balancer.PickOutbound() error = %v, wantErr %v", err, tt.wantErr)
++			}
++			if got != tt.want {
++				t.Errorf("Balancer.PickOutbound() = %q, want %q", got, tt.want)
++			}
++		})
++	}
++}
++
++func TestStrategyLeastLoPiConfig_Validate(t *testing.T) {
++	type fields struct {
++		costs []*StrategyLeastLoPiWeight
++	}
++	tests := []struct {
++		name    string
++		fields  fields
++		wantErr string
++	}{
++		{name: "default weights", fields: fields{costs: []*StrategyLeastLoPiWeight{{Match: "a"}}}},
++		{name: "single zero costPing", fields: fields{costs: []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(0)}}}},
++		{name: "single zero costDevi", fields: fields{costs: []*StrategyLeastLoPiWeight{{Match: "a", CostDevi: costOf(0)}}}},
++		{
++			name:    "both explicit zeros",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(0), CostDevi: costOf(0)}}},
++			wantErr: "costPing and costDevi are both 0",
++		},
++		{
++			name:    "negative costPing",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(-1)}}},
++			wantErr: "costPing must not be negative",
++		},
++		{
++			name:    "NaN costDevi",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{{Match: "a", CostDevi: costOf(math.NaN())}}},
++			wantErr: "costDevi must be finite",
++		},
++		{
++			name:    "infinite costPing",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{{Match: "a", CostPing: costOf(math.Inf(1))}}},
++			wantErr: "costPing must be finite",
++		},
++		{
++			name:    "invalid regexp",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{{Match: "(", Regexp: true}}},
++			wantErr: "invalid regexp",
++		},
++		{
++			name:    "empty match",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{{CostPing: costOf(2)}}},
++			wantErr: "empty match",
++		},
++		{
++			name:    "nil rule",
++			fields:  fields{costs: []*StrategyLeastLoPiWeight{nil}},
++			wantErr: "empty match",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			c := &StrategyLeastLoPiConfig{Costs: tt.fields.costs}
++			err := c.Validate()
++			if tt.wantErr == "" {
++				if err != nil {
++					t.Fatalf("StrategyLeastLoPiConfig.Validate() error = %v", err)
++				}
++				return
++			}
++			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
++				t.Fatalf("StrategyLeastLoPiConfig.Validate() error = %v, want %q", err, tt.wantErr)
++			}
++		})
++	}
++}
++
++func TestLeastLoPiStrategy_getCost(t *testing.T) {
++	type args struct {
++		tag string
++	}
++	tests := []struct {
++		name string
++		args args
++		want leastLoPiCost
++	}{
++		{name: "first matched rule sets both weights", args: args{tag: "mh-vl"}, want: leastLoPiCost{ping: 4, devi: 1}},
++		{name: "regexp rule", args: args{tag: "mh-1"}, want: leastLoPiCost{ping: 1, devi: 9}},
++		{name: "explicit zero", args: args{tag: "zero-1"}, want: leastLoPiCost{ping: 0, devi: 1}},
++		{name: "no matched rule", args: args{tag: "other"}, want: leastLoPiCost{ping: 1, devi: 1}},
++	}
++	settings := &StrategyLeastLoPiConfig{
++		Costs: []*StrategyLeastLoPiWeight{
++			{Match: "vl", CostPing: costOf(4)},
++			{Regexp: true, Match: "^mh-", CostDevi: costOf(9)},
++			{Match: "zero", CostPing: costOf(0)},
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			s := newTestLeastLoPi(t, settings, nil)
++			if got := s.getCost(tt.args.tag); got != tt.want {
++				t.Errorf("LeastLoPiStrategy.getCost() = %+v, want %+v", got, tt.want)
++			}
++		})
++	}
++}
++
++func newCoreContext(t *testing.T) (context.Context, *core.Instance) {
++	t.Helper()
++	instance, err := core.New(&core.Config{})
++	if err != nil {
++		t.Fatalf("core.New() error = %v", err)
++	}
++	return context.WithValue(context.Background(), core.XrayKey(1), instance), instance
++}
++
++func newObservatoryLeastLoPi(t *testing.T, ctx context.Context) *LeastLoPiStrategy {
++	t.Helper()
++	s, err := NewLeastLoPiStrategy(&StrategyLeastLoPiConfig{Expected: 1})
++	if err != nil {
++		t.Fatalf("NewLeastLoPiStrategy() error = %v", err)
++	}
++	s.InjectContext(ctx)
++	return s
++}
++
++func runConcurrently(n int, f func(i int)) {
++	var wg sync.WaitGroup
++	start := make(chan struct{})
++	for i := 0; i < n; i++ {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			<-start
++			f(i)
++		}(i)
++	}
++	close(start)
++	wg.Wait()
++}
++
++func TestLeastLoPiStrategy_getObserver(t *testing.T) {
++	candidates := []string{"a-vl-w", "b-vl-w"}
++	type fields struct {
++		withCore        bool
++		strategies      int
++		registered      bool
++		registeredLater bool
++		upstream        bool
++	}
++	tests := []struct {
++		name         string
++		fields       fields
++		wantObserver bool
++		wantPool     []string
++	}{
++		{
++			name:         "parallel first calls with the observatory registered",
++			fields:       fields{withCore: true, strategies: 1, registered: true},
++			wantObserver: true,
++			wantPool:     []string{"a-vl-w"},
++		},
++		{
++			name:         "several strategies of one core with the observatory registered",
++			fields:       fields{withCore: true, strategies: 4, registered: true},
++			wantObserver: true,
++			wantPool:     []string{"a-vl-w"},
++		},
++		{
++			name:         "observatory registered after the first calls",
++			fields:       fields{withCore: true, strategies: 1, registeredLater: true},
++			wantObserver: true,
++			wantPool:     []string{"a-vl-w"},
++		},
++		{
++			name:         "several strategies of one core with the observatory registered later",
++			fields:       fields{withCore: true, strategies: 4, registeredLater: true},
++			wantObserver: true,
++			wantPool:     []string{"a-vl-w"},
++		},
++		{
++			name:         "several strategies of one core without observatory",
++			fields:       fields{withCore: true, strategies: 4},
++			wantObserver: false,
++			wantPool:     nil,
++		},
++		{
++			name:         "without observatory next to the first call of an upstream strategy",
++			fields:       fields{withCore: true, strategies: 4, upstream: true},
++			wantObserver: false,
++			wantPool:     nil,
++		},
++		{
++			name:         "no observatory gives an empty pool",
++			fields:       fields{withCore: true, strategies: 1},
++			wantObserver: false,
++			wantPool:     nil,
++		},
++		{
++			name:         "context without core gives an empty pool",
++			fields:       fields{strategies: 1},
++			wantObserver: false,
++			wantPool:     nil,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			ctx := context.Background()
++			var instance *core.Instance
++			if tt.fields.withCore {
++				ctx, instance = newCoreContext(t)
++			}
++			fake := &fakeObservatory{status: []*observatory.OutboundStatus{
++				burstStatus("a-vl-w", 100*time.Millisecond, 0, 3, 0),
++				burstStatus("b-vl-w", 200*time.Millisecond, 0, 3, 0),
++			}}
++			register := func() {
++				if err := instance.AddFeature(fake); err != nil {
++					t.Fatalf("AddFeature() error = %v", err)
++				}
++			}
++			if tt.fields.registered {
++				register()
++			}
++			strategies := make([]*LeastLoPiStrategy, tt.fields.strategies)
++			for i := range strategies {
++				strategies[i] = newObservatoryLeastLoPi(t, ctx)
++			}
++			callAll := func(wantPool []string) {
++				lopiCalls := len(strategies) * 8
++				upstreamCalls := 0
++				if tt.fields.upstream {
++					upstreamCalls = 1
++				}
++				runConcurrently(lopiCalls+upstreamCalls, func(i int) {
++					if i >= lopiCalls {
++						upstream := &RandomStrategy{FallbackTag: "fallback"}
++						upstream.InjectContext(ctx)
++						upstream.PickOutbound(candidates)
++						return
++					}
++					s := strategies[i%len(strategies)]
++					s.getObserver()
++					if got := s.GetPrincipleTarget(candidates); !reflect.DeepEqual(got, wantPool) {
++						t.Errorf("GetPrincipleTarget() = %v, want %v", got, wantPool)
++					}
++					want := ""
++					if len(wantPool) > 0 {
++						want = wantPool[0]
++					}
++					if got := s.PickOutbound(candidates); got != want {
++						t.Errorf("PickOutbound() = %q, want %q", got, want)
++					}
++				})
++			}
++			if tt.fields.registeredLater {
++				callAll(nil)
++				register()
++			}
++			callAll(tt.wantPool)
++			for _, s := range strategies {
++				got := s.getObserver()
++				if (got != nil) != tt.wantObserver {
++					t.Errorf("LeastLoPiStrategy.getObserver() = %v, want observer %v", got, tt.wantObserver)
++				}
++				if tt.wantObserver && got != extension.Observatory(fake) {
++					t.Errorf("LeastLoPiStrategy.getObserver() = %v, want the registered one", got)
++				}
++			}
++		})
++	}
++}
+diff -ruN -x .git a/features/routing/balancer_costs.go b/features/routing/balancer_costs.go
+--- a/features/routing/balancer_costs.go	1970-01-01 00:00:00.000000000 +0000
++++ b/features/routing/balancer_costs.go	2026-11-23 13:13:11.718356526 +0000
+@@ -0,0 +1,34 @@
++package routing
++
++// BalancerCostRule is a weight rule of a balancing strategy in the configured order.
++// Value is set for the leastLoad strategy, CostPing and CostDevi for leastLoPi,
++// a nil weight is not configured.
++type BalancerCostRule struct {
++	Match    string
++	Regexp   bool
++	Value    *float64
++	CostPing *float64
++	CostDevi *float64
++}
++
++// BalancerOutboundCost is the effective weight of a balancer candidate.
++type BalancerOutboundCost struct {
++	OutboundTag string
++	Cost        *float64
++	CostPing    *float64
++	CostDevi    *float64
++}
++
++// BalancerCosts describes the strategy of a running balancer and its weights.
++// OutboundsErr is set when the candidates could not be selected.
++type BalancerCosts struct {
++	Strategy     string
++	Rules        []BalancerCostRule
++	Outbounds    []BalancerOutboundCost
++	OutboundsErr error
++}
++
++// BalancerCostsReader reads the strategy and the weights of a balancer.
++type BalancerCostsReader interface {
++	GetBalancerCosts(tag string) (*BalancerCosts, error)
++}
+diff -ruN -x .git a/infra/conf/router.go b/infra/conf/router.go
+--- a/infra/conf/router.go	2026-11-23 13:11:53.640473929 +0000
++++ b/infra/conf/router.go	2026-11-23 13:13:26.170705032 +0000
+@@ -40,7 +40,7 @@
+ 	switch r.Strategy.Type {
+ 	case "":
+ 		r.Strategy.Type = strategyRandom
+-	case strategyRandom, strategyLeastLoad, strategyLeastPing, strategyRoundRobin:
++	case strategyRandom, strategyLeastLoad, strategyLeastPing, strategyRoundRobin, strategyLeastLoPi:
+ 	default:
+ 		return nil, errors.New("unknown balancing strategy: " + r.Strategy.Type)
+ 	}
+diff -ruN -x .git a/infra/conf/router_strategy.go b/infra/conf/router_strategy.go
+--- a/infra/conf/router_strategy.go	2026-11-23 13:11:53.640473929 +0000
++++ b/infra/conf/router_strategy.go	2026-11-23 13:13:26.170705032 +0000
+@@ -13,6 +13,7 @@
+ 	strategyLeastPing  string = "leastping"
+ 	strategyRoundRobin string = "roundrobin"
+ 	strategyLeastLoad  string = "leastload"
++	strategyLeastLoPi  string = "leastlopi"
+ )
+ 
+ var (
+@@ -21,6 +22,7 @@
+ 		strategyLeastPing:  func() interface{} { return new(strategyEmptyConfig) },
+ 		strategyRoundRobin: func() interface{} { return new(strategyEmptyConfig) },
+ 		strategyLeastLoad:  func() interface{} { return new(strategyLeastLoadConfig) },
++		strategyLeastLoPi:  func() interface{} { return new(strategyLeastLoPiConfig) },
+ 	}, "type", "settings")
+ )
+ 
+diff -ruN -x .git a/infra/conf/router_strategy_leastlopi.go b/infra/conf/router_strategy_leastlopi.go
+--- a/infra/conf/router_strategy_leastlopi.go	1970-01-01 00:00:00.000000000 +0000
++++ b/infra/conf/router_strategy_leastlopi.go	2026-11-23 13:13:11.738357008 +0000
+@@ -0,0 +1,78 @@
++package conf
++
++import (
++	"bytes"
++	"encoding/json"
++
++	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/errors"
++	"github.com/xtls/xray-core/infra/conf/cfgcommon/duration"
++	"google.golang.org/protobuf/proto"
++)
++
++// strategyLeastLoPiCost is a weight rule of the leastLoPi strategy, a nil weight is not set
++type strategyLeastLoPiCost struct {
++	Match    string   `json:"match"`
++	Regexp   bool     `json:"regexp"`
++	CostPing *float64 `json:"costPing"`
++	CostDevi *float64 `json:"costDevi"`
++}
++
++// UnmarshalJSON rejects unknown keys, such as value of the leastLoad rules
++func (c *strategyLeastLoPiCost) UnmarshalJSON(data []byte) error {
++	type plain strategyLeastLoPiCost
++	decoder := json.NewDecoder(bytes.NewReader(data))
++	decoder.DisallowUnknownFields()
++	var v plain
++	if err := decoder.Decode(&v); err != nil {
++		return errors.New("invalid leastLoPi cost rule ", string(data)).Base(err)
++	}
++	*c = strategyLeastLoPiCost(v)
++	return nil
++}
++
++type strategyLeastLoPiConfig struct {
++	// weight settings, the first matched rule sets both weights
++	Costs []*strategyLeastLoPiCost `json:"costs,omitempty"`
++	// score baselines
++	Baselines []duration.Duration `json:"baselines,omitempty"`
++	// expected nodes count to select
++	Expected int32 `json:"expected,omitempty"`
++	// max acceptable rtt of the unweighted delay. default 0
++	MaxRTT duration.Duration `json:"maxRTT,omitempty"`
++}
++
++// Build implements Buildable.
++func (v *strategyLeastLoPiConfig) Build() (proto.Message, error) {
++	config := &router.StrategyLeastLoPiConfig{}
++	for i, c := range v.Costs {
++		if c == nil {
++			return nil, errors.New("leastLoPi: costs[", i, "]: empty rule")
++		}
++		config.Costs = append(config.Costs, &router.StrategyLeastLoPiWeight{
++			Regexp:   c.Regexp,
++			Match:    c.Match,
++			CostPing: c.CostPing,
++			CostDevi: c.CostDevi,
++		})
++	}
++	if err := config.Validate(); err != nil {
++		return nil, err
++	}
++	config.Expected = v.Expected
++	if config.Expected < 0 {
++		config.Expected = 0
++	}
++	config.MaxRTT = int64(v.MaxRTT)
++	if config.MaxRTT < 0 {
++		config.MaxRTT = 0
++	}
++	config.Baselines = make([]int64, 0)
++	for _, b := range v.Baselines {
++		if b <= 0 {
++			continue
++		}
++		config.Baselines = append(config.Baselines, int64(b))
++	}
++	return config, nil
++}
+diff -ruN -x .git a/infra/conf/router_strategy_leastlopi_test.go b/infra/conf/router_strategy_leastlopi_test.go
+--- a/infra/conf/router_strategy_leastlopi_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/infra/conf/router_strategy_leastlopi_test.go	2026-11-23 13:16:32.703203890 +0000
+@@ -0,0 +1,132 @@
++package conf_test
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/router"
++	. "github.com/xtls/xray-core/infra/conf"
++	"google.golang.org/protobuf/proto"
++)
++
++func leastLoPiWeight(v float64) *float64 { return &v }
++
++func TestBalancingRule_Build(t *testing.T) {
++	tests := []struct {
++		name    string
++		input   string
++		want    *router.StrategyLeastLoPiConfig
++		wantErr string
++	}{
++		{
++			name: "task example",
++			input: `{"tag": "vl-w", "selector": ["cg-", "mh-", "cb-"], "strategy": {"type": "leastLoPi",
++				"settings": {"expected": 1, "costs": [
++				{"match": "^cg-vl-w$", "regexp": true, "costPing": 1, "costDevi": 1},
++				{"match": "^mh-vl-w$", "regexp": true, "costPing": 16, "costDevi": 1},
++				{"match": "^cb-vl-w$", "regexp": true, "costPing": 4096, "costDevi": 4096}]}}}`,
++			want: &router.StrategyLeastLoPiConfig{
++				Expected: 1,
++				Costs: []*router.StrategyLeastLoPiWeight{
++					{Regexp: true, Match: "^cg-vl-w$", CostPing: leastLoPiWeight(1), CostDevi: leastLoPiWeight(1)},
++					{Regexp: true, Match: "^mh-vl-w$", CostPing: leastLoPiWeight(16), CostDevi: leastLoPiWeight(1)},
++					{Regexp: true, Match: "^cb-vl-w$", CostPing: leastLoPiWeight(4096), CostDevi: leastLoPiWeight(4096)},
++				},
++			},
++		},
++		{
++			name: "missing weights stay missing and explicit zeros stay zeros",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastlopi", "settings": {"costs": [
++				{"match": "a", "costPing": 0}, {"match": "b", "costDevi": 0}, {"match": "c"}]}}}`,
++			want: &router.StrategyLeastLoPiConfig{
++				Costs: []*router.StrategyLeastLoPiWeight{
++					{Match: "a", CostPing: leastLoPiWeight(0)},
++					{Match: "b", CostDevi: leastLoPiWeight(0)},
++					{Match: "c"},
++				},
++			},
++		},
++		{
++			name: "baselines, expected and maxRTT",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {
++				"baselines": ["100ms", "0s", "300ms"], "expected": 2, "maxRTT": "500ms"}}}`,
++			want: &router.StrategyLeastLoPiConfig{
++				Baselines: []int64{int64(100 * time.Millisecond), int64(300 * time.Millisecond)},
++				Expected:  2,
++				MaxRTT:    int64(500 * time.Millisecond),
++			},
++		},
++		{
++			name: "negative expected and maxRTT are 0",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {
++				"expected": -1, "maxRTT": "-1s"}}}`,
++			want: &router.StrategyLeastLoPiConfig{},
++		},
++		{
++			name: "both zeros",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {"costs": [
++				{"match": "a", "costPing": 0, "costDevi": 0}]}}}`,
++			wantErr: "costPing and costDevi are both 0",
++		},
++		{
++			name: "negative weight",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {"costs": [
++				{"match": "a", "costDevi": -1}]}}}`,
++			wantErr: "costDevi must not be negative",
++		},
++		{
++			name: "invalid regexp",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {"costs": [
++				{"match": "(", "regexp": true}]}}}`,
++			wantErr: "invalid regexp",
++		},
++		{
++			name: "empty match",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {"costs": [
++				{"costPing": 1}]}}}`,
++			wantErr: "empty match",
++		},
++		{
++			name: "value of leastLoad is unknown",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {"costs": [
++				{"match": "a", "value": 2}]}}}`,
++			wantErr: `unknown field "value"`,
++		},
++		{
++			name: "null rule",
++			input: `{"tag": "b", "selector": ["a"], "strategy": {"type": "leastLoPi", "settings": {"costs": [
++				null]}}}`,
++			wantErr: "empty rule",
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			r := new(BalancingRule)
++			if err := json.Unmarshal([]byte(tt.input), r); err != nil {
++				t.Fatalf("json.Unmarshal() error = %v", err)
++			}
++			got, err := r.Build()
++			if tt.wantErr != "" {
++				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
++					t.Fatalf("BalancingRule.Build() error = %v, want %q", err, tt.wantErr)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("BalancingRule.Build() error = %v", err)
++			}
++			if got.Strategy != "leastlopi" {
++				t.Errorf("BalancingRule.Build() strategy = %q, want leastlopi", got.Strategy)
++			}
++			settings, err := got.StrategySettings.GetInstance()
++			if err != nil {
++				t.Fatalf("TypedMessage.GetInstance() error = %v", err)
++			}
++			if !proto.Equal(settings, tt.want) {
++				t.Errorf("BalancingRule.Build() settings = %v, want %v", settings, tt.want)
++			}
++		})
++	}
++}

@@ -3,10 +3,11 @@
 upstream:
   url: https://github.com/xtls/xray-core.git
   ref: v24.11.11
-  patch: 0
+  patch: 1
   patch_width: 3
 targets:
   - name: all
+    patches: [patches]
     downloads:
       - repo: v2fly/geoip
         tag: "202411070052"
