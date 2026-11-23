@@ -1,0 +1,476 @@
+{
+  "payload": {
+    "model": "offline-model",
+    "max_tokens": 1024,
+    "thinking": {
+      "type": "adaptive",
+      "budget_tokens": 512,
+      "display": "summarized"
+    },
+    "betas": ["fixture-beta"],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "# Environment\nYou have been invoked offline"
+          },
+          {
+            "type": "text",
+            "text": "Not the first real prompt"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "<system-reminder>ignored</system-reminder>"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "<system-reminder>also ignored</system-reminder>"
+          },
+          {
+            "type": "text",
+            "text": "The real synthetic prompt for regression."
+          }
+        ]
+      },
+      {
+        "role": "system",
+        "content": [],
+        "output_config": {
+          "effort": "high"
+        }
+      },
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "Retained system message"
+          }
+        ],
+        "output_config": {
+          "effort": "medium"
+        }
+      }
+    ],
+    "system": [
+      {
+        "type": "text",
+        "text": "x-anthropic-billing-header: cc_version=old;"
+      },
+      {
+        "type": "text",
+        "text": "Synthetic system instructions",
+        "cache_control": {}
+      },
+      {
+        "type": "text",
+        "text": "x-anthropic-billing-header: stale;"
+      }
+    ]
+  },
+  "headers": {
+    "uSeR-aGeNt": "old",
+    "x-client-request-id": "old",
+    "X-Client-Request-Id": "older",
+    "accept": "old",
+    "X-Stainless-OS": null,
+    "X-Nullable": null,
+    "X-Keep": "fixture"
+  },
+  "cases": [
+    {
+      "id": "claude-sonnet-5",
+      "result": {
+        "model": "offline-model",
+        "max_tokens": 1024,
+        "thinking": {
+          "type": "adaptive",
+          "budget_tokens": 512,
+          "display": "summarized"
+        },
+        "betas": [
+          "claude-code-20250219",
+          "oauth-2025-04-20",
+          "interleaved-thinking-2025-05-14",
+          "redact-thinking-2026-02-12",
+          "thinking-token-count-2026-05-13",
+          "context-management-2025-06-27",
+          "prompt-caching-scope-2026-01-05",
+          "mid-conversation-system-2026-04-07",
+          "effort-2025-11-24",
+          "extended-cache-ttl-2025-04-11"
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "# Environment\nYou have been invoked offline"
+              },
+              {
+                "type": "text",
+                "text": "Not the first real prompt"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "<system-reminder>ignored</system-reminder>"
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>also ignored</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "The real synthetic prompt for regression."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [],
+            "output_config": {
+              "effort": "high"
+            }
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "Retained system message"
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.281.b83; cc_entrypoint=cli;"
+          },
+          {
+            "type": "text",
+            "text": "Synthetic system instructions",
+            "cache_control": {}
+          }
+        ]
+      },
+      "headers": {
+        "X-Nullable": null,
+        "X-Keep": "fixture",
+        "Accept": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-app": "cli",
+        "User-Agent": "claude-cli/2.1.281 (external, cli)",
+        "X-Stainless-Package-Version": "0.112.1",
+        "X-Stainless-Timeout": "600",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.3.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Claude-Code-Session-Id": "$SESSION"
+      }
+    },
+    {
+      "id": "claude-opus-5",
+      "result": {
+        "model": "offline-model",
+        "max_tokens": 1024,
+        "thinking": {
+          "type": "adaptive"
+        },
+        "betas": [
+          "claude-code-20250219",
+          "oauth-2025-04-20",
+          "interleaved-thinking-2025-05-14",
+          "redact-thinking-2026-02-12",
+          "thinking-token-count-2026-05-13",
+          "context-management-2025-06-27",
+          "prompt-caching-scope-2026-01-05",
+          "mid-conversation-system-2026-04-07",
+          "mid-conversation-tool-changes-2026-07-01",
+          "effort-2025-11-24",
+          "fallback-credit-2026-06-01",
+          "extended-cache-ttl-2025-04-11"
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "# Environment\nYou have been invoked offline"
+              },
+              {
+                "type": "text",
+                "text": "Not the first real prompt"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "<system-reminder>ignored</system-reminder>"
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>also ignored</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "The real synthetic prompt for regression."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "Retained system message"
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.281.b83; cc_entrypoint=cli;"
+          },
+          {
+            "type": "text",
+            "text": "Synthetic system instructions",
+            "cache_control": {}
+          }
+        ]
+      },
+      "headers": {
+        "X-Nullable": null,
+        "X-Keep": "fixture",
+        "Accept": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-app": "cli",
+        "User-Agent": "claude-cli/2.1.281 (external, cli)",
+        "X-Stainless-Package-Version": "0.112.1",
+        "X-Stainless-Timeout": "600",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.3.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Claude-Code-Session-Id": "$SESSION"
+      }
+    },
+    {
+      "id": "claude-opus-5-5",
+      "result": {
+        "model": "offline-model",
+        "max_tokens": 1024,
+        "thinking": {
+          "type": "adaptive"
+        },
+        "betas": [
+          "claude-code-20250219",
+          "oauth-2025-04-20",
+          "interleaved-thinking-2025-05-14",
+          "redact-thinking-2026-02-12",
+          "thinking-token-count-2026-05-13",
+          "context-management-2025-06-27",
+          "prompt-caching-scope-2026-01-05",
+          "mid-conversation-system-2026-04-07",
+          "per-turn-control-2026-07-01",
+          "mid-conversation-tool-changes-2026-07-01",
+          "effort-2025-11-24",
+          "fallback-credit-2026-06-01",
+          "extended-cache-ttl-2025-04-11"
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "# Environment\nYou have been invoked offline"
+              },
+              {
+                "type": "text",
+                "text": "Not the first real prompt"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "<system-reminder>ignored</system-reminder>"
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>also ignored</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "The real synthetic prompt for regression."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "Retained system message"
+              }
+            ]
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.281.b83; cc_entrypoint=cli;"
+          },
+          {
+            "type": "text",
+            "text": "Synthetic system instructions",
+            "cache_control": {}
+          }
+        ]
+      },
+      "headers": {
+        "X-Nullable": null,
+        "X-Keep": "fixture",
+        "Accept": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-app": "cli",
+        "User-Agent": "claude-cli/2.1.281 (external, cli)",
+        "X-Stainless-Package-Version": "0.112.1",
+        "X-Stainless-Timeout": "600",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.3.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Claude-Code-Session-Id": "$SESSION"
+      }
+    },
+    {
+      "id": "unknown",
+      "result": {
+        "model": "offline-model",
+        "max_tokens": 1024,
+        "thinking": {
+          "type": "adaptive",
+          "budget_tokens": 512,
+          "display": "summarized"
+        },
+        "betas": ["fixture-beta"],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "# Environment\nYou have been invoked offline"
+              },
+              {
+                "type": "text",
+                "text": "Not the first real prompt"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "<system-reminder>ignored</system-reminder>"
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "<system-reminder>also ignored</system-reminder>"
+              },
+              {
+                "type": "text",
+                "text": "The real synthetic prompt for regression."
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "content": [],
+            "output_config": {
+              "effort": "high"
+            }
+          },
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "text",
+                "text": "Retained system message"
+              }
+            ],
+            "output_config": {
+              "effort": "medium"
+            }
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "x-anthropic-billing-header: cc_version=2.1.281.b83; cc_entrypoint=cli;"
+          },
+          {
+            "type": "text",
+            "text": "Synthetic system instructions",
+            "cache_control": {}
+          }
+        ]
+      },
+      "headers": {
+        "X-Nullable": null,
+        "X-Keep": "fixture",
+        "Accept": "application/json",
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-app": "cli",
+        "User-Agent": "claude-cli/2.1.281 (external, cli)",
+        "X-Stainless-Package-Version": "0.112.1",
+        "X-Stainless-Timeout": "600",
+        "X-Stainless-Arch": "x64",
+        "X-Stainless-Lang": "js",
+        "X-Stainless-OS": "Linux",
+        "X-Stainless-Runtime": "node",
+        "X-Stainless-Runtime-Version": "v26.3.0",
+        "X-Stainless-Retry-Count": "0",
+        "X-Claude-Code-Session-Id": "$SESSION"
+      }
+    }
+  ],
+  "hash": "b83"
+}
