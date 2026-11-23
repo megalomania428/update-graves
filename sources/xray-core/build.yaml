@@ -1,0 +1,25 @@
+# cspell:ignore xray xtls geoip
+---
+upstream:
+  url: https://github.com/xtls/xray-core.git
+  ref: v24.11.11
+  patch: 0
+  patch_width: 3
+targets:
+  - name: all
+    downloads:
+      - repo: v2fly/geoip
+        tag: "202411070052"
+        asset: geoip.dat
+        sha256: 719260cdfc5b8d88e51a52d91cf5c9f8e89bdcc1820ba556bf1c8a10152f8496
+      - repo: v2fly/domain-list-community
+        tag: "20241104071109"
+        asset: dlc.dat
+        sha256: dbda1fe2eeea9cf0ea02f69be0e1db27a5034d331d78f84a1ea6770c1e9f0166
+    cache:
+      paths: ["~/go/pkg/mod", "~/.cache/go-build"]
+      key_files: ["scripts/**"]
+    steps:
+      - bash scripts/build.sh prepare
+      - bash scripts/build.sh test
+      - bash scripts/build.sh bin
