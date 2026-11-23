@@ -1,4 +1,4 @@
-// cspell:ignore oneline
+// cspell:ignore oneline worktrees
 /* eslint no-useless-return: 0 */
 import { readFileSync } from 'node:fs'
 import { homedir, release, type as osType } from 'node:os'
@@ -13,6 +13,7 @@ type SystemPlacement = 'after_all' | 'after_reminders' | 'before_reminders'
 interface PromptVariantSource {
   reminders: PromptValue[]
   system: PromptValue[]
+  midConversationSystem?: PromptValue[]
 }
 type PromptConfigSource = PromptVariantSource & {
   systemPlacement?: SystemPlacement
@@ -21,6 +22,7 @@ type PromptConfigSource = PromptVariantSource & {
 interface PromptVariant {
   reminders: string[]
   system: string[]
+  midConversationSystem: string[]
 }
 type PromptConfig = PromptVariant & {
   systemPlacement: SystemPlacement
@@ -31,6 +33,7 @@ interface EnvironmentSnapshot {
   crs_cwd: string
   crs_workspace: string
   crs_is_repo: string
+  crs_worktree_guidance: string
   crs_platform: string
   crs_shell: string
   crs_os_ver: string
@@ -150,11 +153,18 @@ function loadPromptConfig (): PromptConfig {
     if (!Array.isArray(variant.reminders) || !Array.isArray(variant.system)) {
       throw new Error('Invalid Omni Claude Code prompt variant.')
     }
+    const midConversationSystem = variant.midConversationSystem ?? []
+    if (!Array.isArray(midConversationSystem)) {
+      throw new Error('Invalid mid-conversation system prompt variant.')
+    }
     return {
       reminders: variant.reminders.map((value, index) => (
         loadPromptEntry(value, 'reminders', index, configDir)
       )),
       system: variant.system.map((value, index) => (
+        loadPromptEntry(value, 'system', index, configDir)
+      )),
+      midConversationSystem: midConversationSystem.map((value, index) => (
         loadPromptEntry(value, 'system', index, configDir)
       ))
     }
@@ -167,7 +177,9 @@ function loadPromptConfig (): PromptConfig {
         id,
         loadVariant({
           reminders: variant.reminders ?? config.reminders,
-          system: variant.system ?? config.system
+          system: variant.system ?? config.system,
+          midConversationSystem: variant.midConversationSystem ??
+            config.midConversationSystem
         })
       ])
     )
@@ -177,7 +189,11 @@ function loadPromptConfig (): PromptConfig {
 function usedPlaceholders (prompt: PromptConfig): Set<string> {
   const placeholders = new Set<string>()
   for (const variant of [prompt, ...Object.values(prompt.models)]) {
-    for (const text of [...variant.reminders, ...variant.system]) {
+    for (const text of [
+      ...variant.reminders,
+      ...variant.system,
+      ...variant.midConversationSystem
+    ]) {
       for (const match of text.matchAll(placeholderPattern)) {
         placeholders.add(match[1].toLowerCase())
       }
@@ -277,6 +293,7 @@ async function collectEnvironmentSnapshot (
     crs_cwd: displayCwd,
     crs_workspace: displayCwd,
     crs_is_repo: 'false',
+    crs_worktree_guidance: '',
     crs_platform: process.platform,
     crs_shell: shellName(),
     crs_os_ver: `${osType()} ${release()}`,
@@ -296,6 +313,7 @@ async function collectEnvironmentSnapshot (
   const needsGit = [
     'crs_workspace',
     'crs_is_repo',
+    'crs_worktree_guidance',
     'crs_branch',
     'crs_master',
     'crs_repo_user',
@@ -314,27 +332,49 @@ async function collectEnvironmentSnapshot (
     return snapshot
   }
 
-  const [workspace, branch, master, user, status, commits] = await Promise.all([
-    needed('crs_workspace')
-      ? runGit(pi, sessionCwd, ['rev-parse', '--show-toplevel'])
-      : Promise.resolve({ code: 1, stdout: '' }),
-    needed('crs_branch')
-      ? runGit(pi, sessionCwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
-      : Promise.resolve({ code: 1, stdout: '' }),
-    needed('crs_master') ? resolveMainBranch(pi, sessionCwd) : Promise.resolve('unknown'),
-    needed('crs_repo_user')
-      ? runGit(pi, sessionCwd, ['config', 'user.name'])
-      : Promise.resolve({ code: 1, stdout: '' }),
-    needed('crs_repo_status_short')
-      ? runGit(pi, sessionCwd, ['--no-optional-locks', 'status', '--short'])
-      : Promise.resolve({ code: 1, stdout: '' }),
-    needed('crs_repo_recent_commits')
-      ? runGit(pi, sessionCwd, ['--no-pager', 'log', '-5', '--oneline'])
-      : Promise.resolve({ code: 1, stdout: '' })
-  ])
+  const [workspace, worktree, branch, master, user, status, commits] =
+    await Promise.all([
+      needed('crs_workspace')
+        ? runGit(pi, sessionCwd, ['rev-parse', '--show-toplevel'])
+        : Promise.resolve({ code: 1, stdout: '' }),
+      needed('crs_worktree_guidance')
+        ? runGit(pi, sessionCwd, ['rev-parse', '--git-dir', '--git-common-dir'])
+        : Promise.resolve({ code: 1, stdout: '' }),
+      needed('crs_branch')
+        ? runGit(pi, sessionCwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+        : Promise.resolve({ code: 1, stdout: '' }),
+      needed('crs_master')
+        ? resolveMainBranch(pi, sessionCwd)
+        : Promise.resolve('unknown'),
+      needed('crs_repo_user')
+        ? runGit(pi, sessionCwd, ['config', 'user.name'])
+        : Promise.resolve({ code: 1, stdout: '' }),
+      needed('crs_repo_status_short')
+        ? runGit(pi, sessionCwd, ['--no-optional-locks', 'status', '--short'])
+        : Promise.resolve({ code: 1, stdout: '' }),
+      needed('crs_repo_recent_commits')
+        ? runGit(pi, sessionCwd, ['--no-pager', 'log', '-5', '--oneline'])
+        : Promise.resolve({ code: 1, stdout: '' })
+    ])
   if (needed('crs_workspace') && workspace.code === 0) {
     const value = trimOutput(workspace.stdout).replace(/\\/gu, '/')
     snapshot.crs_workspace = value !== '' ? value : displayCwd
+  }
+  if (needed('crs_worktree_guidance') && worktree.code === 0) {
+    const paths = trimOutput(worktree.stdout, true).split('\n')
+    if (paths.length === 2 && paths[0] !== paths[1]) {
+      snapshot.crs_worktree_guidance =
+        ' - This is a git worktree — an isolated copy of the repository. Run all ' +
+        'commands from this directory. Do NOT `cd` to the original repository root.\n' +
+        ' - The git stash stack is shared with the main checkout and all other ' +
+        'worktrees, and other Claude sessions may push or pop it concurrently. Never ' +
+        'use bare `git stash` / `git stash pop` — you could pop another session\'s ' +
+        'changes. Prefer a temporary WIP commit to set work aside; if you must stash, ' +
+        'use `git stash push -u -m "<unique-tag>"`, immediately capture your entry\'s ' +
+        'SHA via `git stash list --format=\'%H %gs\'`, restore with `git stash apply ' +
+        '<sha>` (not pop), and afterwards drop the entry, re-finding its current ' +
+        '`stash@{n}` by tag first.\n'
+    }
   }
   if (needed('crs_branch')) {
     if (branch.code === 0) {
@@ -414,27 +454,66 @@ export default function prependClaudeCodePrompt (pi: ExtensionAPI): void {
     }
     const variant = model !== undefined ? prompt.models[model.id] ?? prompt : prompt
     const reminders = variant.reminders.map((text) => resolvePlaceholders(text, values))
+    const midConversationSystem = variant.midConversationSystem
+      .map((text) => resolvePlaceholders(text, values).trimEnd())
+      .join('\n\n')
     const { tools, messages = [], ...payload } = event.payload
-    const system = [
-      ...variant.system.map((text) => resolvePlaceholders(text, values)),
-      ...appendedSystemPrompts
-    ]
+    const resolvedSystem = variant.system
+      .map((text) => resolvePlaceholders(text, values))
+    const staticSystem = resolvedSystem.length > 1
+      ? [resolvedSystem[0], resolvedSystem.slice(1).join('')]
+      : resolvedSystem
+    const system = [...staticSystem, ...appendedSystemPrompts]
     const filteredMessages = messages.filter((message) => message.role !== 'developer')
+    const emptySystem = filteredMessages.filter((message) => (
+      message.role === 'system' && Array.isArray(message.content) &&
+      message.content.length === 0
+    ))
+    const outputConfig = [...emptySystem].reverse().find((message) => (
+      typeof message.output_config === 'object' && message.output_config !== null &&
+      !Array.isArray(message.output_config)
+    ))?.output_config
+    const conversation = filteredMessages.filter((message) => !(
+      message.role === 'system' && Array.isArray(message.content) &&
+      message.content.length === 0
+    ))
+    const reminderBlocks = reminders.map((text) => ({ type: 'text', text }))
+    const firstUser = conversation.findIndex((message) => message.role === 'user')
+    const messagesWithReminders = firstUser < 0
+      ? [{ role: 'user', content: reminderBlocks }, ...conversation]
+      : conversation.map((message, index) => {
+        if (index !== firstUser) return message
+        const content = Array.isArray(message.content)
+          ? message.content
+          : typeof message.content === 'string'
+            ? [{ type: 'text', text: message.content }]
+            : []
+        return { ...message, content: [...reminderBlocks, ...content] }
+      })
+    const preparedMessages = midConversationSystem === ''
+      ? messagesWithReminders
+      : [
+          ...messagesWithReminders,
+          {
+            role: 'system',
+            content: [{ type: 'text', text: midConversationSystem }],
+            ...(model?.id === 'claude-opus-5-5' && outputConfig !== undefined
+              ? { output_config: outputConfig }
+              : {})
+          }
+        ]
     const combined = prompt.systemPlacement === 'before_reminders'
       ? [...system, ...reminders]
       : [...reminders, ...system]
     const result = prompt.systemPlacement === 'after_all'
       ? {
           ...payload,
-          messages: [
-            { role: 'user', content: reminders.map((text) => ({ type: 'text', text })) },
-            ...filteredMessages
-          ],
+          messages: preparedMessages,
           system: system.map((text, index) => ({
             type: 'text',
             text,
-            ...(index > 0 && index < variant.system.length
-              ? { cache_control: { type: 'ephemeral' } }
+            ...(index < staticSystem.length
+              ? { cache_control: { type: 'ephemeral', ttl: '1h' } }
               : {})
           }))
         }

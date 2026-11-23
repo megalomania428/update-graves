@@ -9,8 +9,8 @@ import type {
   SessionBeforeTreeEvent, SessionEntry
 } from '@earendil-works/pi-coding-agent'
 import type { Api, Model } from '@earendil-works/pi-ai'
-const CLAUDE_CODE_VERSION = '2.1.281'
-const CLAUDE_CODE_STAINLESS_VERSION = '0.112.1'
+const CLAUDE_CODE_VERSION = '2.1.292'
+const CLAUDE_CODE_STAINLESS_VERSION = '0.128.0'
 const CLAUDE_CODE_RUNTIME_VERSION = 'v26.3.0'
 const VERSION_HASH_SALT = '59cf53e54c78'
 const VERSION_HASH_CHARACTER_INDEXES = [4, 7, 20] as const
@@ -19,7 +19,6 @@ const BASE_BETAS = [
   'claude-code-20250219',
   'oauth-2025-04-20',
   'interleaved-thinking-2025-05-14',
-  'redact-thinking-2026-02-12',
   'thinking-token-count-2026-05-13',
   'context-management-2025-06-27',
   'prompt-caching-scope-2026-01-05'
@@ -28,6 +27,9 @@ const COMMON_BETAS = [...BASE_BETAS, 'mid-conversation-system-2026-04-07']
 const SONNET_BETAS = [
   ...COMMON_BETAS,
   'effort-2025-11-24',
+  'dangerous-tool-use-2026-09-03',
+  'thinking-display-updates-2026-08-18',
+  'afk-mode-2026-01-31',
   'extended-cache-ttl-2025-04-11'
 ]
 const OPUS_5_5_BETAS = [
@@ -35,25 +37,35 @@ const OPUS_5_5_BETAS = [
   'per-turn-control-2026-07-01',
   'mid-conversation-tool-changes-2026-07-01',
   'effort-2025-11-24',
-  'fallback-credit-2026-06-01',
+  'dangerous-tool-use-2026-09-03',
+  'thinking-display-updates-2026-08-18',
+  'afk-mode-2026-01-31',
   'extended-cache-ttl-2025-04-11'
 ]
 const OPUS_5_BETAS = [
   ...COMMON_BETAS,
   'mid-conversation-tool-changes-2026-07-01',
   'effort-2025-11-24',
-  'fallback-credit-2026-06-01',
+  'dangerous-tool-use-2026-09-03',
+  'thinking-display-updates-2026-08-18',
+  'afk-mode-2026-01-31',
   'extended-cache-ttl-2025-04-11'
 ]
 const OPUS_4_8_BETAS = [
   ...COMMON_BETAS,
   'mid-conversation-tool-changes-2026-07-01',
   'effort-2025-11-24',
+  'dangerous-tool-use-2026-09-03',
+  'thinking-display-updates-2026-08-18',
+  'afk-mode-2026-01-31',
   'extended-cache-ttl-2025-04-11'
 ]
 const OPUS_4_7_BETAS = [
   ...BASE_BETAS,
   'effort-2025-11-24',
+  'dangerous-tool-use-2026-09-03',
+  'thinking-display-updates-2026-08-18',
+  'afk-mode-2026-01-31',
   'extended-cache-ttl-2025-04-11'
 ]
 const BETAS_BY_MODEL: Record<string, string[]> = {
@@ -105,13 +117,6 @@ function firstUserPrompt (payload: ProviderPayload): string {
       continue
     }
     if (!Array.isArray(content)) continue
-    if (
-      message === payload.messages[0] &&
-      content.length > 1 &&
-      isSystemTextBlock(content[0]) &&
-      /^(?:<system-reminder>\n)?# Environment\nYou have been invoked /u
-        .test(content[0].text)
-    ) continue
     for (const block of content) {
       if (!isSystemTextBlock(block)) continue
       if (block.text.startsWith('<system-reminder>')) continue
@@ -176,7 +181,7 @@ export function applyFingerprintHeaders (
   setHeader(headers, 'anthropic-version', '2023-06-01')
   setHeader(headers, 'anthropic-dangerous-direct-browser-access', 'true')
   setHeader(headers, 'x-app', 'cli')
-  setHeader(headers, 'User-Agent', `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`)
+  setHeader(headers, 'user-agent', `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`)
   setHeader(headers, 'X-Stainless-Package-Version', CLAUDE_CODE_STAINLESS_VERSION)
   setHeader(headers, 'X-Stainless-Timeout', '600')
   setHeader(headers, 'X-Stainless-Arch', stainlessArch())
@@ -199,23 +204,24 @@ export function applyFingerprintPayload (
     )
   }
   const betas = BETAS_BY_MODEL[modelId] ?? payload.betas
-  const isOpus5 = ['claude-opus-5', 'claude-opus-5-5'].includes(modelId)
+  const fingerprinted = Object.hasOwn(BETAS_BY_MODEL, modelId)
   const thinking = payload.thinking
-  const normalizedThinking = isOpus5 && isProviderPayload(thinking) &&
+  const normalizedThinking = fingerprinted && isProviderPayload(thinking) &&
     thinking.type === 'adaptive'
-    ? { type: 'adaptive' }
+    ? { type: 'adaptive', display: 'summarized' }
     : thinking
-  const messages = isOpus5 && Array.isArray(payload.messages)
+  const messages = modelId !== 'claude-opus-5-5' &&
+    Array.isArray(payload.messages)
     ? payload.messages
-      .filter((message) => !isProviderPayload(message) ||
-        message.role !== 'system' || !Array.isArray(message.content) ||
-        message.content.length > 0)
       .map((message) => {
         if (!isProviderPayload(message) || message.role !== 'system') return message
         const { output_config: outputConfig, ...systemMessage } = message
         void outputConfig
         return systemMessage
       })
+      .filter((message) => !isProviderPayload(message) ||
+        message.role !== 'system' || !Array.isArray(message.content) ||
+        message.content.length > 0)
     : payload.messages
   return {
     ...payload,

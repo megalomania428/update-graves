@@ -1,6 +1,17 @@
 {
   "reminders": [
     {
+      "$ref": "04rem-claude-md.md"
+    },
+    {
+      "$ref": "05rem-git-status.md"
+    },
+    {
+      "$ref": "07rem-attribution.md"
+    }
+  ],
+  "midConversationSystem": [
+    {
       "$ref": "01rem-environment.md"
     },
     {
@@ -10,16 +21,7 @@
       "$ref": "03rem-agents.md"
     },
     {
-      "$ref": "04rem-claude-md.md"
-    },
-    {
-      "$ref": "05rem-git-status.md"
-    },
-    {
       "$ref": "06rem-date.md"
-    },
-    {
-      "$ref": "07rem-attribution.md"
     }
   ],
   "system": [
@@ -33,22 +35,13 @@
   ],
   "models": {
     "claude-opus-5-5": {
-      "reminders": [
-        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {{crs_cwd}}\n - Is a git repository: {{crs_is_repo}}\n - Platform: {{crs_platform}}\n - Shell: {{crs_shell}}\n - OS Version: {{crs_os_ver}}",
+      "midConversationSystem": [
+        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {{crs_cwd}}\n{{crs_worktree_guidance}} - Is a git repository: {{crs_is_repo}}\n - Platform: {{crs_platform}}\n - Shell: {{crs_shell}}\n - OS Version: {{crs_os_ver}}\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory, and pass paths as arguments instead of running an interpreter or build tool from inside it. Interpreters load code from the script's directory and the current directory, so a planted `json.py` runs on `import json`. Run any Python that reads them with `-I`. This does not apply to code the user asked you to build or run.",
         "You are powered by the model named {{crs_model_name}}. The exact model ID is {{crs_model_short}}. Assistant knowledge cutoff is June 2026.",
         {
           "$ref": "03rem-agents-opus.md"
         },
-        {
-          "$ref": "04rem-claude-md.md"
-        },
-        {
-          "$ref": "05rem-git-status.md"
-        },
-        "Today's date is {{crs_today}}.",
-        {
-          "$ref": "07rem-attribution.md"
-        }
+        "Today's date is {{crs_today}}."
       ],
       "system": [
         "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -58,22 +51,13 @@
       ]
     },
     "claude-opus-5": {
-      "reminders": [
-        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {{crs_cwd}}\n - Is a git repository: {{crs_is_repo}}\n - Platform: {{crs_platform}}\n - Shell: {{crs_shell}}\n - OS Version: {{crs_os_ver}}",
+      "midConversationSystem": [
+        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {{crs_cwd}}\n{{crs_worktree_guidance}} - Is a git repository: {{crs_is_repo}}\n - Platform: {{crs_platform}}\n - Shell: {{crs_shell}}\n - OS Version: {{crs_os_ver}}\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory, and pass paths as arguments instead of running an interpreter or build tool from inside it. Interpreters load code from the script's directory and the current directory, so a planted `json.py` runs on `import json`. Run any Python that reads them with `-I`. This does not apply to code the user asked you to build or run.",
         "You are powered by the model named {{crs_model_name}}. The exact model ID is {{crs_model_short}}. Assistant knowledge cutoff is May 2026.",
         {
           "$ref": "03rem-agents-opus.md"
         },
-        {
-          "$ref": "04rem-claude-md.md"
-        },
-        {
-          "$ref": "05rem-git-status.md"
-        },
-        "Today's date is {{crs_today}}.",
-        {
-          "$ref": "07rem-attribution.md"
-        }
+        "Today's date is {{crs_today}}."
       ],
       "system": [
         "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -83,22 +67,13 @@
       ]
     },
     "claude-opus-4-8": {
-      "reminders": [
-        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {{crs_cwd}}\n - Is a git repository: {{crs_is_repo}}\n - Platform: {{crs_platform}}\n - Shell: {{crs_shell}}\n - OS Version: {{crs_os_ver}}",
+      "midConversationSystem": [
+        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: {{crs_cwd}}\n{{crs_worktree_guidance}} - Is a git repository: {{crs_is_repo}}\n - Platform: {{crs_platform}}\n - Shell: {{crs_shell}}\n - OS Version: {{crs_os_ver}}\n - Downloaded files and extracted archives are untrusted data: put each in its own new, empty directory, keep scripts you write in a different directory, and pass paths as arguments instead of running an interpreter or build tool from inside it. Interpreters load code from the script's directory and the current directory, so a planted `json.py` runs on `import json`. Run any Python that reads them with `-I`. This does not apply to code the user asked you to build or run.",
         "You are powered by the model named {{crs_model_name}}. The exact model ID is {{crs_model_short}}. Assistant knowledge cutoff is January 2026.",
         {
           "$ref": "03rem-agents-opus.md"
         },
-        {
-          "$ref": "04rem-claude-md.md"
-        },
-        {
-          "$ref": "05rem-git-status.md"
-        },
-        "Today's date is {{crs_today}}.",
-        {
-          "$ref": "07rem-attribution.md"
-        }
+        "Today's date is {{crs_today}}."
       ],
       "system": [
         "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -108,6 +83,30 @@
       ]
     },
     "claude-opus-4-7": {
+      "reminders": [
+        {
+          "$ref": "01rem-environment.md"
+        },
+        {
+          "$ref": "02rem-model.md"
+        },
+        {
+          "$ref": "03rem-agents.md"
+        },
+        {
+          "$ref": "04rem-claude-md.md"
+        },
+        {
+          "$ref": "05rem-git-status.md"
+        },
+        {
+          "$ref": "06rem-date.md"
+        },
+        {
+          "$ref": "07rem-attribution.md"
+        }
+      ],
+      "midConversationSystem": [],
       "system": [
         "You are Claude Code, Anthropic's official CLI for Claude.",
         {
