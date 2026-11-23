@@ -9,64 +9,118 @@ import type {
   SessionBeforeTreeEvent, SessionEntry
 } from '@earendil-works/pi-coding-agent'
 import type { Api, Model } from '@earendil-works/pi-ai'
-const CLAUDE_CODE_VERSION = '2.1.281'
-const CLAUDE_CODE_STAINLESS_VERSION = '0.112.1'
-const CLAUDE_CODE_RUNTIME_VERSION = 'v26.3.0'
+const CLAUDE_CODE_VERSION = '2.1.322'
+const CLAUDE_CODE_STAINLESS_VERSION = '0.128.0'
+const CLAUDE_CODE_RUNTIME_VERSION = 'v26.12.1'
 const VERSION_HASH_SALT = '59cf53e54c78'
 const VERSION_HASH_CHARACTER_INDEXES = [4, 7, 20] as const
 const BILLING_PREFIX = 'x-anthropic-billing-header:'
-const BASE_BETAS = [
+const SUPPORTED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
+const COMMON_BETAS = [
   'claude-code-20250219',
   'oauth-2025-04-20',
   'interleaved-thinking-2025-05-14',
-  'redact-thinking-2026-02-12',
-  'thinking-token-count-2026-05-13',
-  'context-management-2025-06-27',
-  'prompt-caching-scope-2026-01-05'
+  'context-management-2025-06-27'
 ]
-const COMMON_BETAS = [...BASE_BETAS, 'mid-conversation-system-2026-04-07']
-const SONNET_BETAS = [
-  ...COMMON_BETAS,
-  'effort-2025-11-24',
-  'extended-cache-ttl-2025-04-11'
-]
-const OPUS_5_5_BETAS = [
-  ...COMMON_BETAS,
+const CONTROL_BETAS = [
   'per-turn-control-2026-07-01',
   'mid-conversation-tool-changes-2026-07-01',
+  'thinking-token-count-2026-05-13',
+  'advanced-tool-use-2025-11-20',
   'effort-2025-11-24',
-  'fallback-credit-2026-06-01',
+  'dangerous-tool-use-2026-09-03',
+  'thinking-display-updates-2026-08-18',
+  'afk-mode-2026-01-31',
   'extended-cache-ttl-2025-04-11'
 ]
-const OPUS_5_BETAS = [
-  ...COMMON_BETAS,
-  'mid-conversation-tool-changes-2026-07-01',
-  'effort-2025-11-24',
-  'fallback-credit-2026-06-01',
-  'extended-cache-ttl-2025-04-11'
+const LEGACY_BASE_BETAS = [
+  'claude-code-20250219', 'oauth-2025-04-20',
+  'interleaved-thinking-2025-05-14', 'redact-thinking-2026-02-12',
+  'thinking-token-count-2026-05-13', 'context-management-2025-06-27',
+  'prompt-caching-scope-2026-01-05'
 ]
-const OPUS_4_8_BETAS = [
-  ...COMMON_BETAS,
-  'mid-conversation-tool-changes-2026-07-01',
-  'effort-2025-11-24',
-  'extended-cache-ttl-2025-04-11'
+const LEGACY_COMMON_BETAS = [
+  ...LEGACY_BASE_BETAS, 'mid-conversation-system-2026-04-07'
 ]
-const OPUS_4_7_BETAS = [
-  ...BASE_BETAS,
-  'effort-2025-11-24',
-  'extended-cache-ttl-2025-04-11'
-]
-const BETAS_BY_MODEL: Record<string, string[]> = {
-  'claude-sonnet-5': SONNET_BETAS,
-  'claude-opus-5-5': OPUS_5_5_BETAS,
-  'claude-opus-5': OPUS_5_BETAS,
-  'claude-opus-4-8': OPUS_4_8_BETAS,
-  'claude-opus-4-7': OPUS_4_7_BETAS
+const LEGACY_BETAS_BY_MODEL: Record<string, string[]> = {
+  'claude-sonnet-5': [...LEGACY_COMMON_BETAS,
+    'effort-2025-11-24', 'extended-cache-ttl-2025-04-11'],
+  'claude-opus-5': [...LEGACY_COMMON_BETAS,
+    'mid-conversation-tool-changes-2026-07-01', 'effort-2025-11-24',
+    'fallback-credit-2026-06-01', 'extended-cache-ttl-2025-04-11'],
+  'claude-opus-4-8': [...LEGACY_COMMON_BETAS,
+    'mid-conversation-tool-changes-2026-07-01', 'effort-2025-11-24',
+    'extended-cache-ttl-2025-04-11'],
+  'claude-opus-4-7': [...LEGACY_BASE_BETAS,
+    'effort-2025-11-24', 'extended-cache-ttl-2025-04-11']
+}
+const ARRAY_FALLBACK_BETA = 'server-side-fallback-2026-06-01'
+const DEFAULT_FALLBACK_BETA = 'server-side-fallback-2026-07-01'
+const TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14'
+const SCOPED_SYSTEM_BETA = 'mid-conversation-system-clear-at-2026-08-21'
+const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01'
+const CAPTURED_BETAS_BY_MODEL: Record<string, string[]> = {
+  'claude-opus-5-5': [...COMMON_BETAS, ...CONTROL_BETAS],
+  'claude-sonnet-5-5': [...COMMON_BETAS, ...CONTROL_BETAS],
+  'claude-haiku-5-5': [
+    ...COMMON_BETAS.slice(1), COMMON_BETAS[0], ...CONTROL_BETAS
+  ],
+  'claude-fable-5-1': [...COMMON_BETAS, ...CONTROL_BETAS],
+  'claude-fable-5-2': [...COMMON_BETAS, ...CONTROL_BETAS]
 }
 export type ProviderPayload = Record<string, unknown>
 export type ProviderSystemBlock = Record<string, unknown>
 function isProviderPayload (payload: unknown): payload is ProviderPayload {
   return typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+}
+function hasReplayedThinking (messages: unknown): boolean {
+  return Array.isArray(messages) && messages.some((message) =>
+    isProviderPayload(message) && message.role === 'assistant' &&
+    Array.isArray(message.content) && message.content.some((block) =>
+      isProviderPayload(block) &&
+      ['thinking', 'redacted_thinking'].includes(String(block.type))))
+}
+function fingerprintBetas (modelId: string): string[] | undefined {
+  if (Object.hasOwn(CAPTURED_BETAS_BY_MODEL, modelId)) {
+    return CAPTURED_BETAS_BY_MODEL[modelId]
+  }
+  if (Object.hasOwn(LEGACY_BETAS_BY_MODEL, modelId)) {
+    return LEGACY_BETAS_BY_MODEL[modelId]
+  }
+}
+function withFeatureBetas (
+  base: string[], payload: ProviderPayload, model?: Model<Api>
+): string[] {
+  const requested = Array.isArray(payload.betas) ? payload.betas : []
+  const compat = model?.compat
+  const arrayFallback = Array.isArray(payload.fallbacks)
+    ? payload.fallbacks.length > 0
+    : payload.fallbacks === undefined && isProviderPayload(compat) &&
+      Array.isArray(compat.allowedFallbackModels) &&
+      compat.allowedFallbackModels.length > 0
+  const fallback = payload.fallbacks === 'default'
+    ? DEFAULT_FALLBACK_BETA
+    : arrayFallback ? ARRAY_FALLBACK_BETA : undefined
+  const streaming = requested.includes(TOOL_STREAMING_BETA) ||
+    (Array.isArray(payload.tools) && payload.tools.some((tool) =>
+      isProviderPayload(tool) && isProviderPayload(tool.input_schema) &&
+      tool.eager_input_streaming !== true))
+  const scoped = requested.includes(SCOPED_SYSTEM_BETA) ||
+    (Array.isArray(payload.messages) && payload.messages.some((message) =>
+      isProviderPayload(message) && message.role === 'system' &&
+      message.clear_at === 'next_user_message'))
+  const binding = isProviderPayload(payload.thinking) &&
+    isProviderPayload(payload.thinking.block_binding) &&
+    hasReplayedThinking(payload.messages)
+  const explicit = requested.filter((value): value is string =>
+    typeof value === 'string' && value.trim() !== '').map((value) => value.trim())
+    .filter((value) => fallback === undefined ||
+      !value.startsWith('server-side-fallback-') || value === fallback)
+  return [...new Set([...base, ...explicit,
+    ...(fallback === undefined ? [] : [fallback]),
+    ...(streaming ? [TOOL_STREAMING_BETA] : []),
+    ...(scoped ? [SCOPED_SYSTEM_BETA] : []),
+    ...(binding ? [THINKING_BINDING_BETA] : [])])]
 }
 function isSystemTextBlock (
   block: unknown
@@ -166,7 +220,8 @@ function setHeader (
   headers[name] = value
 }
 export function applyFingerprintHeaders (
-  headers: Record<string, string | null>, sessionId: string
+  headers: Record<string, string | null>, sessionId: string, modelId = '',
+  model?: Model<Api>
 ): void {
   for (const key of Object.keys(headers)) {
     // Keep strict-mode delete errors for non-configurable header properties.
@@ -176,7 +231,8 @@ export function applyFingerprintHeaders (
   setHeader(headers, 'anthropic-version', '2023-06-01')
   setHeader(headers, 'anthropic-dangerous-direct-browser-access', 'true')
   setHeader(headers, 'x-app', 'cli')
-  setHeader(headers, 'User-Agent', `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`)
+  // The adapter inserts lowercase user-agent after its default User-Agent key.
+  setHeader(headers, 'user-agent', `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`)
   setHeader(headers, 'X-Stainless-Package-Version', CLAUDE_CODE_STAINLESS_VERSION)
   setHeader(headers, 'X-Stainless-Timeout', '600')
   setHeader(headers, 'X-Stainless-Arch', stainlessArch())
@@ -186,9 +242,18 @@ export function applyFingerprintHeaders (
   setHeader(headers, 'X-Stainless-Runtime-Version', CLAUDE_CODE_RUNTIME_VERSION)
   setHeader(headers, 'X-Stainless-Retry-Count', '0')
   setHeader(headers, 'X-Claude-Code-Session-Id', sessionId)
+  const betas = fingerprintBetas(modelId)
+  if (betas !== undefined) {
+    const requested = Object.entries(headers).flatMap(([name, value]) =>
+      name.toLowerCase() === 'anthropic-beta' && typeof value === 'string'
+        ? value.split(',').map((feature) => feature.trim())
+        : [])
+    setHeader(headers, 'anthropic-beta',
+      withFeatureBetas(betas, { betas: requested }, model).join(','))
+  }
 }
 export function applyFingerprintPayload (
-  payload: ProviderPayload, modelId: string
+  payload: ProviderPayload, modelId: string, summary = false
 ): ProviderPayload {
   const prompt = firstUserPrompt(payload)
   const billingBlock: ProviderSystemBlock & { text: string } = {
@@ -198,30 +263,84 @@ export function applyFingerprintPayload (
       `${buildHashFor(CLAUDE_CODE_VERSION, prompt)}; cc_entrypoint=cli;`
     )
   }
-  const betas = BETAS_BY_MODEL[modelId] ?? payload.betas
-  const isOpus5 = ['claude-opus-5', 'claude-opus-5-5'].includes(modelId)
+  const baseBetas = fingerprintBetas(modelId)
+  const capturedModel = Object.hasOwn(CAPTURED_BETAS_BY_MODEL, modelId)
+  const normalizeControls = capturedModel || modelId === 'claude-opus-5'
+  let outputConfig = payload.output_config
+  const providerMessages = Array.isArray(payload.messages) ? payload.messages : undefined
+  const tail = providerMessages?.at(-1)
+  const tailConfig = isProviderPayload(tail) && tail.role === 'system' &&
+    Array.isArray(tail.content) && tail.content.length === 0 &&
+    isProviderPayload(tail.output_config)
+    ? tail.output_config
+    : undefined
+  const effort = tailConfig?.effort
+  const effortTail = typeof effort === 'string' && SUPPORTED_EFFORTS.has(effort)
+  const plainEffortTail = effortTail && Object.keys(tailConfig ?? {}).length === 1 &&
+    isProviderPayload(tail) && Object.keys(tail).every((key) =>
+    ['role', 'content', 'output_config'].includes(key))
+  if (capturedModel && effortTail) {
+    outputConfig = {
+      ...(isProviderPayload(outputConfig) ? outputConfig : {}), effort
+    }
+  }
   const thinking = payload.thinking
-  const normalizedThinking = isOpus5 && isProviderPayload(thinking) &&
+  const replayingThinking = capturedModel && hasReplayedThinking(providerMessages)
+  const normalizedThinking = normalizeControls && isProviderPayload(thinking) &&
     thinking.type === 'adaptive'
-    ? { type: 'adaptive' }
+    ? {
+        type: 'adaptive',
+        ...(capturedModel ? { display: 'updates' } : {}),
+        ...(replayingThinking
+          ? {
+              block_binding: isProviderPayload(thinking.block_binding)
+                ? thinking.block_binding
+                : { prefix_mismatch_behavior: 'drop_block' }
+            }
+          : {})
+      }
     : thinking
-  const messages = isOpus5 && Array.isArray(payload.messages)
-    ? payload.messages
-      .filter((message) => !isProviderPayload(message) ||
-        message.role !== 'system' || !Array.isArray(message.content) ||
-        message.content.length > 0)
-      .map((message) => {
-        if (!isProviderPayload(message) || message.role !== 'system') return message
-        const { output_config: outputConfig, ...systemMessage } = message
-        void outputConfig
-        return systemMessage
-      })
-    : payload.messages
+  const betas = baseBetas === undefined
+    ? payload.betas
+    : withFeatureBetas(
+      baseBetas, { ...payload, thinking: normalizedThinking }
+    )
+  const hasAssistantHistory = providerMessages?.some((message) =>
+    isProviderPayload(message) && message.role === 'assistant') ?? false
+  const hasHistoricalControls = providerMessages?.slice(0, -1).some((message) =>
+    isProviderPayload(message) && message.role === 'system' &&
+    isProviderPayload(message.output_config)) ?? false
+  const messages = providerMessages !== undefined && capturedModel
+    ? providerMessages.slice(0, summary && plainEffortTail && !hasAssistantHistory &&
+      !hasHistoricalControls
+      ? -1
+      : undefined)
+    : normalizeControls && providerMessages !== undefined
+      ? providerMessages
+        .filter((message) => !isProviderPayload(message) ||
+          message.role !== 'system' || !Array.isArray(message.content) ||
+          message.content.length > 0)
+        .map((message) => {
+          if (!isProviderPayload(message) || message.role !== 'system') return message
+          const { output_config: outputConfig, ...systemMessage } = message
+          void outputConfig
+          return systemMessage
+        })
+      : payload.messages
   return {
     ...payload,
     ...(betas === undefined ? {} : { betas }),
     ...(normalizedThinking === undefined ? {} : { thinking: normalizedThinking }),
     ...(messages === undefined ? {} : { messages }),
+    ...(outputConfig === undefined ? {} : { output_config: outputConfig }),
+    ...(capturedModel && payload.context_management === undefined &&
+      payload.compaction === undefined
+      ? {
+          context_management: {
+            edits: [{ type: 'clear_thinking_20251015', keep: 'all' }]
+          }
+        }
+      : {}),
     system: [billingBlock, ...systemWithoutBilling(payload.system)]
   }
 }
@@ -234,7 +353,9 @@ export default function anthropicOAuthFingerprint (pi: ExtensionAPI): void {
   })
   pi.on('before_provider_headers', (event, ctx) => {
     if (!isAnthropicOAuth(ctx)) return
-    applyFingerprintHeaders(event.headers as Record<string, string | null>, sessionId)
+    applyFingerprintHeaders(
+      event.headers as Record<string, string | null>, sessionId, ctx.model?.id, ctx.model
+    )
   })
   pi.on('before_provider_request', (event, ctx) => {
     if (!isAnthropicOAuth(ctx) || !isProviderPayload(event.payload)) return
@@ -244,8 +365,11 @@ export default function anthropicOAuthFingerprint (pi: ExtensionAPI): void {
 type StreamFn = NonNullable<Parameters<typeof compact>[7]>
 export interface FingerprintDependencies {
   sessionId: string
-  applyHeaders: (headers: Record<string, string | null>, sessionId: string) => void
-  applyPayload: (payload: Record<string, unknown>, modelId: string) =>
+  applyHeaders: (
+    headers: Record<string, string | null>, sessionId: string, modelId?: string,
+    model?: Model<Api>
+  ) => void
+  applyPayload: (payload: Record<string, unknown>, modelId: string, summary?: boolean) =>
   Record<string, unknown>
 }
 interface FileDetails {
@@ -465,7 +589,7 @@ export function createSummaryStream (
       ...source,
       signal: requestSignal,
       transformHeaders: (headers) => {
-        fingerprint.applyHeaders(headers, fingerprint.sessionId)
+        fingerprint.applyHeaders(headers, fingerprint.sessionId, model.id, model)
         return headers
       },
       timeoutMs: source.timeoutMs ?? providerRetry.timeoutMs ?? effectiveTimeout,
@@ -480,7 +604,7 @@ export function createSummaryStream (
           if (!isSummaryPayload(prepared, actualModel)) {
             throw new SummaryFailure('summary')
           }
-          return fingerprint.applyPayload(prepared, actualModel.id)
+          return fingerprint.applyPayload(prepared, actualModel.id, true)
         } catch {
           failure.payload = new SummaryFailure('summary')
           local.abort(failure.payload)

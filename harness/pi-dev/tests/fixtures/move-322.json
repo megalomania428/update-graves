@@ -1,0 +1,33 @@
+{
+  "source": "Exact original interactive captures; only dynamic environment values normalized",
+  "identityHash": "2719b7a469d904b3281d8488976f33103944211279bddf04c05bca44d184dae6",
+  "models": {
+    "claude-opus-5-5": {
+      "displayName": "Opus 5.5",
+      "systemPromptHash": "8e62ece3d0c87bde4162ecf3b61c34111bfc951a3ce3adb00e07e8bd84a3c4f7",
+      "nativeSystemHash": "1488a6ce5956804d91e5e8649efa7354ee8b50c0e5593394a87781a4ebf91b53"
+    },
+    "claude-sonnet-5-5": {
+      "displayName": "Sonnet 5.5",
+      "systemPromptHash": "4c9c5beeb5b7db17fbfc4d653d8efd7719b40dfcb521f6353d05dae6d3fdf11f",
+      "nativeSystemHash": "f160e9091ad68dfe3db692c58bbde58db37e72208b12a677a6d13e9a78e236d7"
+    },
+    "claude-haiku-5-5": {
+      "displayName": "Haiku 5.5",
+      "systemPromptHash": "c295024f25a4e9c4f9186a3fae251350f5b4ff2a120ba870cea87b5004782623",
+      "nativeSystemHash": "2ec78c3f938370a8270ff4b73f2f3d028caefc6922b8a00af681413cbaf13a76"
+    },
+    "claude-fable-5-1": {
+      "displayName": "Fable 5.1",
+      "systemPromptHash": "52293ed458d8d97045506312e85bd1f8d6b06003d325bddd254d91c4bac27226",
+      "nativeSystemHash": "804160edd964bfe3a38cbc632c3420498d4bbb9a020c47d822863da6806b8b9f"
+    },
+    "claude-fable-5-2": {
+      "displayName": "Fable 5.2",
+      "systemPromptHash": "b3b8a79dd2e6c68d43e35d36c8c5f345aeaee65565952c54515e167edf1a5fa0",
+      "nativeSystemHash": "f9ca827857ab0f695288dd8fa8479ba08dde5e07bfd24331b75903f0ad1d55a4"
+    }
+  },
+  "gitFooter": "Claude Code attached this context automatically; it isn't part of the user's message. It describes the user's own account and workspace, so they don't need it reported back.\n</system-reminder>",
+  "attributionEndsWithNewline": true
+}

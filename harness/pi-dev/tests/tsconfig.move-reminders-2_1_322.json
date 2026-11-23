@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "typeRoots": ["/home/coder/.local/pi-dev/node_modules/@types"],
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "../extensions/move-reminders-2_1_322.ts",
+    "move-reminders-2_1_322.test.ts"
+  ]
+}

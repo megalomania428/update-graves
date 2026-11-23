@@ -4,13 +4,15 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
 import { test, type TestContext } from 'node:test'
+import { Type } from 'typebox'
 import {
   compact, generateBranchSummary, getAgentDir, ModelRuntime, prepareBranchEntries,
   SettingsManager
 } from '@earendil-works/pi-coding-agent'
 import type {
+  AgentSettledEvent, BeforeProviderHeadersEvent, BeforeProviderRequestEvent,
   CompactionResult, ExtensionAPI, ExtensionContext, ModelRegistry,
-  SessionBeforeCompactEvent, SessionBeforeTreeEvent, SessionEntry
+  SessionBeforeCompactEvent, SessionBeforeTreeEvent, SessionEntry, ToolDefinition
 } from '@earendil-works/pi-coding-agent'
 import {
   createAssistantMessageEventStream
@@ -24,9 +26,15 @@ import fingerprintFactory, {
   applyFingerprintHeaders, applyFingerprintPayload, buildHashFor, createSummaryStream,
   fileDetails, isSummaryPayload, mergeHeaders, ownDetails, prepareSummaryCompaction,
   prepareSummaryEntries, readSummarySettings, registerSummaryHooks, waitOrAbort,
-  type FingerprintDependencies
-} from '../extensions/aoauth-fingerprint-2_1_281'
-import ordinary from './fixtures/ordinary-281.json'
+  type FingerprintDependencies, type ProviderPayload
+} from '../extensions/aoauth-fingerprint-2_1_322'
+import ordinary from './fixtures/ordinary-322.json'
+import interactive from './fixtures/interactive-322.json'
+import legacy from './fixtures/legacy-322.json'
+import promptConfig from '../reminders/cc-2_1_322-p1/move.json'
+import compactContext, {
+  COMPACTION_CANCELLED, EXTENSION_CANCELLED
+} from '../extensions/compact-context'
 type StreamFn = NonNullable<Parameters<typeof compact>[7]>
 type Auth = Awaited<ReturnType<ModelRegistry['getApiKeyAndHeaders']>>
 type BeforeEvent = SessionBeforeCompactEvent | SessionBeforeTreeEvent
@@ -54,7 +62,7 @@ interface NativeGenerators {
   generateBranchSummary: typeof generateBranchSummary
 }
 const model: Model<'anthropic-messages'> = {
-  id: 'claude-sonnet-5',
+  id: 'claude-sonnet-5-5',
   provider: 'anthropic',
   api: 'anthropic-messages',
   name: 'Offline model',
@@ -91,6 +99,16 @@ function strictFake<T extends object> (partial: Partial<T>): T {
       return Reflect.get(target, key, receiver)
     }
   }) as T
+}
+function callHeaderHook (
+  hook: Hook, headers: BeforeProviderHeadersEvent['headers'], ctx: ExtensionContext
+): unknown {
+  const event: BeforeProviderHeadersEvent = { type: 'before_provider_headers', headers }
+  return hook(event as never, ctx)
+}
+function callPayloadHook (hook: Hook, payload: unknown, ctx: ExtensionContext): unknown {
+  const event: BeforeProviderRequestEvent = { type: 'before_provider_request', payload }
+  return hook(event as never, ctx)
 }
 function isAnthropicModel (value: Model<Api>): value is Model<'anthropic-messages'> {
   return value.api === 'anthropic-messages'
@@ -337,13 +355,15 @@ class Harness {
   failResult: Error | undefined
   onProvider: (() => void) | undefined
   onSettings: (() => void) | undefined
-  constructor (factoryTest?: TestContext, register = true) {
+  constructor (
+    factoryTest?: TestContext, register = true, methods: Partial<ExtensionAPI> = {}
+  ) {
     const on: ExtensionAPI['on'] = (name, handler) => {
       const handlers = this.hooks.get(name) ?? []
       handlers.push(handler)
       this.hooks.set(name, handlers)
     }
-    this.pi = strictFake<ExtensionAPI>({ on })
+    this.pi = strictFake<ExtensionAPI>({ ...methods, on })
     const streamSimple: Provider['streamSimple'] = (requestModel, context, source) => {
       if (this.failProvider != null) throw this.failProvider
       const options = source ?? {}
@@ -588,8 +608,8 @@ function assertBilling (body: Record<string, unknown>, prompt: string): void {
   assert.equal(system[0], billing[0])
   assert.deepEqual(billing[0], {
     type: 'text',
-    text: 'x-anthropic-billing-header: cc_version=2.1.281.' +
-      `${buildHashFor('2.1.281', prompt)}; cc_entrypoint=cli;`
+    text: 'x-anthropic-billing-header: cc_version=2.1.322.' +
+      `${buildHashFor('2.1.322', prompt)}; cc_entrypoint=cli;`
   })
 }
 export async function runTests (
@@ -598,7 +618,7 @@ export async function runTests (
     settings: SessionBeforeCompactEvent['preparation']['settings']) =>
   SessionBeforeCompactEvent['preparation'] | undefined
 ): Promise<void> {
-  await test('ordinary hooks retain frozen pre-refactor results and guards',
+  await test('ordinary hooks match captured 322 controls and retain guards',
     async (t) => {
       const h = new Harness(t)
       assert.deepEqual([...h.hooks.keys()], [
@@ -635,7 +655,7 @@ export async function runTests (
         assert.deepEqual(applyFingerprintPayload(input, fixture.id), fixture.result)
       }
       assert.equal(
-        buildHashFor('2.1.281', 'The real synthetic prompt for regression.'), 'b83'
+        buildHashFor('2.1.322', 'The real synthetic prompt for regression.'), '7c0'
       )
       for (const scope of ['no-model', 'api-key', 'other-provider']) {
         h.model = scope === 'no-model'
@@ -663,6 +683,161 @@ export async function runTests (
         const result = await payloadHook(payloadEvent as never, h.ctx)
         assert.ok(isRecord(result))
         assertBilling(result, payload.messages?.[0]?.content ?? '')
+      }
+    })
+  await test('captured controls retain selected effort, caller management and ' +
+    'nonempty system reminders without mutating inputs', async () => {
+    for (const captured of interactive.cases) {
+      for (const effort of ['low', 'medium', 'high', 'max']) {
+        const management = { edits: [{ type: 'caller-edit', keep: 2 }] }
+        const input = {
+          model: captured.id,
+          system: [{ type: 'text', text: 'Summary instructions' }],
+          thinking: {
+            type: 'adaptive',
+            display: 'summarized',
+            block_binding: { prefix_mismatch_behavior: 'drop_block' }
+          },
+          output_config: { effort: 'high', format: 'caller-format' },
+          context_management: management,
+          messages: [
+            { role: 'user', content: interactive.prompt },
+            { role: 'system', content: [{ type: 'text', text: 'Live reminder' }] },
+            { role: 'system', content: [], output_config: { effort } }
+          ]
+        }
+        const original = structuredClone(input)
+        const result = applyFingerprintPayload(input, captured.id)
+        assert.deepEqual(input, original)
+        assert.deepEqual(result.thinking, captured.thinking)
+        assert.deepEqual(result.output_config, { effort, format: 'caller-format' })
+        assert.equal(result.context_management, management)
+        assert.deepEqual(result.messages, input.messages)
+        assert.ok(Array.isArray(result.system))
+        assert.deepEqual(result.system[0], captured.billing)
+        assert.deepEqual(applyFingerprintPayload(result, captured.id), result)
+        assert.deepEqual(result.betas, captured.headers['anthropic-beta'].split(','))
+      }
+    }
+  })
+  await test('current per-turn effort survives assistant history', async () => {
+    const observed = interactive.effortChange
+    const recorded = applyFingerprintPayload({
+      output_config: observed.initial,
+      messages: [
+        { role: 'user', content: 'An initial request' },
+        { role: 'system', content: [], output_config: observed.initial },
+        { role: 'assistant', content: 'An earlier answer' },
+        { role: 'user', content: 'A follow-up request' },
+        observed.tail
+      ]
+    }, observed.model)
+    assert.ok(Array.isArray(recorded.messages))
+    assert.deepEqual(recorded.messages.at(-1), observed.tail)
+    assert.deepEqual(recorded.output_config, observed.current)
+    for (const captured of interactive.cases) {
+      for (const [previous, current] of [
+        ['low', 'medium'], ['medium', 'high'], ['high', 'low'],
+        ['high', 'high'], ['max', 'xhigh']
+      ]) {
+        const user = { role: 'user', content: 'An initial request' }
+        const tail = { role: 'system', content: [], output_config: { effort: current } }
+        const input = {
+          output_config: { effort: previous, format: 'caller-format' },
+          messages: [
+            user,
+            { role: 'system', content: [], output_config: { effort: previous } },
+            { role: 'assistant', content: 'An earlier answer' },
+            { role: 'user', content: 'A follow-up request' },
+            tail
+          ]
+        }
+        const original = structuredClone(input)
+        const result = applyFingerprintPayload(input, captured.id)
+        const expectedOutput = { effort: current, format: 'caller-format' }
+        assert.deepEqual(result.messages, input.messages)
+        assert.deepEqual(result.output_config, expectedOutput)
+        assert.deepEqual(input, original)
+        const summary = applyFingerprintPayload({ ...input, messages: [user, tail] },
+          captured.id, true)
+        assert.deepEqual(summary.messages, [user])
+        assert.deepEqual(summary.output_config, expectedOutput)
+      }
+    }
+  })
+  await test('historical controls retain the current tail without assistant history',
+    async () => {
+      for (const captured of interactive.cases) {
+        for (const control of [
+          { role: 'system', content: [], output_config: { effort: 'low' } },
+          { role: 'system', content: 'Earlier rules', output_config: { effort: 'low' } },
+          { role: 'system', content: [], output_config: { format: 'historical-only' } }
+        ]) {
+          const input = {
+            output_config: { effort: 'low', format: 'caller-format' },
+            messages: [
+              { role: 'user', content: 'An earlier request' }, control,
+              { role: 'user', content: 'A later request' },
+              { role: 'system', content: [], output_config: { effort: 'high' } }
+            ]
+          }
+          const original = structuredClone(input)
+          const result = applyFingerprintPayload(input, captured.id)
+          assert.deepEqual(result.messages, original.messages)
+          assert.deepEqual(result.output_config, {
+            effort: 'high', format: 'caller-format'
+          })
+          assert.deepEqual(input, original)
+        }
+      }
+    })
+  await test('extra controls and malformed tails keep their original message scope',
+    async () => {
+      const cases: Array<{ tail: ProviderPayload, effort?: string }> = [
+        {
+          tail: {
+            role: 'system',
+            content: [],
+            output_config: { effort: 'high', format: 'message-only' }
+          },
+          effort: 'high'
+        },
+        {
+          tail: {
+            role: 'system',
+            content: [],
+            clear_at: 'next_user_message',
+            output_config: { effort: 'medium' }
+          },
+          effort: 'medium'
+        },
+        { tail: { role: 'system', content: [] } },
+        { tail: { role: 'system', content: [], output_config: { effort: '' } } },
+        { tail: { role: 'system', content: [], output_config: { effort: 4 } } },
+        { tail: { role: 'system', content: [], output_config: { effort: 'future' } } },
+        {
+          tail: {
+            role: 'system',
+            content: [],
+            output_config: { format: 'message-only' }
+          }
+        },
+        { tail: { role: 'system', content: [], output_config: [] } }
+      ]
+      for (const captured of interactive.cases) {
+        for (const { tail, effort } of cases) {
+          const input = {
+            output_config: { effort: 'low', format: 'caller-format' },
+            messages: [{ role: 'user', content: 'A request' }, tail]
+          }
+          const original = structuredClone(input)
+          const result = applyFingerprintPayload(input, captured.id)
+          assert.deepEqual(result.messages, original.messages)
+          assert.deepEqual(result.output_config, {
+            ...input.output_config, ...(effort === undefined ? {} : { effort })
+          })
+          assert.deepEqual(input, original)
+        }
       }
     })
   await test('factory uses native compact for all reasons, ' +
@@ -978,6 +1153,97 @@ export async function runTests (
       }
     }
   })
+  await test('compact_context completes or resumes after OAuth failure with ' +
+    'both extension orders and every captured model', async (t) => {
+    for (const captured of interactive.cases) {
+      for (const compactFirst of [true, false]) {
+        for (const fail of [false, true]) {
+          const tools: ToolDefinition[] = []
+          const sent: Array<Parameters<ExtensionAPI['sendMessage']>> = []
+          const h = new Harness(t, false, {
+            registerTool: ((tool: ToolDefinition) => {
+              tools.push(tool)
+            }) as ExtensionAPI['registerTool'],
+            sendMessage: (...args) => { sent.push(args) }
+          })
+          h.model = {
+            ...model, id: captured.id, compat: { supportsMidConvoEffort: true }
+          }
+          for (const factory of compactFirst
+            ? [compactContext, moveFactory, fingerprintFactory]
+            : [fingerprintFactory, moveFactory, compactContext]) factory(h.pi)
+          if (fail) h.failProvider = new Error('fake-secret-summary-failure')
+          const branch = [toolEntry('compact_context', '', 'self-compact')]
+          let operation: Promise<void> | undefined
+          let compactCalls = 0
+          const ctx = strictFake<ExtensionContext>({
+            ...h.ctx,
+            getContextUsage: () => ({
+              tokens: 50000, contextWindow: 200000, percent: 25
+            }),
+            isIdle: () => true,
+            hasPendingMessages: () => false,
+            sessionManager: strictFake<ExtensionContext['sessionManager']>({
+              getBranch: () => branch
+            }),
+            compact: (options) => {
+              compactCalls++
+              operation = (async () => {
+                const result = await h.dispatch(compactEvent())
+                if (result?.cancel === true) {
+                  options?.onError?.(new Error(COMPACTION_CANCELLED))
+                  return
+                }
+                assert.ok(result?.compaction)
+                options?.onComplete?.({
+                  ...result.compaction, estimatedTokensAfter: 100
+                })
+              })()
+            }
+          })
+          const event = {
+            type: 'tool_call',
+            toolName: 'compact_context',
+            toolCallId: 'call-self-compact',
+            input: {}
+          }
+          for (const hook of h.hooks.get('tool_call') ?? []) {
+            assert.equal(await hook(event as never, ctx), undefined)
+          }
+          assert.equal(tools.length, 1)
+          const result = await tools[0].execute('call-self-compact', {
+            instructions: 'Preserve the offline decision', next: 'SELF_COMPACT_NEXT'
+          }, undefined, undefined, ctx)
+          assert.equal(result.terminate, true)
+          assert.equal(h.calls.length, 0)
+          for (const hook of h.hooks.get('agent_settled') ?? []) {
+            const settled: AgentSettledEvent = { type: 'agent_settled' }
+            await hook(settled as never, ctx)
+          }
+          assert.ok(operation !== undefined)
+          await operation
+          assert.equal(compactCalls, 1)
+          assert.equal(h.defaultCalls, 0)
+          assert.equal(h.checkpoints.length, fail ? 0 : 1)
+          assert.equal(sent.length, 1)
+          assert.deepEqual(sent[0][1], { triggerTurn: true, deliverAs: 'followUp' })
+          const content = String(sent[0][0].content)
+          assert.ok(content.endsWith('SELF_COMPACT_NEXT'))
+          assert.ok(!content.includes('fake-secret'))
+          if (fail) assert.ok(content.includes(EXTENSION_CANCELLED))
+          else {
+            assert.match(content, /has finished/u)
+            assert.match(content, /"tokensAfter": 100/u)
+            assert.equal(h.calls.length, 1)
+            assert.equal(h.bodies.length, 1)
+            assert.ok(!JSON.stringify(h.bodies).includes('Offline reminder'))
+            assert.deepEqual(h.bodies[0].thinking, undefined)
+          }
+          assert.deepEqual(h.errors, [])
+        }
+      }
+    }
+  })
   await test('effective provider receives refreshed auth, baseUrl, ' +
     'nullable headers and options',
   async () => {
@@ -1054,9 +1320,9 @@ export async function runTests (
     assert.equal(call.options.headers?.['X-Auth'], 'yes')
     assert.equal(call.options.headers?.['X-Client-Request-Id'], undefined)
     assert.equal(
-      call.options.headers?.['User-Agent'], 'claude-cli/2.1.281 (external, cli)'
+      call.options.headers?.['user-agent'], 'claude-cli/2.1.322 (external, cli)'
     )
-    assert.equal(call.options.headers?.['user-agent'], undefined)
+    assert.equal(call.options.headers?.['User-Agent'], undefined)
     assert.equal(call.options.timeoutMs, 23)
     assert.equal(call.options.websocketConnectTimeoutMs, 24)
     assert.equal(call.options.maxRetries, 4)
@@ -1114,7 +1380,7 @@ export async function runTests (
     assert.deepEqual(h.calls[2].options.env, { optionsOnly: 'c' })
     assert.equal(h.calls[2].options.headers?.['X-Auth'], undefined)
     assert.equal(
-      h.calls[2].options.headers?.['User-Agent'], 'claude-cli/2.1.281 (external, cli)'
+      h.calls[2].options.headers?.['user-agent'], 'claude-cli/2.1.322 (external, cli)'
     )
     assert.deepEqual(mergeHeaders({ 'X-Drop': 'old', 'x-drop': 'duplicate' },
       { 'X-DROP': null }), { 'X-DROP': null })
@@ -1542,7 +1808,7 @@ export async function runTests (
         assert.ok(Object.keys(headers).every((name) =>
           name.toLowerCase() !== 'x-client-request-id'))
         assert.equal(headers['X-Claude-Code-Session-Id'], fingerprint.sessionId)
-        assert.equal(headers['User-Agent'], 'claude-cli/2.1.281 (external, cli)')
+        assert.equal(headers['user-agent'], 'claude-cli/2.1.322 (external, cli)')
       }
       assert.deepEqual(h.calls[0].options.headers, h.calls[1].options.headers)
       assert.equal(h.bodies.length, 2)
@@ -1867,25 +2133,26 @@ export async function runTests (
     assert.match(documentation, /compact→tree/u)
     assert.match(documentation, /0\.85\.1/u)
   })
-  await test('real Opus5, constructed Opus5.5 and Sonnet adapters ' +
-    'preserve final fingerprint body',
+  await test('all five captured models preserve final summary fingerprint ' +
+    'through the real adapter',
   async (t) => {
     const provider = anthropicProvider()
     const opus5 = provider.getModels().find((entry) => entry.id === 'claude-opus-5')
-    const sonnet = provider.getModels().find((entry) => entry.id === 'claude-sonnet-4-5')
-    assert.ok(opus5 !== undefined && sonnet !== undefined)
-    const constructed55 = { ...opus5, id: 'claude-opus-5-5' }
-    for (const requestModel of [opus5, constructed55, sonnet]) {
+    assert.ok(opus5 !== undefined)
+    for (const captured of interactive.cases) {
+      const requestModel: Model<Api> = { ...opus5, id: captured.id }
       const h = new Harness(t)
       h.model = requestModel
       const rawBodies: Array<Record<string, unknown>> = []
       const finalBodies: Array<Record<string, unknown>> = []
+      const finalHeaders: Headers[] = []
       let providerCalls = 0
       let callbacks = 0
       const fetch: typeof globalThis.fetch = async (_input, init) => {
         const body: unknown = JSON.parse(String(init?.body))
         assert.ok(isRecord(body))
         finalBodies.push(body)
+        finalHeaders.push(new Headers(init?.headers))
         return sseResponse()
       }
       t.mock.method(h.ctx.modelRegistry, 'getProvider', () => strictFake<Provider>({
@@ -1916,8 +2183,7 @@ export async function runTests (
       const raw = rawBodies[0]
       const body = finalBodies[0]
       assert.ok(Array.isArray(raw.messages) && Array.isArray(body.messages))
-      const managed = requestModel.id !== 'claude-sonnet-4-5'
-      assert.equal(raw.messages.length, managed ? 2 : 1)
+      assert.equal(raw.messages.length, 2)
       assert.equal(body.messages.length, 1)
       assert.ok(isRecord(body.messages[0]))
       assert.equal(body.messages[0].role, 'user')
@@ -1934,20 +2200,431 @@ export async function runTests (
           text.includes("You are Claude Code, Anthropic's official CLI")))
       assert.ok(systemText.some((text) => typeof text === 'string' &&
           text.includes('context summarization assistant')))
-      if (managed) {
-        assert.deepEqual(body.thinking, { type: 'adaptive' })
-        assert.ok(isRecord(raw.messages[1]))
-        assert.deepEqual(raw.messages[1].content, [])
-        assert.ok(isRecord(raw.messages[1].output_config))
-        assert.equal(typeof raw.messages[1].output_config.effort, 'string')
+      assert.deepEqual(body.thinking, captured.thinking)
+      assert.deepEqual(body.context_management, captured.context_management)
+      assert.ok(isRecord(raw.messages[1]))
+      assert.deepEqual(raw.messages[1].content, [])
+      assert.ok(isRecord(raw.messages[1].output_config))
+      assert.equal(typeof raw.messages[1].output_config.effort, 'string')
+      for (const [name, value] of Object.entries(captured.headers)) {
+        if (name === 'x-claude-code-session-id') continue
+        assert.equal(finalHeaders[0].get(name), value, name)
       }
-      const fixture = ordinary.cases.find((entry) => entry.id === requestModel.id)
-      if (fixture !== undefined) {
-        assert.deepEqual(applyFingerprintPayload(raw, requestModel.id).betas,
-          fixture.result.betas)
+      assert.deepEqual(applyFingerprintPayload(raw, requestModel.id).betas,
+        captured.headers['anthropic-beta'].split(','))
+    }
+  })
+  await test('enabled SDK features retain required betas on actual ordinary ' +
+    'and summary HTTP requests', async (t) => {
+    const provider = anthropicProvider()
+    const base = provider.getModels().find((entry) => entry.id === 'claude-opus-5')
+    assert.ok(base)
+    const context: Context = {
+      systemPrompt: 'Offline feature regression',
+      messages: [{ role: 'user', content: 'Probe enabled features', timestamp: 0 }],
+      tools: [{ name: 'probe', description: 'Probe', parameters: Type.Object({}) }]
+    }
+    for (const captured of interactive.cases) {
+      for (const features of [
+        { fallback: false, streaming: false }, { fallback: true, streaming: false },
+        { fallback: false, streaming: true }, { fallback: true, streaming: true }
+      ]) {
+        for (const kind of ['ordinary', 'summary']) {
+          await t.test(`${captured.id}:${JSON.stringify(features)}:${kind}`,
+            async (t) => {
+              const requestModel: Model<Api> = {
+                ...base,
+                id: captured.id,
+                compat: {
+                  ...base.compat,
+                  supportsEagerToolInputStreaming: !features.streaming,
+                  allowedFallbackModels: features.fallback
+                    ? [{
+                        provider: 'anthropic', model: 'claude-opus-5', cost: base.cost
+                      }]
+                    : []
+                }
+              }
+              assert.ok(isAnthropicModel(requestModel))
+              const h = new Harness(t)
+              h.model = requestModel
+              const requests: Array<{ body: ProviderPayload, headers: Headers }> = []
+              const fetch: typeof globalThis.fetch = async (_input, init) => {
+                const body: unknown = JSON.parse(String(init?.body))
+                assert.ok(isRecord(body))
+                requests.push({ body, headers: new Headers(init?.headers) })
+                return sseResponse()
+              }
+              if (kind === 'ordinary') {
+                const headers: Record<string, string | null> = {}
+                const headerHook = h.hooks.get('before_provider_headers')?.[0]
+                const payloadHook = h.hooks.get('before_provider_request')?.[0]
+                assert.ok(headerHook !== undefined && payloadHook !== undefined)
+                await callHeaderHook(headerHook, headers, h.ctx)
+                const result = await provider.streamSimple(requestModel, context, {
+                  apiKey: 'sk-ant-oat-FAKE-OFFLINE',
+                  headers,
+                  fetch,
+                  maxRetries: 0,
+                  cacheRetention: 'none',
+                  reasoning: 'high',
+                  onPayload: async (payload) =>
+                    callPayloadHook(payloadHook, payload, h.ctx)
+                }).result()
+                assert.equal(result.stopReason, 'stop', result.errorMessage)
+              } else {
+                t.mock.method(h.ctx.modelRegistry, 'getProvider', () =>
+                  strictFake<Provider>({
+                    streamSimple: (model, context, options) => {
+                      assert.ok(isAnthropicModel(model))
+                      return provider.streamSimple(model, context, {
+                        ...options, fetch, maxRetries: 0
+                      })
+                    }
+                  }))
+                assert.ok((await h.dispatch(compactEvent()))?.compaction)
+              }
+              assert.equal(requests.length, 1)
+              assert.deepEqual(requests[0].body.fallbacks, features.fallback
+                ? [{ model: 'claude-opus-5' }]
+                : undefined)
+              const expected = captured.headers['anthropic-beta'].split(',')
+              if (features.fallback) expected.push('server-side-fallback-2026-06-01')
+              if (features.streaming && kind === 'ordinary') {
+                expected.push('fine-grained-tool-streaming-2025-05-14')
+              }
+              assert.deepEqual(requests[0].headers.get('anthropic-beta')?.split(','),
+                expected)
+            })
+        }
       }
     }
   })
+  await test('scoped system payloads retain their required beta on actual HTTP',
+    async (t) => {
+      const provider = anthropicProvider()
+      const base = provider.getModels().find((entry) => entry.id === 'claude-opus-5')
+      assert.ok(base)
+      for (const captured of interactive.cases) {
+        await t.test(captured.id, async (t) => {
+          const requestModel: Model<Api> = { ...base, id: captured.id }
+          assert.ok(isAnthropicModel(requestModel))
+          const h = new Harness(t)
+          h.model = requestModel
+          const headers: Record<string, string | null> = {}
+          const headerHook = h.hooks.get('before_provider_headers')?.[0]
+          const payloadHook = h.hooks.get('before_provider_request')?.[0]
+          assert.ok(headerHook !== undefined && payloadHook !== undefined)
+          await callHeaderHook(headerHook, headers, h.ctx)
+          let sentHeaders: Headers | undefined
+          const scoped = {
+            role: 'system',
+            content: 'A scoped reminder',
+            clear_at: 'next_user_message'
+          }
+          const result = await provider.streamSimple(requestModel, {
+            systemPrompt: 'Offline scoped feature',
+            messages: [{ role: 'user', content: 'First', timestamp: 0 },
+              terminal('stop', 'First answer'),
+              { role: 'user', content: 'Next', timestamp: 1 }]
+          }, {
+            apiKey: 'sk-ant-oat-FAKE-OFFLINE',
+            headers,
+            maxRetries: 0,
+            cacheRetention: 'none',
+            reasoning: 'high',
+            fetch: async (_input, init) => {
+              sentHeaders = new Headers(init?.headers)
+              const body: unknown = JSON.parse(String(init?.body))
+              assert.ok(isRecord(body) && Array.isArray(body.messages))
+              assert.deepEqual(body.messages[1], scoped)
+              return sseResponse()
+            },
+            onPayload: async (payload) => {
+              assert.ok(isRecord(payload) && Array.isArray(payload.messages))
+              return callPayloadHook(payloadHook, {
+                ...payload,
+                messages: [payload.messages[0], scoped, ...payload.messages.slice(1)]
+              }, h.ctx)
+            }
+          }).result()
+          assert.equal(result.stopReason, 'stop', result.errorMessage)
+          assert.deepEqual(sentHeaders?.get('anthropic-beta')?.split(','), [
+            ...captured.headers['anthropic-beta'].split(','),
+            'mid-conversation-system-clear-at-2026-08-21'
+          ])
+        })
+      }
+    })
+  await test('explicit caller feature betas survive header and payload paths',
+    async (t) => {
+      const provider = anthropicProvider()
+      const base = provider.getModels().find((entry) => entry.id === 'claude-opus-5')
+      const captured = interactive.cases.find((entry) =>
+        entry.id === 'claude-sonnet-5-5')
+      assert.ok(base !== undefined && captured !== undefined)
+      const requestModel: Model<Api> = { ...base, id: captured.id }
+      assert.ok(isAnthropicModel(requestModel))
+      const flag = 'inline-tools-2026-09-15'
+      const expected = [...captured.headers['anthropic-beta'].split(','), flag]
+      for (const source of ['header', 'payload', 'both']) {
+        await t.test(source, async (t) => {
+          const h = new Harness(t)
+          h.model = requestModel
+          const headers: Record<string, string | null> = source === 'payload'
+            ? {}
+            : { 'Anthropic-Beta': flag }
+          const headerHook = h.hooks.get('before_provider_headers')?.[0]
+          const payloadHook = h.hooks.get('before_provider_request')?.[0]
+          assert.ok(headerHook !== undefined && payloadHook !== undefined)
+          await callHeaderHook(headerHook, headers, h.ctx)
+          const addition = {
+            role: 'system',
+            content: [{
+              type: 'tool_addition',
+              tool: {
+                type: 'tool_definition',
+                definition: {
+                  name: 'inline_probe',
+                  description: 'Offline inline tool',
+                  input_schema: { type: 'object', properties: {} }
+                }
+              }
+            }]
+          }
+          let requests = 0
+          const result = await provider.streamSimple(requestModel, {
+            systemPrompt: 'Offline feature',
+            messages: [{ role: 'user', content: 'Load the tool', timestamp: 0 }]
+          }, {
+            apiKey: 'sk-ant-oat-FAKE-OFFLINE',
+            headers,
+            maxRetries: 0,
+            cacheRetention: 'none',
+            reasoning: 'high',
+            onPayload: async (payload) => {
+              assert.ok(isRecord(payload) && Array.isArray(payload.messages))
+              assert.ok(Array.isArray(payload.betas))
+              return callPayloadHook(payloadHook, {
+                ...payload,
+                betas: source === 'header' ? payload.betas : [...payload.betas, flag],
+                messages: [payload.messages[0], addition, ...payload.messages.slice(1)]
+              }, h.ctx)
+            },
+            fetch: async (_input, init) => {
+              requests++
+              const body: unknown = JSON.parse(String(init?.body))
+              assert.ok(isRecord(body) && Array.isArray(body.messages))
+              assert.deepEqual(body.messages[1], addition)
+              assert.deepEqual(new Headers(init?.headers).get('anthropic-beta')
+                ?.split(','), expected)
+              return sseResponse()
+            }
+          }).result()
+          assert.equal(result.stopReason, 'stop', result.errorMessage)
+          assert.equal(requests, 1)
+        })
+      }
+      await t.test('isolated summary header', async (t) => {
+        const h = new Harness(t)
+        h.model = requestModel
+        h.auth = async () => ({
+          ok: true,
+          apiKey: 'sk-ant-oat-FAKE-OFFLINE',
+          headers: { 'Anthropic-Beta': flag }
+        })
+        let requests = 0
+        t.mock.method(h.ctx.modelRegistry, 'getProvider', () => strictFake<Provider>({
+          streamSimple: (model, context, options) => {
+            assert.ok(isAnthropicModel(model))
+            return provider.streamSimple(model, context, {
+              ...options,
+              maxRetries: 0,
+              fetch: async (_input, init) => {
+                requests++
+                assert.deepEqual(new Headers(init?.headers).get('anthropic-beta')
+                  ?.split(','), expected)
+                return sseResponse()
+              }
+            })
+          }
+        }))
+        assert.ok((await h.dispatch(compactEvent()))?.compaction)
+        assert.equal(requests, 1)
+      })
+    })
+  await test('replayed thinking keeps prefix-check controls across rewritten history',
+    async (t) => {
+      const provider = anthropicProvider()
+      const base = provider.getModels().find((entry) => entry.id === 'claude-opus-5')
+      assert.ok(base)
+      for (const captured of interactive.cases) {
+        for (const redacted of [false, true]) {
+          for (const policy of ['drop_block', 'error', 'missing']) {
+            await t.test(`${captured.id}:${String(redacted)}:${policy}`, async (t) => {
+              const requestModel: Model<Api> = { ...base, id: captured.id }
+              assert.ok(isAnthropicModel(requestModel))
+              const h = new Harness(t)
+              h.model = requestModel
+              const headers: Record<string, string | null> = {}
+              const headerHook = h.hooks.get('before_provider_headers')?.[0]
+              const payloadHook = h.hooks.get('before_provider_request')?.[0]
+              assert.ok(headerHook !== undefined && payloadHook !== undefined)
+              await callHeaderHook(headerHook, headers, h.ctx)
+              let requests = 0
+              const result = await provider.streamSimple(requestModel, {
+                systemPrompt: 'Offline context after client-side compaction',
+                messages: [{ role: 'user', content: 'Rewritten summary', timestamp: 0 },
+                  {
+                    ...terminal(),
+                    model: captured.id,
+                    content: [
+                      {
+                        type: 'thinking',
+                        thinking: redacted ? '' : 'Kept reasoning',
+                        thinkingSignature: 'opaque-test-signature',
+                        redacted
+                      },
+                      { type: 'text', text: 'Kept answer' }
+                    ]
+                  }, { role: 'user', content: 'Continue', timestamp: 1 }]
+              }, {
+                apiKey: 'sk-ant-oat-FAKE-OFFLINE',
+                headers,
+                maxRetries: 0,
+                cacheRetention: 'none',
+                reasoning: 'high',
+                onPayload: async (payload) => {
+                  assert.ok(isRecord(payload) && isRecord(payload.thinking))
+                  return callPayloadHook(payloadHook, {
+                    ...payload,
+                    thinking: {
+                      ...payload.thinking,
+                      block_binding: policy === 'missing'
+                        ? undefined
+                        : { prefix_mismatch_behavior: policy }
+                    }
+                  }, h.ctx)
+                },
+                fetch: async (_input, init) => {
+                  requests++
+                  const body: unknown = JSON.parse(String(init?.body))
+                  assert.ok(isRecord(body) && Array.isArray(body.messages))
+                  const assistant = body.messages.find((message: unknown) =>
+                    isRecord(message) && message.role === 'assistant')
+                  assert.ok(isRecord(assistant) && Array.isArray(assistant.content))
+                  assert.deepEqual(assistant.content[0], redacted
+                    ? { type: 'redacted_thinking', data: 'opaque-test-signature' }
+                    : {
+                        type: 'thinking',
+                        thinking: 'Kept reasoning',
+                        signature: 'opaque-test-signature'
+                      })
+                  assert.deepEqual(body.thinking, {
+                    type: 'adaptive',
+                    display: 'updates',
+                    block_binding: {
+                      prefix_mismatch_behavior: policy === 'missing'
+                        ? 'drop_block'
+                        : policy
+                    }
+                  })
+                  assert.deepEqual(new Headers(init?.headers).get('anthropic-beta')
+                    ?.split(','), [...captured.headers['anthropic-beta'].split(','),
+                    'thinking-binding-controls-2026-08-01'])
+                  return sseResponse()
+                }
+              }).result()
+              assert.equal(result.stopReason, 'stop', result.errorMessage)
+              assert.equal(requests, 1)
+            })
+          }
+        }
+      }
+    })
+  await test('fallback forms and caller server-side compaction keep valid controls',
+    async (t) => {
+      const arrayBeta = 'server-side-fallback-2026-06-01'
+      const defaultBeta = 'server-side-fallback-2026-07-01'
+      for (const captured of interactive.cases) {
+        for (const fallback of [
+          { value: [{ model: 'claude-opus-4-8' }], beta: arrayBeta, requested: [] },
+          {
+            value: [{ model: 'claude-opus-4-8' }],
+            beta: arrayBeta,
+            requested: [arrayBeta]
+          },
+          { value: 'default', beta: defaultBeta, requested: [] },
+          { value: 'default', beta: defaultBeta, requested: [arrayBeta] }
+        ]) {
+          await t.test(`${captured.id}:${JSON.stringify(fallback)}`, () => {
+            const input = {
+              messages: [{ role: 'user', content: 'Fallback probe' }],
+              fallbacks: fallback.value,
+              betas: fallback.requested
+            }
+            const original = structuredClone(input)
+            const output = applyFingerprintPayload(input, captured.id)
+            assert.deepEqual(input, original)
+            assert.deepEqual(output.fallbacks, input.fallbacks)
+            assert.deepEqual(output.betas, [
+              ...captured.headers['anthropic-beta'].split(','), fallback.beta
+            ])
+          })
+        }
+        await t.test(`${captured.id}:server compaction`, () => {
+          const input = {
+            messages: [{ role: 'user', content: 'Server compact' }],
+            compaction: { type: 'summarize' },
+            betas: ['compact-2026-09-04']
+          }
+          const original = structuredClone(input)
+          const output = applyFingerprintPayload(input, captured.id)
+          assert.deepEqual(input, original)
+          assert.deepEqual(output.compaction, input.compaction)
+          assert.equal(output.context_management, undefined)
+          assert.deepEqual(output.betas, [
+            ...captured.headers['anthropic-beta'].split(','), 'compact-2026-09-04'
+          ])
+        })
+      }
+    })
+  await test('legacy model beta sets and control scope remain at the base behavior',
+    async () => {
+      const messages = [{ role: 'user', content: 'Legacy request' }, {
+        role: 'system', content: [], output_config: { effort: 'high' }
+      }]
+      const thinking = {
+        type: 'adaptive',
+        display: 'summarized',
+        block_binding: { prefix_mismatch_behavior: 'drop_block' }
+      }
+      for (const [id, betas] of Object.entries(legacy.betas)) {
+        const headers: Record<string, string | null> = {}
+        applyFingerprintHeaders(headers, 'legacy-session', id)
+        assert.deepEqual(headers['anthropic-beta']?.split(','), betas, id)
+        const payload = { messages, thinking, output_config: { effort: 'medium' } }
+        const result = applyFingerprintPayload(payload, id)
+        assert.deepEqual(result.betas, betas, id)
+        assert.deepEqual(result.output_config, payload.output_config, id)
+        assert.equal(result.context_management, undefined, id)
+        assert.deepEqual(result.messages, id === 'claude-opus-5'
+          ? messages.slice(0, 1)
+          : messages, id)
+        assert.deepEqual(result.thinking, id === 'claude-opus-5'
+          ? { type: 'adaptive' }
+          : thinking, id)
+      }
+    })
+  await test('legacy reminder variants remain identical to the base configuration',
+    async () => {
+      assert.deepEqual(promptConfig.reminders, legacy.reminders)
+      assert.deepEqual(promptConfig.system, legacy.system)
+      const variants: Record<string, unknown> = promptConfig.models
+      for (const [id, variant] of Object.entries(legacy.models)) {
+        assert.deepEqual(variants[id], variant, id)
+      }
+    })
   await test('summary-only guards reject callback corruption ' +
     'before real adapter fetch', async (t) => {
     const provider = anthropicProvider()

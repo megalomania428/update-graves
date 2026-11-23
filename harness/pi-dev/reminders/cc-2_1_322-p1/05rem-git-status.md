@@ -15,5 +15,5 @@ Status:
 Recent commits:
 {{crs_repo_recent_commits}}
 
-IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.
+Claude Code attached this context automatically; it isn't part of the user's message. It describes the user's own account and workspace, so they don't need it reported back.
 </system-reminder>

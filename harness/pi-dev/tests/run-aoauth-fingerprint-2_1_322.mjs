@@ -46,6 +46,7 @@ try {
   const jiti = createJiti(import.meta.url, {
     fsCache: false, moduleCache: false,
     alias: {
+      typebox: require.resolve('typebox'),
       '@earendil-works/pi-coding-agent': facadePath,
       '@earendil-works/pi-ai': join(aiDir, 'dist/compat.js'),
       '@earendil-works/pi-ai/providers/anthropic': join(aiDir, 'dist/providers/anthropic.js'),
@@ -53,18 +54,18 @@ try {
   });
   const directory = dirname(fileURLToPath(import.meta.url));
   const moveDirectory = join(temporary, 'move/extensions');
-  const configDirectory = join(temporary, 'move/reminders/cc-2_1_281-p1');
+  const configDirectory = join(temporary, 'move/reminders/cc-2_1_322-p1');
   await mkdir(moveDirectory, { recursive: true });
   await mkdir(configDirectory, { recursive: true });
-  const movePath = join(moveDirectory, 'move-reminders-2_1_281.ts');
+  const movePath = join(moveDirectory, 'move-reminders-2_1_322.ts');
   await writeFile(movePath, await readFile(
-    join(directory, '../extensions/move-reminders-2_1_281.ts'), 'utf8',
+    join(directory, '../extensions/move-reminders-2_1_322.ts'), 'utf8',
   ));
   await writeFile(join(configDirectory, 'move.json'), JSON.stringify({
     reminders: ['Offline reminder'], system: ['Offline agent system'],
   }));
   const moveFactory = await jiti.import(movePath, { default: true });
-  const tests = await jiti.import(join(directory, 'aoauth-fingerprint-2_1_281.test.ts'));
+  const tests = await jiti.import(join(directory, 'aoauth-fingerprint-2_1_322.test.ts'));
   console.log('PASS: installed coding-agent/ai/nested agent-core graph = 0.85.1');
   const { prepareCompaction } = await import(pathToFileURL(
     join(codingDir, 'dist/core/compaction/compaction.js'),

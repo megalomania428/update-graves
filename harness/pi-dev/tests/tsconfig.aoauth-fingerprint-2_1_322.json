@@ -23,11 +23,15 @@
       ],
       "@earendil-works/pi-agent-core": [
         "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-agent-core/dist/index.d.ts"
+      ],
+      "typebox": [
+        "/home/coder/.local/pi-dev/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.d.mts"
       ]
     }
   },
   "files": [
-    "../extensions/aoauth-fingerprint-2_1_281.ts",
-    "aoauth-fingerprint-2_1_281.test.ts"
+    "../extensions/aoauth-fingerprint-2_1_322.ts",
+    "../extensions/move-reminders-2_1_322.ts",
+    "aoauth-fingerprint-2_1_322.test.ts"
   ]
 }
