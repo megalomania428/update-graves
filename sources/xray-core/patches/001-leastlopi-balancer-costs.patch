@@ -1,7 +1,7 @@
 diff -ruN -x .git a/app/router/balancer_costs.go b/app/router/balancer_costs.go
 --- a/app/router/balancer_costs.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/balancer_costs.go	2026-11-23 13:13:11.722356622 +0000
-@@ -0,0 +1,103 @@
++++ b/app/router/balancer_costs.go	2026-11-24 13:22:58.459799550 +0000
+@@ -0,0 +1,117 @@
 +package router
 +
 +import (
@@ -28,18 +28,32 @@ diff -ruN -x .git a/app/router/balancer_costs.go b/app/router/balancer_costs.go
 +		return nil, errors.New("cannot find tag")
 +	}
 +	ret := &routing.BalancerCosts{Strategy: balancingStrategyName(b.strategy)}
-+	reporter, ok := b.strategy.(BalancingCostReporter)
-+	if !ok {
-+		return ret, nil
++	reporter, weighted := b.strategy.(BalancingCostReporter)
++	if weighted {
++		ret.Rules = reporter.CostRules()
 +	}
-+	ret.Rules = reporter.CostRules()
 +	candidates, err := b.SelectOutbounds()
 +	if err != nil {
 +		ret.OutboundsErr = errors.New("unable to select outbounds").Base(err)
 +		return ret, nil
 +	}
-+	ret.Outbounds = reporter.OutboundCosts(candidates)
++	ret.Candidates = sortedCandidates(candidates)
++	if weighted {
++		ret.Outbounds = reporter.OutboundCosts(ret.Candidates)
++	}
 +	return ret, nil
++}
++
++// ListBalancers implements routing.BalancerLister
++func (r *Router) ListBalancers() []string {
++	r.mu.Lock()
++	tags := make([]string, 0, len(r.balancers))
++	for tag := range r.balancers {
++		tags = append(tags, tag)
++	}
++	r.mu.Unlock()
++	sort.Strings(tags)
++	return tags
 +}
 +
 +// balancingStrategyName returns the normalized configuration name of a strategy
@@ -107,14 +121,16 @@ diff -ruN -x .git a/app/router/balancer_costs.go b/app/router/balancer_costs.go
 +}
 diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_costs_test.go
 --- a/app/router/balancer_costs_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/balancer_costs_test.go	2026-11-23 13:16:32.695203698 +0000
-@@ -0,0 +1,166 @@
++++ b/app/router/balancer_costs_test.go	2026-11-24 13:24:09.377311590 +0000
+@@ -0,0 +1,231 @@
 +package router
 +
 +import (
 +	"reflect"
 +	"testing"
++	"time"
 +
++	"github.com/xtls/xray-core/app/observatory"
 +	"github.com/xtls/xray-core/common/serial"
 +	"github.com/xtls/xray-core/features/outbound"
 +	"github.com/xtls/xray-core/features/routing"
@@ -122,8 +138,10 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +
 +func TestRouter_GetBalancerCosts(t *testing.T) {
 +	type fields struct {
-+		rule *BalancingRule
-+		ohm  outbound.Manager
++		rule     *BalancingRule
++		ohm      outbound.Manager
++		override string
++		status   []*observatory.OutboundStatus
 +	}
 +	type args struct {
 +		tag string
@@ -163,6 +181,7 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +					{Match: "vl", Value: costOf(2.5)},
 +					{Match: "zz", Value: costOf(7)},
 +				},
++				Candidates: []string{"ax5b", "cg-vl", "mh-16-vl", "pl"},
 +				Outbounds: []routing.BalancerOutboundCost{
 +					{OutboundTag: "ax5b", Cost: costOf(5)},
 +					{OutboundTag: "cg-vl", Cost: costOf(2.5)},
@@ -196,6 +215,7 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +					{Match: "^mh-", Regexp: true, CostPing: costOf(16)},
 +					{Match: "-w", CostPing: costOf(4), CostDevi: costOf(4)},
 +				},
++				Candidates: []string{"cb-w", "cg-w", "mh-w", "zz"},
 +				Outbounds: []routing.BalancerOutboundCost{
 +					{OutboundTag: "cb-w", CostPing: costOf(4), CostDevi: costOf(4)},
 +					{OutboundTag: "cg-w", CostPing: costOf(1), CostDevi: costOf(0)},
@@ -211,7 +231,7 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +				ohm:  &fakeHandlerSelector{tags: []string{"a"}},
 +			},
 +			args: args{tag: "b"},
-+			want: &routing.BalancerCosts{Strategy: "random"},
++			want: &routing.BalancerCosts{Strategy: "random", Candidates: []string{"a"}},
 +		},
 +		{
 +			name: "leastPing has no weights",
@@ -220,7 +240,51 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +				ohm:  &fakeHandlerSelector{tags: []string{"a"}},
 +			},
 +			args: args{tag: "b"},
-+			want: &routing.BalancerCosts{Strategy: "leastping"},
++			want: &routing.BalancerCosts{Strategy: "leastping", Candidates: []string{"a"}},
++		},
++		{
++			name: "roundRobin reports sorted unique candidates without fallbackTag and override",
++			fields: fields{
++				rule: &BalancingRule{
++					Tag:              "b",
++					OutboundSelector: []string{"mh-", "cg-"},
++					Strategy:         "roundRobin",
++					FallbackTag:      "fb",
++				},
++				ohm:      &fakeHandlerSelector{tags: []string{"mh-2", "cg-1", "fb", "mh-2", "other", "cg-1"}},
++				override: "ovr",
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{Strategy: "roundrobin", Candidates: []string{"cg-1", "mh-2"}},
++		},
++		{
++			name: "leastLoad candidates do not depend on the observatory, maxRTT and expected",
++			fields: fields{
++				rule: &BalancingRule{
++					Tag:              "b",
++					OutboundSelector: []string{"a"},
++					Strategy:         "leastLoad",
++					StrategySettings: serial.ToTypedMessage(&StrategyLeastLoadConfig{
++						Expected: 1,
++						MaxRTT:   int64(time.Millisecond),
++					}),
++				},
++				ohm: &fakeHandlerSelector{tags: []string{"a3", "a2", "a1"}},
++				status: []*observatory.OutboundStatus{
++					plainStatus("a1", false, 99999999),
++					plainStatus("a2", true, 500),
++				},
++			},
++			args: args{tag: "b"},
++			want: &routing.BalancerCosts{
++				Strategy:   "leastload",
++				Candidates: []string{"a1", "a2", "a3"},
++				Outbounds: []routing.BalancerOutboundCost{
++					{OutboundTag: "a1", Cost: costOf(1)},
++					{OutboundTag: "a2", Cost: costOf(1)},
++					{OutboundTag: "a3", Cost: costOf(1)},
++				},
++			},
 +		},
 +		{
 +			name: "unknown balancer",
@@ -250,12 +314,27 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +			},
 +			wantOutboundsErr: true,
 +		},
++		{
++			name: "random selector error leaves no candidates",
++			fields: fields{
++				rule: &BalancingRule{Tag: "b", OutboundSelector: []string{"a"}},
++			},
++			args:             args{tag: "b"},
++			want:             &routing.BalancerCosts{Strategy: "random"},
++			wantOutboundsErr: true,
++		},
 +	}
 +	for _, tt := range tests {
 +		t.Run(tt.name, func(t *testing.T) {
 +			b, err := tt.fields.rule.Build(tt.fields.ohm, nil)
 +			if err != nil {
 +				t.Fatalf("BalancingRule.Build() error = %v", err)
++			}
++			if tt.fields.override != "" {
++				b.override.Put(tt.fields.override)
++			}
++			if s, ok := b.strategy.(*LeastLoadStrategy); ok && tt.fields.status != nil {
++				s.observer = &fakeObservatory{status: tt.fields.status}
 +			}
 +			r := &Router{balancers: map[string]*Balancer{tt.fields.rule.Tag: b}}
 +			got, err := r.GetBalancerCosts(tt.args.tag)
@@ -275,10 +354,207 @@ diff -ruN -x .git a/app/router/balancer_costs_test.go b/app/router/balancer_cost
 +		})
 +	}
 +}
+diff -ruN -x .git a/app/router/balancer_scores.go b/app/router/balancer_scores.go
+--- a/app/router/balancer_scores.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/balancer_scores.go	2026-11-24 13:22:58.463799635 +0000
+@@ -0,0 +1,57 @@
++package router
++
++import (
++	"math"
++	"time"
++
++	"github.com/xtls/xray-core/app/observatory"
++)
++
++// durationRange is the bound of the int64 range of time.Duration in nanoseconds
++const durationRange = 1 << 63
++
++// leastLoadScale weights a measured value with the leastLoad weight cost
++func leastLoadScale(value, cost float64) float64 {
++	return value * math.Pow(cost, 0.5)
++}
++
++// leastLoadWeighted returns the value leastLoad ranks an outbound status by before its
++// conversion to time.Duration: the HealthPing deviation or, without HealthPing, the
++// last delay, weighted with the effective weight cost
++func leastLoadWeighted(status *observatory.OutboundStatus, cost float64) float64 {
++	if status.HealthPing != nil {
++		return leastLoadScale(float64(status.HealthPing.Deviation), cost)
++	}
++	return leastLoadScale(float64(time.Duration(status.Delay)*time.Millisecond), cost)
++}
++
++// LeastLoadScore returns the leastLoad score of an outbound status in nanoseconds with
++// the effective weight cost, truncated as the strategy converts it to time.Duration.
++// inRange is false when the weighted value is out of the int64 range of
++// time.Duration: the strategy overflows it, and the score is the unconverted value.
++func LeastLoadScore(
++	status *observatory.OutboundStatus, cost float64,
++) (score float64, inRange bool) {
++	weighted := leastLoadWeighted(status, cost)
++	if weighted >= -durationRange && weighted < durationRange {
++		return float64(time.Duration(weighted)), true
++	}
++	return weighted, false
++}
++
++// leastLoPiMeasure returns the average RTT and its deviation in nanoseconds leastLoPi
++// ranks an outbound status by: those of HealthPing or, without HealthPing, the last
++// delay and no deviation
++func leastLoPiMeasure(status *observatory.OutboundStatus) (average, deviation float64) {
++	if hp := status.HealthPing; hp != nil {
++		return float64(hp.Average), float64(hp.Deviation)
++	}
++	return float64(status.Delay) * float64(time.Millisecond), 0
++}
++
++// LeastLoPiScore returns the leastLoPi score of an outbound status in nanoseconds with
++// the effective weights costPing and costDevi
++func LeastLoPiScore(status *observatory.OutboundStatus, costPing, costDevi float64) float64 {
++	average, deviation := leastLoPiMeasure(status)
++	return leastLoPiCost{ping: costPing, devi: costDevi}.score(average, deviation)
++}
+diff -ruN -x .git a/app/router/balancer_scores_test.go b/app/router/balancer_scores_test.go
+--- a/app/router/balancer_scores_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/app/router/balancer_scores_test.go	2026-11-24 13:24:09.377311590 +0000
+@@ -0,0 +1,132 @@
++package router
++
++import (
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/observatory"
++)
++
++func TestLeastLoadScore(t *testing.T) {
++	ms := time.Millisecond
++	type args struct {
++		status *observatory.OutboundStatus
++		cost   float64
++	}
++	tests := []struct {
++		name        string
++		args        args
++		wantScore   float64
++		wantInRange bool
++	}{
++		{
++			name:        "HealthPing weights the deviation",
++			args:        args{status: burstStatus("a", 100*ms, 30*ms, 10, 0), cost: 4},
++			wantScore:   60e6,
++			wantInRange: true,
++		},
++		{
++			name:        "last delay without HealthPing is truncated as time.Duration",
++			args:        args{status: plainStatus("p", true, 7), cost: 2},
++			wantScore:   9899494,
++			wantInRange: true,
++		},
++		{
++			name:        "weight 1",
++			args:        args{status: plainStatus("p", true, 7), cost: 1},
++			wantScore:   7e6,
++			wantInRange: true,
++		},
++		{
++			name:      "overflow without HealthPing keeps the unconverted value",
++			args:      args{status: plainStatus("p", true, 1), cost: 1e32},
++			wantScore: 1e22,
++		},
++		{
++			name:      "overflow with HealthPing keeps the unconverted value",
++			args:      args{status: burstStatus("a", 2*ms, 1*ms, 10, 0), cost: 1e32},
++			wantScore: 1e22,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			gotScore, gotInRange := LeastLoadScore(tt.args.status, tt.args.cost)
++			if gotScore != tt.wantScore {
++				t.Errorf("LeastLoadScore() gotScore = %v, want %v", gotScore, tt.wantScore)
++			}
++			if gotInRange != tt.wantInRange {
++				t.Errorf("LeastLoadScore() gotInRange = %v, want %v", gotInRange, tt.wantInRange)
++			}
++			if !tt.wantInRange {
++				return
++			}
++			tag := tt.args.status.OutboundTag
++			s := NewLeastLoadStrategy(&StrategyLeastLoadConfig{
++				Costs: []*StrategyWeight{{Match: tag, Value: float32(tt.args.cost)}},
++			})
++			s.observer = &fakeObservatory{status: []*observatory.OutboundStatus{tt.args.status}}
++			nodes := s.getNodes([]string{tag}, 0)
++			if len(nodes) != 1 || float64(nodes[0].RTTDeviationCost) != gotScore {
++				t.Errorf("LeastLoadStrategy.getNodes() = %+v, want RTTDeviationCost %v", nodes, gotScore)
++			}
++		})
++	}
++}
++
++func TestLeastLoPiScore(t *testing.T) {
++	ms := time.Millisecond
++	type args struct {
++		status   *observatory.OutboundStatus
++		costPing float64
++		costDevi float64
++	}
++	tests := []struct {
++		name string
++		args args
++		want float64
++	}{
++		{
++			name: "mh weighs the average by sqrt(16)",
++			args: args{status: burstStatus("mh-vl-w", 150*ms, 45*ms, 10, 1), costPing: 16, costDevi: 1},
++			want: 645e6,
++		},
++		{
++			name: "cg with weights 1",
++			args: args{status: burstStatus("cg-vl-w", 1500*ms, 0, 10, 0), costPing: 1, costDevi: 1},
++			want: 1500e6,
++		},
++		{
++			name: "costPing 0 leaves the weighted deviation",
++			args: args{status: burstStatus("x", 100*ms, 20*ms, 5, 0), costPing: 0, costDevi: 4},
++			want: 40e6,
++		},
++		{
++			name: "plain observatory: the last delay without deviation",
++			args: args{status: plainStatus("p", true, 7), costPing: 4, costDevi: 9},
++			want: 14e6,
++		},
++		{
++			name: "plain observatory with costPing 0",
++			args: args{status: plainStatus("p", true, 7), costPing: 0, costDevi: 9},
++			want: 0,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got := LeastLoPiScore(tt.args.status, tt.args.costPing, tt.args.costDevi)
++			if got != tt.want {
++				t.Errorf("LeastLoPiScore() = %v, want %v", got, tt.want)
++			}
++			tag := tt.args.status.OutboundTag
++			s := newTestLeastLoPi(t, &StrategyLeastLoPiConfig{
++				Costs: []*StrategyLeastLoPiWeight{
++					{Match: tag, CostPing: costOf(tt.args.costPing), CostDevi: costOf(tt.args.costDevi)},
++				},
++			}, []*observatory.OutboundStatus{tt.args.status})
++			nodes := s.getNodes([]string{tag})
++			if len(nodes) != 1 || nodes[0].Score != got {
++				t.Errorf("LeastLoPiStrategy.getNodes() = %+v, want Score %v", nodes, got)
++			}
++		})
++	}
++}
 diff -ruN -x .git a/app/router/command/balancer_costs.go b/app/router/command/balancer_costs.go
 --- a/app/router/command/balancer_costs.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/command/balancer_costs.go	2026-11-23 13:13:11.734356912 +0000
-@@ -0,0 +1,34 @@
++++ b/app/router/command/balancer_costs.go	2026-11-24 13:23:42.920746565 +0000
+@@ -0,0 +1,47 @@
 +package command
 +
 +import (
@@ -286,9 +562,12 @@ diff -ruN -x .git a/app/router/command/balancer_costs.go b/app/router/command/ba
 +
 +	"github.com/xtls/xray-core/common/errors"
 +	"github.com/xtls/xray-core/features/routing"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
 +)
 +
-+// fillBalancerCosts copies the strategy and the weights of a balancer into msg
++// fillBalancerCosts copies the strategy, the candidates and the weights of a balancer
++// into msg
 +func fillBalancerCosts(ctx context.Context, msg *BalancerMsg, costs *routing.BalancerCosts) {
 +	msg.Strategy = costs.Strategy
 +	for _, rule := range costs.Rules {
@@ -304,6 +583,7 @@ diff -ruN -x .git a/app/router/command/balancer_costs.go b/app/router/command/ba
 +		errors.LogInfoInner(ctx, costs.OutboundsErr, "unable to obtain outbound costs")
 +		return
 +	}
++	msg.Candidates = append([]string(nil), costs.Candidates...)
 +	for _, cost := range costs.Outbounds {
 +		msg.OutboundCosts = append(msg.OutboundCosts, &BalancerOutboundCost{
 +			OutboundTag: cost.OutboundTag,
@@ -313,10 +593,19 @@ diff -ruN -x .git a/app/router/command/balancer_costs.go b/app/router/command/ba
 +		})
 +	}
 +}
++
++// ListBalancers implements RoutingServiceServer
++func (s *routingServer) ListBalancers(ctx context.Context, request *ListBalancersRequest) (*ListBalancersResponse, error) {
++	lister, ok := s.router.(routing.BalancerLister)
++	if !ok {
++		return nil, status.Error(codes.Unimplemented, "the router does not list balancers")
++	}
++	return &ListBalancersResponse{Tags: lister.ListBalancers()}, nil
++}
 diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/command/balancer_costs_test.go
 --- a/app/router/command/balancer_costs_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/command/balancer_costs_test.go	2026-11-23 13:16:32.699203794 +0000
-@@ -0,0 +1,123 @@
++++ b/app/router/command/balancer_costs_test.go	2026-11-24 14:13:30.049830335 +0000
+@@ -0,0 +1,241 @@
 +package command_test
 +
 +import (
@@ -326,11 +615,16 @@ diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/comma
 +
 +	"github.com/golang/mock/gomock"
 +	"github.com/google/go-cmp/cmp"
++	"github.com/google/go-cmp/cmp/cmpopts"
 +	"github.com/xtls/xray-core/app/router"
 +	. "github.com/xtls/xray-core/app/router/command"
++	"github.com/xtls/xray-core/common/serial"
 +	"github.com/xtls/xray-core/features/outbound"
++	"github.com/xtls/xray-core/features/routing"
 +	"github.com/xtls/xray-core/infra/conf"
 +	"github.com/xtls/xray-core/testing/mocks"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
 +	"google.golang.org/protobuf/encoding/protojson"
 +)
 +
@@ -355,6 +649,7 @@ diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/comma
 +		balancer   string
 +		tags       []string
 +		noSelector bool
++		override   string
 +		want       string
 +	}{
 +		{
@@ -366,7 +661,8 @@ diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/comma
 +			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastlopi",
 +				"costRules": [{"match": "^cg-", "regexp": true, "costPing": 0}, {"match": "mh-", "costDevi": 0.5}],
 +				"outboundCosts": [{"outboundTag": "cg-1", "costPing": 0, "costDevi": 1},
-+				{"outboundTag": "mh-1", "costPing": 1, "costDevi": 0.5}]}`,
++				{"outboundTag": "mh-1", "costPing": 1, "costDevi": 0.5}],
++				"candidates": ["cg-1", "mh-1"]}`,
 +		},
 +		{
 +			name: "leastLoad reports implicit and default weights",
@@ -375,21 +671,45 @@ diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/comma
 +			tags: []string{"cg-16-vl", "cg-x"},
 +			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastload",
 +				"costRules": [{"match": "cg-(\\d+)", "regexp": true, "value": 0}, {"match": "vl", "value": 3}],
-+				"outboundCosts": [{"outboundTag": "cg-16-vl", "cost": 16}, {"outboundTag": "cg-x", "cost": 1}]}`,
++				"outboundCosts": [{"outboundTag": "cg-16-vl", "cost": 16}, {"outboundTag": "cg-x", "cost": 1}],
++				"candidates": ["cg-16-vl", "cg-x"]}`,
 +		},
 +		{
 +			name:     "random has no weights",
 +			balancer: `{"tag": "vl-w", "selector": ["cg-"]}`,
 +			tags:     []string{"cg-1"},
-+			want:     `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "random"}`,
++			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "random",
++				"candidates": ["cg-1"]}`,
 +		},
 +		{
-+			name: "selector error drops only outboundCosts",
++			name: "roundRobin candidates without fallbackTag and override",
++			balancer: `{"tag": "vl-w", "selector": ["cg-"], "strategy": {"type": "roundRobin"},
++				"fallbackTag": "fb"}`,
++			tags:     []string{"cg-2", "cg-1", "cg-2"},
++			override: "ovr",
++			want: `{"override": {"target": "ovr"}, "principleTarget": {"tag": ["principle"]},
++				"strategy": "roundrobin", "candidates": ["cg-1", "cg-2"]}`,
++		},
++		{
++			name:     "leastPing candidates",
++			balancer: `{"tag": "vl-w", "selector": ["cg-"], "strategy": {"type": "leastPing"}}`,
++			tags:     []string{"cg-1"},
++			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastping",
++				"candidates": ["cg-1"]}`,
++		},
++		{
++			name: "selector error drops only outboundCosts and candidates",
 +			balancer: `{"tag": "vl-w", "selector": ["cg-"], "strategy": {"type": "leastLoad",
 +				"settings": {"costs": [{"match": "vl", "value": 3}]}}}`,
 +			noSelector: true,
 +			want: `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "leastload",
 +				"costRules": [{"match": "vl", "value": 3}]}`,
++		},
++		{
++			name:       "random selector error drops candidates",
++			balancer:   `{"tag": "vl-w", "selector": ["cg-"]}`,
++			noSelector: true,
++			want:       `{"override": {}, "principleTarget": {"tag": ["principle"]}, "strategy": "random"}`,
 +		},
 +	}
 +	for _, tt := range tests {
@@ -407,13 +727,18 @@ diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/comma
 +			var ohm outbound.Manager = mocks.NewOutboundManager(mockCtl)
 +			if !tt.noSelector {
 +				mockHs := mocks.NewOutboundHandlerSelector(mockCtl)
-+				mockHs.EXPECT().Select(gomock.Any()).Return(tt.tags).AnyTimes()
++				mockHs.EXPECT().Select(gomock.Any()).Return(tt.tags).Times(1)
 +				ohm = &costsOutboundManager{Manager: ohm, HandlerSelector: mockHs}
 +			}
 +			r := new(router.Router)
 +			config := &router.Config{BalancingRule: []*router.BalancingRule{balancer}}
 +			if err := r.Init(context.TODO(), config, mocks.NewDNSClient(mockCtl), ohm, nil); err != nil {
 +				t.Fatalf("Router.Init() error = %v", err)
++			}
++			if tt.override != "" {
++				if err := r.OverrideBalancer("vl-w", tt.override); err != nil {
++					t.Fatalf("Router.OverrideBalancer() error = %v", err)
++				}
 +			}
 +			resp, err := NewRoutingServer(&costsTestRouter{Router: r}, nil).GetBalancerInfo(
 +				context.Background(), &GetBalancerInfoRequest{Tag: "vl-w"})
@@ -440,9 +765,91 @@ diff -ruN -x .git a/app/router/command/balancer_costs_test.go b/app/router/comma
 +		})
 +	}
 +}
++
++func Test_routingServer_ListBalancers(t *testing.T) {
++	tests := []struct {
++		name     string
++		initial  []string
++		reload   []string
++		add      []string
++		plain    bool
++		want     []string
++		wantCode codes.Code
++	}{
++		{
++			name: "no balancers",
++		},
++		{
++			name:    "several balancers in ascending order",
++			initial: []string{"vl-w", "b", "a-x"},
++			want:    []string{"a-x", "b", "vl-w"},
++		},
++		{
++			name:    "ReloadRules replaces the balancers",
++			initial: []string{"old"},
++			reload:  []string{"new2", "new1"},
++			want:    []string{"new1", "new2"},
++		},
++		{
++			name:    "AddRule appends balancers",
++			initial: []string{"b"},
++			add:     []string{"c", "a"},
++			want:    []string{"a", "b", "c"},
++		},
++		{
++			name:     "router without the list",
++			plain:    true,
++			wantCode: codes.Unimplemented,
++		},
++	}
++	balancers := func(tags []string) *router.Config {
++		config := &router.Config{}
++		for _, tag := range tags {
++			config.BalancingRule = append(config.BalancingRule,
++				&router.BalancingRule{Tag: tag, OutboundSelector: []string{"x"}})
++		}
++		return config
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			mockCtl := gomock.NewController(t)
++			defer mockCtl.Finish()
++			var rt routing.Router = routing.DefaultRouter{}
++			if !tt.plain {
++				r := new(router.Router)
++				if err := r.Init(context.TODO(), balancers(tt.initial), mocks.NewDNSClient(mockCtl),
++					mocks.NewOutboundManager(mockCtl), nil); err != nil {
++					t.Fatalf("Router.Init() error = %v", err)
++				}
++				if tt.reload != nil {
++					if err := r.ReloadRules(balancers(tt.reload), false); err != nil {
++						t.Fatalf("Router.ReloadRules() error = %v", err)
++					}
++				}
++				if tt.add != nil {
++					if err := r.AddRule(serial.ToTypedMessage(balancers(tt.add)), true); err != nil {
++						t.Fatalf("Router.AddRule() error = %v", err)
++					}
++				}
++				rt = r
++			}
++			resp, err := NewRoutingServer(rt, nil).ListBalancers(context.Background(),
++				&ListBalancersRequest{})
++			if code := status.Code(err); code != tt.wantCode {
++				t.Fatalf("ListBalancers() error = %v, want code %v", err, tt.wantCode)
++			}
++			if err != nil {
++				return
++			}
++			if diff := cmp.Diff(tt.want, resp.GetTags(), cmpopts.EquateEmpty()); diff != "" {
++				t.Errorf("ListBalancers() tags mismatch (-want +got):\n%s", diff)
++			}
++		})
++	}
++}
 diff -ruN -x .git a/app/router/command/command.go b/app/router/command/command.go
---- a/app/router/command/command.go	2026-11-23 13:11:53.576472386 +0000
-+++ b/app/router/command/command.go	2026-11-23 13:13:26.154704646 +0000
+--- a/app/router/command/command.go	2026-11-24 11:55:45.026041250 +0000
++++ b/app/router/command/command.go	2026-11-24 11:55:45.590060309 +0000
 @@ -43,6 +43,15 @@
  			}
  		}
@@ -460,8 +867,8 @@ diff -ruN -x .git a/app/router/command/command.go b/app/router/command/command.g
  }
  
 diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/command.pb.go
---- a/app/router/command/command.pb.go	2026-11-23 13:11:53.576472386 +0000
-+++ b/app/router/command/command.pb.go	2026-11-23 13:16:03.166473245 +0000
+--- a/app/router/command/command.pb.go	2026-11-24 11:55:45.026041250 +0000
++++ b/app/router/command/command.pb.go	2026-11-24 13:25:43.603332132 +0000
 @@ -379,6 +379,156 @@
  	return ""
  }
@@ -619,15 +1026,17 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  type BalancerMsg struct {
  	state         protoimpl.MessageState
  	sizeCache     protoimpl.SizeCache
-@@ -386,11 +536,16 @@
+@@ -386,11 +536,18 @@
  
  	Override        *OverrideInfo        `protobuf:"bytes,5,opt,name=override,proto3" json:"override,omitempty"`
  	PrincipleTarget *PrincipleTargetInfo `protobuf:"bytes,6,opt,name=principle_target,json=principleTarget,proto3" json:"principle_target,omitempty"`
 +	// normalized strategy name of the running balancer
 +	Strategy  string              `protobuf:"bytes,7,opt,name=strategy,proto3" json:"strategy,omitempty"`
 +	CostRules []*BalancerCostRule `protobuf:"bytes,8,rep,name=cost_rules,json=costRules,proto3" json:"cost_rules,omitempty"`
-+	// candidates of the balancer selectors sorted by tag
++	// effective weights of the candidates sorted by tag
 +	OutboundCosts []*BalancerOutboundCost `protobuf:"bytes,9,rep,name=outbound_costs,json=outboundCosts,proto3" json:"outbound_costs,omitempty"`
++	// outbounds of the balancer selectors sorted by tag for any strategy
++	Candidates []string `protobuf:"bytes,10,rep,name=candidates,proto3" json:"candidates,omitempty"`
  }
  
  func (x *BalancerMsg) Reset() {
@@ -637,7 +1046,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -402,7 +557,7 @@
+@@ -402,7 +559,7 @@
  func (*BalancerMsg) ProtoMessage() {}
  
  func (x *BalancerMsg) ProtoReflect() protoreflect.Message {
@@ -646,7 +1055,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -415,7 +570,7 @@
+@@ -415,7 +572,7 @@
  
  // Deprecated: Use BalancerMsg.ProtoReflect.Descriptor instead.
  func (*BalancerMsg) Descriptor() ([]byte, []int) {
@@ -655,7 +1064,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  }
  
  func (x *BalancerMsg) GetOverride() *OverrideInfo {
-@@ -432,6 +587,27 @@
+@@ -432,6 +589,34 @@
  	return nil
  }
  
@@ -680,10 +1089,17 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 +	return nil
 +}
 +
++func (x *BalancerMsg) GetCandidates() []string {
++	if x != nil {
++		return x.Candidates
++	}
++	return nil
++}
++
  type GetBalancerInfoRequest struct {
  	state         protoimpl.MessageState
  	sizeCache     protoimpl.SizeCache
-@@ -442,7 +618,7 @@
+@@ -442,7 +627,7 @@
  
  func (x *GetBalancerInfoRequest) Reset() {
  	*x = GetBalancerInfoRequest{}
@@ -692,7 +1108,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -454,7 +630,7 @@
+@@ -454,7 +639,7 @@
  func (*GetBalancerInfoRequest) ProtoMessage() {}
  
  func (x *GetBalancerInfoRequest) ProtoReflect() protoreflect.Message {
@@ -701,7 +1117,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -467,7 +643,7 @@
+@@ -467,7 +652,7 @@
  
  // Deprecated: Use GetBalancerInfoRequest.ProtoReflect.Descriptor instead.
  func (*GetBalancerInfoRequest) Descriptor() ([]byte, []int) {
@@ -710,7 +1126,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  }
  
  func (x *GetBalancerInfoRequest) GetTag() string {
-@@ -487,7 +663,7 @@
+@@ -487,7 +672,7 @@
  
  func (x *GetBalancerInfoResponse) Reset() {
  	*x = GetBalancerInfoResponse{}
@@ -719,7 +1135,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -499,7 +675,7 @@
+@@ -499,7 +684,7 @@
  func (*GetBalancerInfoResponse) ProtoMessage() {}
  
  func (x *GetBalancerInfoResponse) ProtoReflect() protoreflect.Message {
@@ -728,7 +1144,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -512,7 +688,7 @@
+@@ -512,7 +697,7 @@
  
  // Deprecated: Use GetBalancerInfoResponse.ProtoReflect.Descriptor instead.
  func (*GetBalancerInfoResponse) Descriptor() ([]byte, []int) {
@@ -737,196 +1153,285 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  }
  
  func (x *GetBalancerInfoResponse) GetBalancer() *BalancerMsg {
-@@ -533,7 +709,7 @@
+@@ -522,6 +707,88 @@
+ 	return nil
+ }
+ 
++type ListBalancersRequest struct {
++	state         protoimpl.MessageState
++	sizeCache     protoimpl.SizeCache
++	unknownFields protoimpl.UnknownFields
++}
++
++func (x *ListBalancersRequest) Reset() {
++	*x = ListBalancersRequest{}
++	mi := &file_app_router_command_command_proto_msgTypes[10]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *ListBalancersRequest) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*ListBalancersRequest) ProtoMessage() {}
++
++func (x *ListBalancersRequest) ProtoReflect() protoreflect.Message {
++	mi := &file_app_router_command_command_proto_msgTypes[10]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use ListBalancersRequest.ProtoReflect.Descriptor instead.
++func (*ListBalancersRequest) Descriptor() ([]byte, []int) {
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{10}
++}
++
++type ListBalancersResponse struct {
++	state         protoimpl.MessageState
++	sizeCache     protoimpl.SizeCache
++	unknownFields protoimpl.UnknownFields
++
++	// tags of all balancers in ascending order
++	Tags []string `protobuf:"bytes,1,rep,name=tags,proto3" json:"tags,omitempty"`
++}
++
++func (x *ListBalancersResponse) Reset() {
++	*x = ListBalancersResponse{}
++	mi := &file_app_router_command_command_proto_msgTypes[11]
++	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++	ms.StoreMessageInfo(mi)
++}
++
++func (x *ListBalancersResponse) String() string {
++	return protoimpl.X.MessageStringOf(x)
++}
++
++func (*ListBalancersResponse) ProtoMessage() {}
++
++func (x *ListBalancersResponse) ProtoReflect() protoreflect.Message {
++	mi := &file_app_router_command_command_proto_msgTypes[11]
++	if x != nil {
++		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
++		if ms.LoadMessageInfo() == nil {
++			ms.StoreMessageInfo(mi)
++		}
++		return ms
++	}
++	return mi.MessageOf(x)
++}
++
++// Deprecated: Use ListBalancersResponse.ProtoReflect.Descriptor instead.
++func (*ListBalancersResponse) Descriptor() ([]byte, []int) {
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{11}
++}
++
++func (x *ListBalancersResponse) GetTags() []string {
++	if x != nil {
++		return x.Tags
++	}
++	return nil
++}
++
+ type OverrideBalancerTargetRequest struct {
+ 	state         protoimpl.MessageState
+ 	sizeCache     protoimpl.SizeCache
+@@ -533,7 +800,7 @@
  
  func (x *OverrideBalancerTargetRequest) Reset() {
  	*x = OverrideBalancerTargetRequest{}
 -	mi := &file_app_router_command_command_proto_msgTypes[8]
-+	mi := &file_app_router_command_command_proto_msgTypes[10]
++	mi := &file_app_router_command_command_proto_msgTypes[12]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -545,7 +721,7 @@
+@@ -545,7 +812,7 @@
  func (*OverrideBalancerTargetRequest) ProtoMessage() {}
  
  func (x *OverrideBalancerTargetRequest) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[8]
-+	mi := &file_app_router_command_command_proto_msgTypes[10]
++	mi := &file_app_router_command_command_proto_msgTypes[12]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -558,7 +734,7 @@
+@@ -558,7 +825,7 @@
  
  // Deprecated: Use OverrideBalancerTargetRequest.ProtoReflect.Descriptor instead.
  func (*OverrideBalancerTargetRequest) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{8}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{10}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{12}
  }
  
  func (x *OverrideBalancerTargetRequest) GetBalancerTag() string {
-@@ -583,7 +759,7 @@
+@@ -583,7 +850,7 @@
  
  func (x *OverrideBalancerTargetResponse) Reset() {
  	*x = OverrideBalancerTargetResponse{}
 -	mi := &file_app_router_command_command_proto_msgTypes[9]
-+	mi := &file_app_router_command_command_proto_msgTypes[11]
++	mi := &file_app_router_command_command_proto_msgTypes[13]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -595,7 +771,7 @@
+@@ -595,7 +862,7 @@
  func (*OverrideBalancerTargetResponse) ProtoMessage() {}
  
  func (x *OverrideBalancerTargetResponse) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[9]
-+	mi := &file_app_router_command_command_proto_msgTypes[11]
++	mi := &file_app_router_command_command_proto_msgTypes[13]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -608,7 +784,7 @@
+@@ -608,7 +875,7 @@
  
  // Deprecated: Use OverrideBalancerTargetResponse.ProtoReflect.Descriptor instead.
  func (*OverrideBalancerTargetResponse) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{9}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{11}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{13}
  }
  
  type AddRuleRequest struct {
-@@ -622,7 +798,7 @@
+@@ -622,7 +889,7 @@
  
  func (x *AddRuleRequest) Reset() {
  	*x = AddRuleRequest{}
 -	mi := &file_app_router_command_command_proto_msgTypes[10]
-+	mi := &file_app_router_command_command_proto_msgTypes[12]
++	mi := &file_app_router_command_command_proto_msgTypes[14]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -634,7 +810,7 @@
+@@ -634,7 +901,7 @@
  func (*AddRuleRequest) ProtoMessage() {}
  
  func (x *AddRuleRequest) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[10]
-+	mi := &file_app_router_command_command_proto_msgTypes[12]
++	mi := &file_app_router_command_command_proto_msgTypes[14]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -647,7 +823,7 @@
+@@ -647,7 +914,7 @@
  
  // Deprecated: Use AddRuleRequest.ProtoReflect.Descriptor instead.
  func (*AddRuleRequest) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{10}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{12}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{14}
  }
  
  func (x *AddRuleRequest) GetConfig() *serial.TypedMessage {
-@@ -672,7 +848,7 @@
+@@ -672,7 +939,7 @@
  
  func (x *AddRuleResponse) Reset() {
  	*x = AddRuleResponse{}
 -	mi := &file_app_router_command_command_proto_msgTypes[11]
-+	mi := &file_app_router_command_command_proto_msgTypes[13]
++	mi := &file_app_router_command_command_proto_msgTypes[15]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -684,7 +860,7 @@
+@@ -684,7 +951,7 @@
  func (*AddRuleResponse) ProtoMessage() {}
  
  func (x *AddRuleResponse) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[11]
-+	mi := &file_app_router_command_command_proto_msgTypes[13]
++	mi := &file_app_router_command_command_proto_msgTypes[15]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -697,7 +873,7 @@
+@@ -697,7 +964,7 @@
  
  // Deprecated: Use AddRuleResponse.ProtoReflect.Descriptor instead.
  func (*AddRuleResponse) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{11}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{13}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{15}
  }
  
  type RemoveRuleRequest struct {
-@@ -710,7 +886,7 @@
+@@ -710,7 +977,7 @@
  
  func (x *RemoveRuleRequest) Reset() {
  	*x = RemoveRuleRequest{}
 -	mi := &file_app_router_command_command_proto_msgTypes[12]
-+	mi := &file_app_router_command_command_proto_msgTypes[14]
++	mi := &file_app_router_command_command_proto_msgTypes[16]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -722,7 +898,7 @@
+@@ -722,7 +989,7 @@
  func (*RemoveRuleRequest) ProtoMessage() {}
  
  func (x *RemoveRuleRequest) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[12]
-+	mi := &file_app_router_command_command_proto_msgTypes[14]
++	mi := &file_app_router_command_command_proto_msgTypes[16]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -735,7 +911,7 @@
+@@ -735,7 +1002,7 @@
  
  // Deprecated: Use RemoveRuleRequest.ProtoReflect.Descriptor instead.
  func (*RemoveRuleRequest) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{12}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{14}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{16}
  }
  
  func (x *RemoveRuleRequest) GetRuleTag() string {
-@@ -753,7 +929,7 @@
+@@ -753,7 +1020,7 @@
  
  func (x *RemoveRuleResponse) Reset() {
  	*x = RemoveRuleResponse{}
 -	mi := &file_app_router_command_command_proto_msgTypes[13]
-+	mi := &file_app_router_command_command_proto_msgTypes[15]
++	mi := &file_app_router_command_command_proto_msgTypes[17]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -765,7 +941,7 @@
+@@ -765,7 +1032,7 @@
  func (*RemoveRuleResponse) ProtoMessage() {}
  
  func (x *RemoveRuleResponse) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[13]
-+	mi := &file_app_router_command_command_proto_msgTypes[15]
++	mi := &file_app_router_command_command_proto_msgTypes[17]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -778,7 +954,7 @@
+@@ -778,7 +1045,7 @@
  
  // Deprecated: Use RemoveRuleResponse.ProtoReflect.Descriptor instead.
  func (*RemoveRuleResponse) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{13}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{15}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{17}
  }
  
  type Config struct {
-@@ -789,7 +965,7 @@
+@@ -789,7 +1056,7 @@
  
  func (x *Config) Reset() {
  	*x = Config{}
 -	mi := &file_app_router_command_command_proto_msgTypes[14]
-+	mi := &file_app_router_command_command_proto_msgTypes[16]
++	mi := &file_app_router_command_command_proto_msgTypes[18]
  	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  	ms.StoreMessageInfo(mi)
  }
-@@ -801,7 +977,7 @@
+@@ -801,7 +1068,7 @@
  func (*Config) ProtoMessage() {}
  
  func (x *Config) ProtoReflect() protoreflect.Message {
 -	mi := &file_app_router_command_command_proto_msgTypes[14]
-+	mi := &file_app_router_command_command_proto_msgTypes[16]
++	mi := &file_app_router_command_command_proto_msgTypes[18]
  	if x != nil {
  		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
  		if ms.LoadMessageInfo() == nil {
-@@ -814,7 +990,7 @@
+@@ -814,7 +1081,7 @@
  
  // Deprecated: Use Config.ProtoReflect.Descriptor instead.
  func (*Config) Descriptor() ([]byte, []int) {
 -	return file_app_router_command_command_proto_rawDescGZIP(), []int{14}
-+	return file_app_router_command_command_proto_rawDescGZIP(), []int{16}
++	return file_app_router_command_command_proto_rawDescGZIP(), []int{18}
  }
  
  var File_app_router_command_command_proto protoreflect.FileDescriptor
-@@ -882,98 +1058,134 @@
+@@ -882,98 +1149,148 @@
  	0x67, 0x18, 0x01, 0x20, 0x03, 0x28, 0x09, 0x52, 0x03, 0x74, 0x61, 0x67, 0x22, 0x26, 0x0a, 0x0c,
  	0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x16, 0x0a, 0x06,
  	0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06, 0x74, 0x61,
@@ -957,7 +1462,7 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 +	0x18, 0x04, 0x20, 0x01, 0x28, 0x01, 0x48, 0x02, 0x52, 0x08, 0x63, 0x6f, 0x73, 0x74, 0x44, 0x65,
 +	0x76, 0x69, 0x88, 0x01, 0x01, 0x42, 0x07, 0x0a, 0x05, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x42, 0x0c,
 +	0x0a, 0x0a, 0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x70, 0x69, 0x6e, 0x67, 0x42, 0x0c, 0x0a, 0x0a,
-+	0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x22, 0xe5, 0x02, 0x0a, 0x0b, 0x42,
++	0x5f, 0x63, 0x6f, 0x73, 0x74, 0x5f, 0x64, 0x65, 0x76, 0x69, 0x22, 0x85, 0x03, 0x0a, 0x0b, 0x42,
 +	0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4d, 0x73, 0x67, 0x12, 0x41, 0x0a, 0x08, 0x6f, 0x76,
 +	0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x18, 0x05, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x25, 0x2e, 0x78,
 +	0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63,
@@ -1023,17 +1528,63 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 +	0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x42,
 +	0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e, 0x64, 0x43,
 +	0x6f, 0x73, 0x74, 0x52, 0x0d, 0x6f, 0x75, 0x74, 0x62, 0x6f, 0x75, 0x6e, 0x64, 0x43, 0x6f, 0x73,
-+	0x74, 0x73, 0x22, 0x2a, 0x0a, 0x16, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
++	0x74, 0x73, 0x12, 0x1e, 0x0a, 0x0a, 0x63, 0x61, 0x6e, 0x64, 0x69, 0x64, 0x61, 0x74, 0x65, 0x73,
++	0x18, 0x0a, 0x20, 0x03, 0x28, 0x09, 0x52, 0x0a, 0x63, 0x61, 0x6e, 0x64, 0x69, 0x64, 0x61, 0x74,
++	0x65, 0x73, 0x22, 0x2a, 0x0a, 0x16, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
 +	0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x10, 0x0a, 0x03,
 +	0x74, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x74, 0x61, 0x67, 0x22, 0x5b,
 +	0x0a, 0x17, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66,
 +	0x6f, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x40, 0x0a, 0x08, 0x62, 0x61, 0x6c,
 +	0x61, 0x6e, 0x63, 0x65, 0x72, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x24, 0x2e, 0x78, 0x72,
++	0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f,
++	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4d, 0x73,
++	0x67, 0x52, 0x08, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x22, 0x16, 0x0a, 0x14, 0x4c,
++	0x69, 0x73, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x73, 0x52, 0x65, 0x71, 0x75,
++	0x65, 0x73, 0x74, 0x22, 0x2b, 0x0a, 0x15, 0x4c, 0x69, 0x73, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e,
++	0x63, 0x65, 0x72, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x12, 0x0a, 0x04,
++	0x74, 0x61, 0x67, 0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x09, 0x52, 0x04, 0x74, 0x61, 0x67, 0x73,
++	0x22, 0x59, 0x0a, 0x1d, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61,
++	0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73,
++	0x74, 0x12, 0x20, 0x0a, 0x0b, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67,
++	0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0b, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72,
++	0x54, 0x61, 0x67, 0x12, 0x16, 0x0a, 0x06, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x02, 0x20,
++	0x01, 0x28, 0x09, 0x52, 0x06, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x22, 0x20, 0x0a, 0x1e, 0x4f,
++	0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54,
++	0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x6e, 0x0a,
++	0x0e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12,
++	0x38, 0x0a, 0x06, 0x63, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32,
++	0x20, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e, 0x73, 0x65,
++	0x72, 0x69, 0x61, 0x6c, 0x2e, 0x54, 0x79, 0x70, 0x65, 0x64, 0x4d, 0x65, 0x73, 0x73, 0x61, 0x67,
++	0x65, 0x52, 0x06, 0x63, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x12, 0x22, 0x0a, 0x0c, 0x73, 0x68, 0x6f,
++	0x75, 0x6c, 0x64, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52,
++	0x0c, 0x73, 0x68, 0x6f, 0x75, 0x6c, 0x64, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x22, 0x11, 0x0a,
++	0x0f, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65,
++	0x22, 0x2d, 0x0a, 0x11, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65,
++	0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x18, 0x0a, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67,
++	0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x22,
++	0x14, 0x0a, 0x12, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73,
++	0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x08, 0x0a, 0x06, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x32,
++	0xb1, 0x06, 0x0a, 0x0e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53, 0x65, 0x72, 0x76, 0x69,
++	0x63, 0x65, 0x12, 0x7b, 0x0a, 0x15, 0x53, 0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52,
++	0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53, 0x74, 0x61, 0x74, 0x73, 0x12, 0x35, 0x2e, 0x78, 0x72,
  	0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f,
 -	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x43, 0x6f, 0x6e,
 -	0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x30, 0x01, 0x12, 0x61, 0x0a, 0x09, 0x54, 0x65, 0x73, 0x74,
 -	0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x29, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
--	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
++	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x53, 0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52,
++	0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53, 0x74, 0x61, 0x74, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65,
++	0x73, 0x74, 0x1a, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f,
++	0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75,
++	0x74, 0x69, 0x6e, 0x67, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x30, 0x01, 0x12,
++	0x61, 0x0a, 0x09, 0x54, 0x65, 0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x29, 0x2e, 0x78,
++	0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63,
++	0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x54, 0x65, 0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65,
++	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
++	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e,
++	0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74,
++	0x22, 0x00, 0x12, 0x76, 0x0a, 0x0f, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
++	0x72, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x2f, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
+ 	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
 -	0x54, 0x65, 0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
 -	0x1a, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
 -	0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69,
@@ -1051,32 +1602,8 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 -	0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64,
 -	0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52,
 -	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x37, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
-+	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x4d, 0x73,
-+	0x67, 0x52, 0x08, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x22, 0x59, 0x0a, 0x1d, 0x4f,
-+	0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54,
-+	0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x20, 0x0a, 0x0b,
-+	0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28,
-+	0x09, 0x52, 0x0b, 0x62, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x67, 0x12, 0x16,
-+	0x0a, 0x06, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06,
-+	0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x22, 0x20, 0x0a, 0x1e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69,
-+	0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74,
-+	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x6e, 0x0a, 0x0e, 0x41, 0x64, 0x64, 0x52,
-+	0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x38, 0x0a, 0x06, 0x63, 0x6f,
-+	0x6e, 0x66, 0x69, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x20, 0x2e, 0x78, 0x72, 0x61,
-+	0x79, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e, 0x2e, 0x73, 0x65, 0x72, 0x69, 0x61, 0x6c, 0x2e,
-+	0x54, 0x79, 0x70, 0x65, 0x64, 0x4d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x52, 0x06, 0x63, 0x6f,
-+	0x6e, 0x66, 0x69, 0x67, 0x12, 0x22, 0x0a, 0x0c, 0x73, 0x68, 0x6f, 0x75, 0x6c, 0x64, 0x41, 0x70,
-+	0x70, 0x65, 0x6e, 0x64, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52, 0x0c, 0x73, 0x68, 0x6f, 0x75,
-+	0x6c, 0x64, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x22, 0x11, 0x0a, 0x0f, 0x41, 0x64, 0x64, 0x52,
-+	0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x2d, 0x0a, 0x11, 0x52,
-+	0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74,
-+	0x12, 0x18, 0x0a, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x18, 0x01, 0x20, 0x01, 0x28,
-+	0x09, 0x52, 0x07, 0x72, 0x75, 0x6c, 0x65, 0x54, 0x61, 0x67, 0x22, 0x14, 0x0a, 0x12, 0x52, 0x65,
-+	0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65,
-+	0x22, 0x08, 0x0a, 0x06, 0x43, 0x6f, 0x6e, 0x66, 0x69, 0x67, 0x32, 0xbf, 0x05, 0x0a, 0x0e, 0x52,
-+	0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x7b, 0x0a,
-+	0x15, 0x53, 0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e,
-+	0x67, 0x53, 0x74, 0x61, 0x74, 0x73, 0x12, 0x35, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
++	0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52,
++	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x30, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70,
  	0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64,
 -	0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65,
 -	0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22,
@@ -1084,7 +1611,11 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 -	0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63,
 -	0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65,
 -	0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x28, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
--	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
++	0x2e, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f,
++	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x8b, 0x01, 0x0a, 0x16, 0x4f,
++	0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54,
++	0x61, 0x72, 0x67, 0x65, 0x74, 0x12, 0x36, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
+ 	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
 -	0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22,
 -	0x00, 0x12, 0x67, 0x0a, 0x0a, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x12,
 -	0x2a, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65,
@@ -1100,62 +1631,48 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 -	0x72, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0xaa, 0x02, 0x17, 0x58, 0x72, 0x61, 0x79,
 -	0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x43, 0x6f, 0x6d, 0x6d,
 -	0x61, 0x6e, 0x64, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
-+	0x2e, 0x53, 0x75, 0x62, 0x73, 0x63, 0x72, 0x69, 0x62, 0x65, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e,
-+	0x67, 0x53, 0x74, 0x61, 0x74, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x27, 0x2e,
++	0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72,
++	0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x37, 0x2e,
 +	0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e,
-+	0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x69, 0x6e, 0x67, 0x43,
-+	0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x30, 0x01, 0x12, 0x61, 0x0a, 0x09, 0x54, 0x65,
-+	0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x29, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
-+	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e,
-+	0x64, 0x2e, 0x54, 0x65, 0x73, 0x74, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65,
-+	0x73, 0x74, 0x1a, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f,
-+	0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x6f, 0x75,
-+	0x74, 0x69, 0x6e, 0x67, 0x43, 0x6f, 0x6e, 0x74, 0x65, 0x78, 0x74, 0x22, 0x00, 0x12, 0x76, 0x0a,
-+	0x0f, 0x47, 0x65, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f,
-+	0x12, 0x2f, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
-+	0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x47, 0x65, 0x74, 0x42, 0x61,
-+	0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73,
-+	0x74, 0x1a, 0x30, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
-+	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x47, 0x65, 0x74, 0x42,
-+	0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x65, 0x73, 0x70, 0x6f,
-+	0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x8b, 0x01, 0x0a, 0x16, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69,
-+	0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74,
-+	0x12, 0x36, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74,
-+	0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72,
-+	0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65,
-+	0x74, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x37, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
++	0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65,
++	0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65,
++	0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x70, 0x0a, 0x0d, 0x4c, 0x69, 0x73, 0x74,
++	0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x73, 0x12, 0x2d, 0x2e, 0x78, 0x72, 0x61, 0x79,
++	0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d,
++	0x61, 0x6e, 0x64, 0x2e, 0x4c, 0x69, 0x73, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72,
++	0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x2e, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
 +	0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61,
-+	0x6e, 0x64, 0x2e, 0x4f, 0x76, 0x65, 0x72, 0x72, 0x69, 0x64, 0x65, 0x42, 0x61, 0x6c, 0x61, 0x6e,
-+	0x63, 0x65, 0x72, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
-+	0x65, 0x22, 0x00, 0x12, 0x5e, 0x0a, 0x07, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x12, 0x27,
++	0x6e, 0x64, 0x2e, 0x4c, 0x69, 0x73, 0x74, 0x42, 0x61, 0x6c, 0x61, 0x6e, 0x63, 0x65, 0x72, 0x73,
++	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x5e, 0x0a, 0x07, 0x41, 0x64,
++	0x64, 0x52, 0x75, 0x6c, 0x65, 0x12, 0x27, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70,
++	0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e,
++	0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x28,
 +	0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72,
 +	0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65,
-+	0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x28, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61,
-+	0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e,
-+	0x64, 0x2e, 0x41, 0x64, 0x64, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
-+	0x65, 0x22, 0x00, 0x12, 0x67, 0x0a, 0x0a, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c,
-+	0x65, 0x12, 0x2a, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
-+	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f,
-+	0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x2b, 0x2e,
-+	0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e,
-+	0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75,
-+	0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x42, 0x67, 0x0a, 0x1b,
-+	0x63, 0x6f, 0x6d, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75,
-+	0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x50, 0x01, 0x5a, 0x2c, 0x67,
-+	0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x78, 0x74, 0x6c, 0x73, 0x2f, 0x78,
-+	0x72, 0x61, 0x79, 0x2d, 0x63, 0x6f, 0x72, 0x65, 0x2f, 0x61, 0x70, 0x70, 0x2f, 0x72, 0x6f, 0x75,
-+	0x74, 0x65, 0x72, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0xaa, 0x02, 0x17, 0x58, 0x72,
-+	0x61, 0x79, 0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x43, 0x6f,
-+	0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
++	0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x22, 0x00, 0x12, 0x67, 0x0a, 0x0a, 0x52, 0x65,
++	0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x12, 0x2a, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
++	0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61,
++	0x6e, 0x64, 0x2e, 0x52, 0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x71,
++	0x75, 0x65, 0x73, 0x74, 0x1a, 0x2b, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e, 0x61, 0x70, 0x70, 0x2e,
++	0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x2e, 0x52,
++	0x65, 0x6d, 0x6f, 0x76, 0x65, 0x52, 0x75, 0x6c, 0x65, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
++	0x65, 0x22, 0x00, 0x42, 0x67, 0x0a, 0x1b, 0x63, 0x6f, 0x6d, 0x2e, 0x78, 0x72, 0x61, 0x79, 0x2e,
++	0x61, 0x70, 0x70, 0x2e, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2e, 0x63, 0x6f, 0x6d, 0x6d, 0x61,
++	0x6e, 0x64, 0x50, 0x01, 0x5a, 0x2c, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d,
++	0x2f, 0x78, 0x74, 0x6c, 0x73, 0x2f, 0x78, 0x72, 0x61, 0x79, 0x2d, 0x63, 0x6f, 0x72, 0x65, 0x2f,
++	0x61, 0x70, 0x70, 0x2f, 0x72, 0x6f, 0x75, 0x74, 0x65, 0x72, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x61,
++	0x6e, 0x64, 0xaa, 0x02, 0x17, 0x58, 0x72, 0x61, 0x79, 0x2e, 0x41, 0x70, 0x70, 0x2e, 0x52, 0x6f,
++	0x75, 0x74, 0x65, 0x72, 0x2e, 0x43, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x62, 0x06, 0x70, 0x72,
++	0x6f, 0x74, 0x6f, 0x33,
  }
  
  var (
-@@ -988,52 +1200,56 @@
+@@ -988,52 +1305,60 @@
  	return file_app_router_command_command_proto_rawDescData
  }
  
 -var file_app_router_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
-+var file_app_router_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
++var file_app_router_command_command_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
  var file_app_router_command_command_proto_goTypes = []any{
  	(*RoutingContext)(nil),                 // 0: xray.app.router.command.RoutingContext
  	(*SubscribeRoutingStatsRequest)(nil),   // 1: xray.app.router.command.SubscribeRoutingStatsRequest
@@ -1180,22 +1697,24 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 +	(*BalancerMsg)(nil),                    // 7: xray.app.router.command.BalancerMsg
 +	(*GetBalancerInfoRequest)(nil),         // 8: xray.app.router.command.GetBalancerInfoRequest
 +	(*GetBalancerInfoResponse)(nil),        // 9: xray.app.router.command.GetBalancerInfoResponse
-+	(*OverrideBalancerTargetRequest)(nil),  // 10: xray.app.router.command.OverrideBalancerTargetRequest
-+	(*OverrideBalancerTargetResponse)(nil), // 11: xray.app.router.command.OverrideBalancerTargetResponse
-+	(*AddRuleRequest)(nil),                 // 12: xray.app.router.command.AddRuleRequest
-+	(*AddRuleResponse)(nil),                // 13: xray.app.router.command.AddRuleResponse
-+	(*RemoveRuleRequest)(nil),              // 14: xray.app.router.command.RemoveRuleRequest
-+	(*RemoveRuleResponse)(nil),             // 15: xray.app.router.command.RemoveRuleResponse
-+	(*Config)(nil),                         // 16: xray.app.router.command.Config
-+	nil,                                    // 17: xray.app.router.command.RoutingContext.AttributesEntry
-+	(net.Network)(0),                       // 18: xray.common.net.Network
-+	(*serial.TypedMessage)(nil),            // 19: xray.common.serial.TypedMessage
++	(*ListBalancersRequest)(nil),           // 10: xray.app.router.command.ListBalancersRequest
++	(*ListBalancersResponse)(nil),          // 11: xray.app.router.command.ListBalancersResponse
++	(*OverrideBalancerTargetRequest)(nil),  // 12: xray.app.router.command.OverrideBalancerTargetRequest
++	(*OverrideBalancerTargetResponse)(nil), // 13: xray.app.router.command.OverrideBalancerTargetResponse
++	(*AddRuleRequest)(nil),                 // 14: xray.app.router.command.AddRuleRequest
++	(*AddRuleResponse)(nil),                // 15: xray.app.router.command.AddRuleResponse
++	(*RemoveRuleRequest)(nil),              // 16: xray.app.router.command.RemoveRuleRequest
++	(*RemoveRuleResponse)(nil),             // 17: xray.app.router.command.RemoveRuleResponse
++	(*Config)(nil),                         // 18: xray.app.router.command.Config
++	nil,                                    // 19: xray.app.router.command.RoutingContext.AttributesEntry
++	(net.Network)(0),                       // 20: xray.common.net.Network
++	(*serial.TypedMessage)(nil),            // 21: xray.common.serial.TypedMessage
  }
  var file_app_router_command_command_proto_depIdxs = []int32{
 -	16, // 0: xray.app.router.command.RoutingContext.Network:type_name -> xray.common.net.Network
 -	15, // 1: xray.app.router.command.RoutingContext.Attributes:type_name -> xray.app.router.command.RoutingContext.AttributesEntry
-+	18, // 0: xray.app.router.command.RoutingContext.Network:type_name -> xray.common.net.Network
-+	17, // 1: xray.app.router.command.RoutingContext.Attributes:type_name -> xray.app.router.command.RoutingContext.AttributesEntry
++	20, // 0: xray.app.router.command.RoutingContext.Network:type_name -> xray.common.net.Network
++	19, // 1: xray.app.router.command.RoutingContext.Attributes:type_name -> xray.app.router.command.RoutingContext.AttributesEntry
  	0,  // 2: xray.app.router.command.TestRouteRequest.RoutingContext:type_name -> xray.app.router.command.RoutingContext
  	4,  // 3: xray.app.router.command.BalancerMsg.override:type_name -> xray.app.router.command.OverrideInfo
  	3,  // 4: xray.app.router.command.BalancerMsg.principle_target:type_name -> xray.app.router.command.PrincipleTargetInfo
@@ -1221,28 +1740,30 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
 +	5,  // 5: xray.app.router.command.BalancerMsg.cost_rules:type_name -> xray.app.router.command.BalancerCostRule
 +	6,  // 6: xray.app.router.command.BalancerMsg.outbound_costs:type_name -> xray.app.router.command.BalancerOutboundCost
 +	7,  // 7: xray.app.router.command.GetBalancerInfoResponse.balancer:type_name -> xray.app.router.command.BalancerMsg
-+	19, // 8: xray.app.router.command.AddRuleRequest.config:type_name -> xray.common.serial.TypedMessage
++	21, // 8: xray.app.router.command.AddRuleRequest.config:type_name -> xray.common.serial.TypedMessage
 +	1,  // 9: xray.app.router.command.RoutingService.SubscribeRoutingStats:input_type -> xray.app.router.command.SubscribeRoutingStatsRequest
 +	2,  // 10: xray.app.router.command.RoutingService.TestRoute:input_type -> xray.app.router.command.TestRouteRequest
 +	8,  // 11: xray.app.router.command.RoutingService.GetBalancerInfo:input_type -> xray.app.router.command.GetBalancerInfoRequest
-+	10, // 12: xray.app.router.command.RoutingService.OverrideBalancerTarget:input_type -> xray.app.router.command.OverrideBalancerTargetRequest
-+	12, // 13: xray.app.router.command.RoutingService.AddRule:input_type -> xray.app.router.command.AddRuleRequest
-+	14, // 14: xray.app.router.command.RoutingService.RemoveRule:input_type -> xray.app.router.command.RemoveRuleRequest
-+	0,  // 15: xray.app.router.command.RoutingService.SubscribeRoutingStats:output_type -> xray.app.router.command.RoutingContext
-+	0,  // 16: xray.app.router.command.RoutingService.TestRoute:output_type -> xray.app.router.command.RoutingContext
-+	9,  // 17: xray.app.router.command.RoutingService.GetBalancerInfo:output_type -> xray.app.router.command.GetBalancerInfoResponse
-+	11, // 18: xray.app.router.command.RoutingService.OverrideBalancerTarget:output_type -> xray.app.router.command.OverrideBalancerTargetResponse
-+	13, // 19: xray.app.router.command.RoutingService.AddRule:output_type -> xray.app.router.command.AddRuleResponse
-+	15, // 20: xray.app.router.command.RoutingService.RemoveRule:output_type -> xray.app.router.command.RemoveRuleResponse
-+	15, // [15:21] is the sub-list for method output_type
-+	9,  // [9:15] is the sub-list for method input_type
++	12, // 12: xray.app.router.command.RoutingService.OverrideBalancerTarget:input_type -> xray.app.router.command.OverrideBalancerTargetRequest
++	10, // 13: xray.app.router.command.RoutingService.ListBalancers:input_type -> xray.app.router.command.ListBalancersRequest
++	14, // 14: xray.app.router.command.RoutingService.AddRule:input_type -> xray.app.router.command.AddRuleRequest
++	16, // 15: xray.app.router.command.RoutingService.RemoveRule:input_type -> xray.app.router.command.RemoveRuleRequest
++	0,  // 16: xray.app.router.command.RoutingService.SubscribeRoutingStats:output_type -> xray.app.router.command.RoutingContext
++	0,  // 17: xray.app.router.command.RoutingService.TestRoute:output_type -> xray.app.router.command.RoutingContext
++	9,  // 18: xray.app.router.command.RoutingService.GetBalancerInfo:output_type -> xray.app.router.command.GetBalancerInfoResponse
++	13, // 19: xray.app.router.command.RoutingService.OverrideBalancerTarget:output_type -> xray.app.router.command.OverrideBalancerTargetResponse
++	11, // 20: xray.app.router.command.RoutingService.ListBalancers:output_type -> xray.app.router.command.ListBalancersResponse
++	15, // 21: xray.app.router.command.RoutingService.AddRule:output_type -> xray.app.router.command.AddRuleResponse
++	17, // 22: xray.app.router.command.RoutingService.RemoveRule:output_type -> xray.app.router.command.RemoveRuleResponse
++	16, // [16:23] is the sub-list for method output_type
++	9,  // [9:16] is the sub-list for method input_type
 +	9,  // [9:9] is the sub-list for extension type_name
 +	9,  // [9:9] is the sub-list for extension extendee
 +	0,  // [0:9] is the sub-list for field type_name
  }
  
  func init() { file_app_router_command_command_proto_init() }
-@@ -1041,13 +1257,15 @@
+@@ -1041,13 +1366,15 @@
  	if File_app_router_command_command_proto != nil {
  		return
  	}
@@ -1255,14 +1776,14 @@ diff -ruN -x .git a/app/router/command/command.pb.go b/app/router/command/comman
  			RawDescriptor: file_app_router_command_command_proto_rawDesc,
  			NumEnums:      0,
 -			NumMessages:   16,
-+			NumMessages:   18,
++			NumMessages:   20,
  			NumExtensions: 0,
  			NumServices:   1,
  		},
 diff -ruN -x .git a/app/router/command/command.proto b/app/router/command/command.proto
---- a/app/router/command/command.proto	2026-11-23 13:11:53.576472386 +0000
-+++ b/app/router/command/command.proto	2026-11-23 13:13:26.154704646 +0000
-@@ -69,9 +69,33 @@
+--- a/app/router/command/command.proto	2026-11-24 11:55:45.026041250 +0000
++++ b/app/router/command/command.proto	2026-11-24 13:23:08.484012778 +0000
+@@ -69,9 +69,35 @@
    string target = 2;
  }
  
@@ -1291,14 +1812,128 @@ diff -ruN -x .git a/app/router/command/command.proto b/app/router/command/comman
 +  // normalized strategy name of the running balancer
 +  string strategy = 7;
 +  repeated BalancerCostRule cost_rules = 8;
-+  // candidates of the balancer selectors sorted by tag
++  // effective weights of the candidates sorted by tag
 +  repeated BalancerOutboundCost outbound_costs = 9;
++  // outbounds of the balancer selectors sorted by tag for any strategy
++  repeated string candidates = 10;
  }
  
  message GetBalancerInfoRequest {
+@@ -82,6 +108,13 @@
+   BalancerMsg balancer = 1;
+ }
+ 
++message ListBalancersRequest {}
++
++message ListBalancersResponse {
++  // tags of all balancers in ascending order
++  repeated string tags = 1;
++}
++
+ message OverrideBalancerTargetRequest {
+   string balancerTag = 1;
+   string target = 2;
+@@ -108,6 +141,7 @@
+ 
+   rpc GetBalancerInfo(GetBalancerInfoRequest) returns (GetBalancerInfoResponse){}
+   rpc OverrideBalancerTarget(OverrideBalancerTargetRequest) returns (OverrideBalancerTargetResponse) {}
++  rpc ListBalancers(ListBalancersRequest) returns (ListBalancersResponse) {}
+   
+   rpc AddRule(AddRuleRequest) returns (AddRuleResponse) {}
+   rpc RemoveRule(RemoveRuleRequest) returns (RemoveRuleResponse) {}
+diff -ruN -x .git a/app/router/command/command_grpc.pb.go b/app/router/command/command_grpc.pb.go
+--- a/app/router/command/command_grpc.pb.go	2026-11-24 11:55:45.026041250 +0000
++++ b/app/router/command/command_grpc.pb.go	2026-11-24 13:25:44.351348220 +0000
+@@ -23,6 +23,7 @@
+ 	RoutingService_TestRoute_FullMethodName              = "/xray.app.router.command.RoutingService/TestRoute"
+ 	RoutingService_GetBalancerInfo_FullMethodName        = "/xray.app.router.command.RoutingService/GetBalancerInfo"
+ 	RoutingService_OverrideBalancerTarget_FullMethodName = "/xray.app.router.command.RoutingService/OverrideBalancerTarget"
++	RoutingService_ListBalancers_FullMethodName          = "/xray.app.router.command.RoutingService/ListBalancers"
+ 	RoutingService_AddRule_FullMethodName                = "/xray.app.router.command.RoutingService/AddRule"
+ 	RoutingService_RemoveRule_FullMethodName             = "/xray.app.router.command.RoutingService/RemoveRule"
+ )
+@@ -35,6 +36,7 @@
+ 	TestRoute(ctx context.Context, in *TestRouteRequest, opts ...grpc.CallOption) (*RoutingContext, error)
+ 	GetBalancerInfo(ctx context.Context, in *GetBalancerInfoRequest, opts ...grpc.CallOption) (*GetBalancerInfoResponse, error)
+ 	OverrideBalancerTarget(ctx context.Context, in *OverrideBalancerTargetRequest, opts ...grpc.CallOption) (*OverrideBalancerTargetResponse, error)
++	ListBalancers(ctx context.Context, in *ListBalancersRequest, opts ...grpc.CallOption) (*ListBalancersResponse, error)
+ 	AddRule(ctx context.Context, in *AddRuleRequest, opts ...grpc.CallOption) (*AddRuleResponse, error)
+ 	RemoveRule(ctx context.Context, in *RemoveRuleRequest, opts ...grpc.CallOption) (*RemoveRuleResponse, error)
+ }
+@@ -96,6 +98,16 @@
+ 	return out, nil
+ }
+ 
++func (c *routingServiceClient) ListBalancers(ctx context.Context, in *ListBalancersRequest, opts ...grpc.CallOption) (*ListBalancersResponse, error) {
++	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
++	out := new(ListBalancersResponse)
++	err := c.cc.Invoke(ctx, RoutingService_ListBalancers_FullMethodName, in, out, cOpts...)
++	if err != nil {
++		return nil, err
++	}
++	return out, nil
++}
++
+ func (c *routingServiceClient) AddRule(ctx context.Context, in *AddRuleRequest, opts ...grpc.CallOption) (*AddRuleResponse, error) {
+ 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+ 	out := new(AddRuleResponse)
+@@ -124,6 +136,7 @@
+ 	TestRoute(context.Context, *TestRouteRequest) (*RoutingContext, error)
+ 	GetBalancerInfo(context.Context, *GetBalancerInfoRequest) (*GetBalancerInfoResponse, error)
+ 	OverrideBalancerTarget(context.Context, *OverrideBalancerTargetRequest) (*OverrideBalancerTargetResponse, error)
++	ListBalancers(context.Context, *ListBalancersRequest) (*ListBalancersResponse, error)
+ 	AddRule(context.Context, *AddRuleRequest) (*AddRuleResponse, error)
+ 	RemoveRule(context.Context, *RemoveRuleRequest) (*RemoveRuleResponse, error)
+ 	mustEmbedUnimplementedRoutingServiceServer()
+@@ -148,6 +161,9 @@
+ func (UnimplementedRoutingServiceServer) OverrideBalancerTarget(context.Context, *OverrideBalancerTargetRequest) (*OverrideBalancerTargetResponse, error) {
+ 	return nil, status.Errorf(codes.Unimplemented, "method OverrideBalancerTarget not implemented")
+ }
++func (UnimplementedRoutingServiceServer) ListBalancers(context.Context, *ListBalancersRequest) (*ListBalancersResponse, error) {
++	return nil, status.Errorf(codes.Unimplemented, "method ListBalancers not implemented")
++}
+ func (UnimplementedRoutingServiceServer) AddRule(context.Context, *AddRuleRequest) (*AddRuleResponse, error) {
+ 	return nil, status.Errorf(codes.Unimplemented, "method AddRule not implemented")
+ }
+@@ -240,6 +256,24 @@
+ 	return interceptor(ctx, in, info, handler)
+ }
+ 
++func _RoutingService_ListBalancers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
++	in := new(ListBalancersRequest)
++	if err := dec(in); err != nil {
++		return nil, err
++	}
++	if interceptor == nil {
++		return srv.(RoutingServiceServer).ListBalancers(ctx, in)
++	}
++	info := &grpc.UnaryServerInfo{
++		Server:     srv,
++		FullMethod: RoutingService_ListBalancers_FullMethodName,
++	}
++	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
++		return srv.(RoutingServiceServer).ListBalancers(ctx, req.(*ListBalancersRequest))
++	}
++	return interceptor(ctx, in, info, handler)
++}
++
+ func _RoutingService_AddRule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+ 	in := new(AddRuleRequest)
+ 	if err := dec(in); err != nil {
+@@ -296,6 +330,10 @@
+ 			Handler:    _RoutingService_OverrideBalancerTarget_Handler,
+ 		},
+ 		{
++			MethodName: "ListBalancers",
++			Handler:    _RoutingService_ListBalancers_Handler,
++		},
++		{
+ 			MethodName: "AddRule",
+ 			Handler:    _RoutingService_AddRule_Handler,
+ 		},
 diff -ruN -x .git a/app/router/config.go b/app/router/config.go
---- a/app/router/config.go	2026-11-23 13:11:53.580472482 +0000
-+++ b/app/router/config.go	2026-11-23 14:33:18.522462686 +0000
+--- a/app/router/config.go	2026-11-24 11:55:45.030041386 +0000
++++ b/app/router/config.go	2026-11-24 11:55:45.594060445 +0000
 @@ -140,6 +140,29 @@
  			fallbackTag: br.FallbackTag,
  			strategy:    leastLoadStrategy,
@@ -1330,8 +1965,8 @@ diff -ruN -x .git a/app/router/config.go b/app/router/config.go
  		fallthrough
  	case "":
 diff -ruN -x .git a/app/router/config.pb.go b/app/router/config.pb.go
---- a/app/router/config.pb.go	2026-11-23 13:11:53.580472482 +0000
-+++ b/app/router/config.pb.go	2026-11-23 13:16:03.138473096 +0000
+--- a/app/router/config.pb.go	2026-11-24 11:55:45.030041386 +0000
++++ b/app/router/config.pb.go	2026-11-24 11:55:45.594060445 +0000
 @@ -132,7 +132,7 @@
  
  // Deprecated: Use Config_DomainStrategy.Descriptor instead.
@@ -1704,8 +2339,8 @@ diff -ruN -x .git a/app/router/config.pb.go b/app/router/config.pb.go
  			NumServices:   0,
  		},
 diff -ruN -x .git a/app/router/config.proto b/app/router/config.proto
---- a/app/router/config.proto	2026-11-23 13:11:53.580472482 +0000
-+++ b/app/router/config.proto	2026-11-23 13:13:26.154704646 +0000
+--- a/app/router/config.proto	2026-11-24 11:55:45.030041386 +0000
++++ b/app/router/config.proto	2026-11-24 11:55:45.594060445 +0000
 @@ -139,6 +139,26 @@
    float tolerance = 6;
  }
@@ -1735,7 +2370,7 @@ diff -ruN -x .git a/app/router/config.proto b/app/router/config.proto
      // Use domain as is.
 diff -ruN -x .git a/app/router/config_test.go b/app/router/config_test.go
 --- a/app/router/config_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/config_test.go	2026-11-23 15:03:57.192099587 +0000
++++ b/app/router/config_test.go	2026-11-24 11:55:45.598060580 +0000
 @@ -0,0 +1,83 @@
 +package router
 +
@@ -1820,9 +2455,49 @@ diff -ruN -x .git a/app/router/config_test.go b/app/router/config_test.go
 +		})
 +	}
 +}
+diff -ruN -x .git a/app/router/strategy_leastload.go b/app/router/strategy_leastload.go
+--- a/app/router/strategy_leastload.go	2026-11-24 11:55:45.030041386 +0000
++++ b/app/router/strategy_leastload.go	2026-11-24 13:23:08.480012692 +0000
+@@ -2,7 +2,6 @@
+ 
+ import (
+ 	"context"
+-	"math"
+ 	"sort"
+ 	"time"
+ 
+@@ -37,12 +36,7 @@
+ func NewLeastLoadStrategy(settings *StrategyLeastLoadConfig) *LeastLoadStrategy {
+ 	return &LeastLoadStrategy{
+ 		settings: settings,
+-		costs: NewWeightManager(
+-			settings.Costs, 1,
+-			func(value, cost float64) float64 {
+-				return value * math.Pow(cost, 0.5)
+-			},
+-		),
++		costs:    NewWeightManager(settings.Costs, 1, leastLoadScale),
+ 	}
+ }
+ 
+@@ -161,13 +155,12 @@
+ 				CountFail:        1,
+ 				RTTAverage:       time.Duration(v.Delay) * time.Millisecond,
+ 				RTTDeviation:     time.Duration(v.Delay) * time.Millisecond,
+-				RTTDeviationCost: time.Duration(s.costs.Apply(v.OutboundTag, float64(time.Duration(v.Delay)*time.Millisecond))),
++				RTTDeviationCost: time.Duration(leastLoadWeighted(v, s.costs.Get(v.OutboundTag))),
+ 			}
+ 
+ 			if v.HealthPing != nil {
+ 				record.RTTAverage = time.Duration(v.HealthPing.Average)
+ 				record.RTTDeviation = time.Duration(v.HealthPing.Deviation)
+-				record.RTTDeviationCost = time.Duration(s.costs.Apply(v.OutboundTag, float64(v.HealthPing.Deviation)))
+ 				record.CountAll = int(v.HealthPing.All)
+ 				record.CountFail = int(v.HealthPing.Fail)
+ 
 diff -ruN -x .git a/app/router/strategy_leastlopi.go b/app/router/strategy_leastlopi.go
 --- a/app/router/strategy_leastlopi.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/strategy_leastlopi.go	2026-11-23 14:46:28.730077241 +0000
++++ b/app/router/strategy_leastlopi.go	2026-11-24 14:13:24.485709736 +0000
 @@ -0,0 +1,328 @@
 +package router
 +
@@ -2056,17 +2731,17 @@ diff -ruN -x .git a/app/router/strategy_leastlopi.go b/app/router/strategy_least
 +		if !(v.Alive && (v.Delay < maxRTT.Milliseconds() || maxRTT == 0) && outbounds.contains(v.OutboundTag)) {
 +			continue
 +		}
-+		average := float64(v.Delay) * float64(time.Millisecond)
-+		deviation := 0.0
-+		record := &lopiNode{Tag: v.OutboundTag}
++		cost := s.getCost(v.OutboundTag)
++		average, deviation := leastLoPiMeasure(v)
++		record := &lopiNode{
++			Tag:     v.OutboundTag,
++			Average: average,
++			Score:   cost.score(average, deviation),
++		}
 +		if hp := v.HealthPing; hp != nil {
-+			average = float64(hp.Average)
-+			deviation = float64(hp.Deviation)
 +			record.CountAll = hp.All
 +			record.CountFail = hp.Fail
 +		}
-+		record.Average = average
-+		record.Score = s.getCost(v.OutboundTag).score(average, deviation)
 +		ret = append(ret, record)
 +	}
 +	leastLoPiSort(ret)
@@ -2154,7 +2829,7 @@ diff -ruN -x .git a/app/router/strategy_leastlopi.go b/app/router/strategy_least
 +}
 diff -ruN -x .git a/app/router/strategy_leastlopi_test.go b/app/router/strategy_leastlopi_test.go
 --- a/app/router/strategy_leastlopi_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/app/router/strategy_leastlopi_test.go	2026-11-23 15:03:57.192099587 +0000
++++ b/app/router/strategy_leastlopi_test.go	2026-11-24 11:55:45.598060580 +0000
 @@ -0,0 +1,841 @@
 +package router
 +
@@ -2999,8 +3674,8 @@ diff -ruN -x .git a/app/router/strategy_leastlopi_test.go b/app/router/strategy_
 +}
 diff -ruN -x .git a/features/routing/balancer_costs.go b/features/routing/balancer_costs.go
 --- a/features/routing/balancer_costs.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/features/routing/balancer_costs.go	2026-11-23 13:13:11.718356526 +0000
-@@ -0,0 +1,34 @@
++++ b/features/routing/balancer_costs.go	2026-11-24 13:22:58.455799465 +0000
+@@ -0,0 +1,42 @@
 +package routing
 +
 +// BalancerCostRule is a weight rule of a balancing strategy in the configured order.
@@ -3022,11 +3697,14 @@ diff -ruN -x .git a/features/routing/balancer_costs.go b/features/routing/balanc
 +	CostDevi    *float64
 +}
 +
-+// BalancerCosts describes the strategy of a running balancer and its weights.
++// BalancerCosts describes the strategy of a running balancer, its candidates and its
++// weights. Candidates are the outbounds of the balancer selectors sorted by tag for
++// any strategy, Rules and Outbounds are set for the strategies with weights.
 +// OutboundsErr is set when the candidates could not be selected.
 +type BalancerCosts struct {
 +	Strategy     string
 +	Rules        []BalancerCostRule
++	Candidates   []string
 +	Outbounds    []BalancerOutboundCost
 +	OutboundsErr error
 +}
@@ -3035,9 +3713,14 @@ diff -ruN -x .git a/features/routing/balancer_costs.go b/features/routing/balanc
 +type BalancerCostsReader interface {
 +	GetBalancerCosts(tag string) (*BalancerCosts, error)
 +}
++
++// BalancerLister lists the tags of the balancers of a router.
++type BalancerLister interface {
++	ListBalancers() []string
++}
 diff -ruN -x .git a/infra/conf/router.go b/infra/conf/router.go
---- a/infra/conf/router.go	2026-11-23 13:11:53.640473929 +0000
-+++ b/infra/conf/router.go	2026-11-23 13:13:26.170705032 +0000
+--- a/infra/conf/router.go	2026-11-24 11:55:45.094043548 +0000
++++ b/infra/conf/router.go	2026-11-24 11:55:45.598060580 +0000
 @@ -40,7 +40,7 @@
  	switch r.Strategy.Type {
  	case "":
@@ -3048,8 +3731,8 @@ diff -ruN -x .git a/infra/conf/router.go b/infra/conf/router.go
  		return nil, errors.New("unknown balancing strategy: " + r.Strategy.Type)
  	}
 diff -ruN -x .git a/infra/conf/router_strategy.go b/infra/conf/router_strategy.go
---- a/infra/conf/router_strategy.go	2026-11-23 13:11:53.640473929 +0000
-+++ b/infra/conf/router_strategy.go	2026-11-23 13:13:26.170705032 +0000
+--- a/infra/conf/router_strategy.go	2026-11-24 11:55:45.094043548 +0000
++++ b/infra/conf/router_strategy.go	2026-11-24 11:55:45.598060580 +0000
 @@ -13,6 +13,7 @@
  	strategyLeastPing  string = "leastping"
  	strategyRoundRobin string = "roundrobin"
@@ -3068,7 +3751,7 @@ diff -ruN -x .git a/infra/conf/router_strategy.go b/infra/conf/router_strategy.g
  
 diff -ruN -x .git a/infra/conf/router_strategy_leastlopi.go b/infra/conf/router_strategy_leastlopi.go
 --- a/infra/conf/router_strategy_leastlopi.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/infra/conf/router_strategy_leastlopi.go	2026-11-23 13:13:11.738357008 +0000
++++ b/infra/conf/router_strategy_leastlopi.go	2026-11-24 11:55:45.598060580 +0000
 @@ -0,0 +1,78 @@
 +package conf
 +
@@ -3150,7 +3833,7 @@ diff -ruN -x .git a/infra/conf/router_strategy_leastlopi.go b/infra/conf/router_
 +}
 diff -ruN -x .git a/infra/conf/router_strategy_leastlopi_test.go b/infra/conf/router_strategy_leastlopi_test.go
 --- a/infra/conf/router_strategy_leastlopi_test.go	1970-01-01 00:00:00.000000000 +0000
-+++ b/infra/conf/router_strategy_leastlopi_test.go	2026-11-23 13:16:32.703203890 +0000
++++ b/infra/conf/router_strategy_leastlopi_test.go	2026-11-24 11:55:45.598060580 +0000
 @@ -0,0 +1,132 @@
 +package conf_test
 +
@@ -3280,6 +3963,964 @@ diff -ruN -x .git a/infra/conf/router_strategy_leastlopi_test.go b/infra/conf/ro
 +			}
 +			if !proto.Equal(settings, tt.want) {
 +				t.Errorf("BalancingRule.Build() settings = %v, want %v", settings, tt.want)
++			}
++		})
++	}
++}
+diff -ruN -x .git a/main/commands/all/api/api.go b/main/commands/all/api/api.go
+--- a/main/commands/all/api/api.go	2026-11-24 11:55:45.102043818 +0000
++++ b/main/commands/all/api/api.go	2026-11-24 13:23:08.484012778 +0000
+@@ -17,6 +17,7 @@
+ 		cmdSysStats,
+ 		cmdBalancerInfo,
+ 		cmdBalancerOverride,
++		cmdBalancerList,
+ 		cmdAddInbounds,
+ 		cmdAddOutbounds,
+ 		cmdRemoveInbounds,
+diff -ruN -x .git a/main/commands/all/api/balancer_list.go b/main/commands/all/api/balancer_list.go
+--- a/main/commands/all/api/balancer_list.go	1970-01-01 00:00:00.000000000 +0000
++++ b/main/commands/all/api/balancer_list.go	2026-11-24 13:23:42.920746565 +0000
+@@ -0,0 +1,462 @@
++package api
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"math"
++	"os"
++	"sort"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/xtls/xray-core/app/observatory"
++	observatoryService "github.com/xtls/xray-core/app/observatory/command"
++	"github.com/xtls/xray-core/app/router"
++	routerService "github.com/xtls/xray-core/app/router/command"
++	"github.com/xtls/xray-core/main/commands/base"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++)
++
++var cmdBalancerList = &base.Command{
++	CustomFlags: true,
++	UsageLine:   "{{.Exec}} api lb [--server=127.0.0.1:8080] [balancer]...",
++	Short:       "list balancers with outbound scores",
++	Long: `
++List the outbounds of balancers with their observatory status and the
++score of the balancer strategy, computed by the functions the strategy
++ranks outbounds with. Without balancer tags, list all balancers and then
++the outbounds of the observatory report out of them under "(no balancer)".
++
++> Make sure you have "RoutingService" and "ObservatoryService" set in
++"config.api.services" of server config.
++
++Arguments:
++
++	-json
++		Use json output.
++
++	-s, -server <server:port>
++		The API server address. Default 127.0.0.1:8080
++
++	-t, -timeout <seconds>
++		Timeout seconds to call API. Default 3
++
++Example:
++
++    {{.Exec}} {{.LongName}} --server=127.0.0.1:8080
++    {{.Exec}} {{.LongName}} --server=127.0.0.1:8080 balancer1 balancer2
++`,
++	Run: executeBalancerList,
++}
++
++// lbNoBalancer is the header of the outbounds of the observatory report out of the
++// listed balancers
++const lbNoBalancer = "(no balancer)"
++
++// lbOutbound is an outbound of a group, the JSON fields keep the order of the text line
++type lbOutbound struct {
++	OutboundTag string   `json:"outboundTag"`
++	Alive       bool     `json:"alive"`
++	Status      bool     `json:"status"`
++	DelayMs     *int64   `json:"delayMs,omitempty"`
++	Average     *int64   `json:"average,omitempty"`
++	Deviation   *int64   `json:"deviation,omitempty"`
++	Min         *int64   `json:"min,omitempty"`
++	Max         *int64   `json:"max,omitempty"`
++	Fail        *int64   `json:"fail,omitempty"`
++	All         *int64   `json:"all,omitempty"`
++	Score       *float64 `json:"score"`
++	Cost        *float64 `json:"cost,omitempty"`
++	CostPing    *float64 `json:"costPing,omitempty"`
++	CostDevi    *float64 `json:"costDevi,omitempty"`
++	// avg is the unweighted average RTT in nanoseconds the order compares
++	avg float64
++}
++
++// lbGroup is a balancer with its outbounds
++type lbGroup struct {
++	Tag       string       `json:"tag"`
++	Strategy  string       `json:"strategy"`
++	Outbounds []lbOutbound `json:"outbounds"`
++}
++
++// lbReport is the output of the command, Unassigned is set only without balancer tags
++type lbReport struct {
++	Balancers  []lbGroup     `json:"balancers"`
++	Unassigned *[]lbOutbound `json:"unassigned,omitempty"`
++}
++
++func executeBalancerList(cmd *base.Command, args []string) {
++	setSharedFlags(cmd)
++	cmd.Flag.Parse(args)
++	conn, ctx, close := dialAPIServer()
++	defer close()
++	report, err := collectBalancerList(ctx, routerService.NewRoutingServiceClient(conn),
++		observatoryService.NewObservatoryServiceClient(conn), cmd.Flag.Args(),
++		apiServerAddrPtr, os.Stderr)
++	if err != nil {
++		base.Fatalf("%s", err)
++	}
++	if err := writeBalancerList(os.Stdout, report, apiJSON); err != nil {
++		base.Fatalf("failed to print balancers: %s", err)
++	}
++}
++
++// collectBalancerList requests the balancers and the observatory report and builds the
++// groups: of all balancers and then the outbounds out of them without tags, of the
++// balancers of tags in their order otherwise. Warnings go to warn.
++func collectBalancerList(ctx context.Context, rc routerService.RoutingServiceClient,
++	oc observatoryService.ObservatoryServiceClient, tags []string, server string,
++	warn io.Writer,
++) (*lbReport, error) {
++	all := len(tags) == 0
++	tags = uniqueTags(tags)
++	list, err := rc.ListBalancers(ctx, &routerService.ListBalancersRequest{})
++	switch {
++	case err == nil && all:
++		tags = list.GetTags()
++	case err == nil:
++		if unknown := unknownTags(tags, list.GetTags()); len(unknown) > 0 {
++			return nil, fmt.Errorf("unknown balancer: %s", strings.Join(unknown, ", "))
++		}
++	case status.Code(err) == codes.Unimplemented && all:
++		return nil, fmt.Errorf(
++			"the server does not list balancers, specify balancer tags as arguments: %w", err)
++	case status.Code(err) != codes.Unimplemented:
++		return nil, fmt.Errorf("failed to list balancers: %w", err)
++	}
++	infos := make([]*routerService.BalancerMsg, 0, len(tags))
++	for _, tag := range tags {
++		resp, err := rc.GetBalancerInfo(ctx, &routerService.GetBalancerInfoRequest{Tag: tag})
++		if err != nil {
++			return nil, fmt.Errorf("failed to get balancer %s: %w", tag, err)
++		}
++		infos = append(infos, resp.GetBalancer())
++	}
++	resp, err := oc.GetOutboundStatus(ctx, &observatoryService.GetOutboundStatusRequest{})
++	if err != nil {
++		return nil, fmt.Errorf("failed to get outbound status: %w", err)
++	}
++	statuses := make(map[string]*observatory.OutboundStatus)
++	var order []string
++	for _, st := range resp.GetStatus().GetStatus() {
++		if _, ok := statuses[st.GetOutboundTag()]; !ok {
++			statuses[st.GetOutboundTag()] = st
++			order = append(order, st.GetOutboundTag())
++		}
++	}
++	if len(order) == 0 {
++		fmt.Fprintf(warn, "warning: the observatory at %s reported no outbounds\n", server)
++	}
++	report := &lbReport{Balancers: make([]lbGroup, 0, len(tags))}
++	assigned := make(map[string]bool)
++	for i, tag := range tags {
++		group := newBalancerGroup(tag, infos[i], statuses, warn)
++		for _, o := range group.Outbounds {
++			assigned[o.OutboundTag] = true
++		}
++		report.Balancers = append(report.Balancers, group)
++	}
++	if all {
++		unassigned := make([]lbOutbound, 0)
++		for _, tag := range order {
++			if !assigned[tag] {
++				unassigned = append(unassigned, newLbOutbound(tag, statuses[tag]))
++			}
++		}
++		sortLbOutbounds(unassigned)
++		report.Unassigned = &unassigned
++	}
++	return report, nil
++}
++
++// newBalancerGroup builds the group of a balancer: its candidates or, from a server
++// without them, the tags of its weights, with the observatory status and the score
++func newBalancerGroup(tag string, info *routerService.BalancerMsg,
++	statuses map[string]*observatory.OutboundStatus, warn io.Writer,
++) lbGroup {
++	group := lbGroup{Tag: tag, Strategy: info.GetStrategy(), Outbounds: make([]lbOutbound, 0)}
++	costs := make(map[string]*routerService.BalancerOutboundCost)
++	var costTags []string
++	for _, c := range info.GetOutboundCosts() {
++		if _, ok := costs[c.GetOutboundTag()]; !ok {
++			costs[c.GetOutboundTag()] = c
++			costTags = append(costTags, c.GetOutboundTag())
++		}
++	}
++	members := sortedUniqueTags(info.GetCandidates())
++	if len(members) == 0 {
++		members = sortedUniqueTags(costTags)
++	}
++	weighted := group.Strategy == "leastload" || group.Strategy == "leastlopi"
++	switch {
++	case len(members) == 0:
++		fmt.Fprintf(warn, "warning: balancer %s reports neither candidates nor outbound costs\n",
++			tag)
++	case weighted && len(costs) == 0:
++		fmt.Fprintf(warn,
++			"warning: balancer %s reports no outbound costs: scores are not computed\n", tag)
++	}
++	switch {
++	case group.Strategy == "":
++		fmt.Fprintf(warn, "warning: balancer %s reports no strategy, its Xray API has no "+
++			"balancer weights: scores are not computed\n", tag)
++	case !weighted:
++		fmt.Fprintf(warn,
++			"warning: balancer %s: strategy %s has no weights: scores are not computed\n",
++			tag, group.Strategy)
++	}
++	var overflow, notFinite bool
++	for _, member := range members {
++		st := statuses[member]
++		o := newLbOutbound(member, st)
++		c := costs[member]
++		if c != nil {
++			o.Cost, o.CostPing, o.CostDevi = c.Cost, c.CostPing, c.CostDevi
++		}
++		if score, ok, inRange := lbScore(group.Strategy, st, c); ok {
++			overflow = overflow || !inRange
++			if math.IsNaN(score) || math.IsInf(score, 0) {
++				notFinite = true
++			} else {
++				o.Score = &score
++			}
++		}
++		group.Outbounds = append(group.Outbounds, o)
++	}
++	if overflow {
++		fmt.Fprintf(warn, "warning: balancer %s: a leastLoad score is out of the int64 range "+
++			"of time.Duration: the server overflows it, so its order may differ\n", tag)
++	}
++	if notFinite {
++		fmt.Fprintf(warn,
++			"warning: balancer %s: a score is not a finite number, it is shown as n/a\n", tag)
++	}
++	sortLbOutbounds(group.Outbounds)
++	return group
++}
++
++// newLbOutbound returns an outbound with its observatory status, st is nil for a
++// candidate missing from the observatory report
++func newLbOutbound(tag string, st *observatory.OutboundStatus) lbOutbound {
++	o := lbOutbound{OutboundTag: tag}
++	if st == nil {
++		return o
++	}
++	o.Status = true
++	o.Alive = st.GetAlive()
++	if hp := st.GetHealthPing(); hp != nil {
++		fail, all := hp.GetFail(), hp.GetAll()
++		o.Fail, o.All = &fail, &all
++		o.avg = float64(hp.GetAverage())
++		if all > fail {
++			average, deviation := hp.GetAverage(), hp.GetDeviation()
++			minimum, maximum := hp.GetMin(), hp.GetMax()
++			o.Average, o.Deviation, o.Min, o.Max = &average, &deviation, &minimum, &maximum
++		}
++		return o
++	}
++	o.avg = float64(st.GetDelay()) * float64(time.Millisecond)
++	if o.Alive {
++		delay := st.GetDelay()
++		o.DelayMs = &delay
++	}
++	return o
++}
++
++// lbScore returns the score of a measured outbound computed by the functions the
++// strategy ranks with; ok is false without a score, inRange is false for a leastLoad
++// value out of the int64 range of time.Duration
++func lbScore(strategy string, st *observatory.OutboundStatus,
++	cost *routerService.BalancerOutboundCost,
++) (score float64, ok, inRange bool) {
++	if cost == nil || !lbMeasured(st) {
++		return 0, false, true
++	}
++	switch {
++	case strategy == "leastload" && cost.Cost != nil:
++		score, inRange = router.LeastLoadScore(st, cost.GetCost())
++		return score, true, inRange
++	case strategy == "leastlopi" && cost.CostPing != nil && cost.CostDevi != nil:
++		return router.LeastLoPiScore(st, cost.GetCostPing(), cost.GetCostDevi()), true, true
++	}
++	return 0, false, true
++}
++
++// lbMeasured reports an alive outbound with a successful probe or a last delay
++func lbMeasured(st *observatory.OutboundStatus) bool {
++	if st == nil || !st.GetAlive() {
++		return false
++	}
++	hp := st.GetHealthPing()
++	return hp == nil || hp.GetAll() > hp.GetFail()
++}
++
++// sortLbOutbounds orders alive outbounds first, the scored ones by the score, then by
++// the unweighted average, fewer failed probes, more probes and the tag; candidates
++// missing from the observatory report go last by tag
++func sortLbOutbounds(list []lbOutbound) {
++	sort.SliceStable(list, func(i, j int) bool {
++		a, b := &list[i], &list[j]
++		if a.Status != b.Status {
++			return a.Status
++		}
++		if a.Alive != b.Alive {
++			return a.Alive
++		}
++		if (a.Score != nil) != (b.Score != nil) {
++			return a.Score != nil
++		}
++		if a.Score != nil && *a.Score != *b.Score {
++			return *a.Score < *b.Score
++		}
++		if a.avg != b.avg {
++			return a.avg < b.avg
++		}
++		if fa, fb := lbCount(a.Fail), lbCount(b.Fail); fa != fb {
++			return fa < fb
++		}
++		if aa, ab := lbCount(a.All), lbCount(b.All); aa != ab {
++			return aa > ab
++		}
++		return a.OutboundTag < b.OutboundTag
++	})
++}
++
++func lbCount(v *int64) int64 {
++	if v == nil {
++		return 0
++	}
++	return *v
++}
++
++// writeBalancerList prints the groups as text or, with asJSON, as JSON
++func writeBalancerList(w io.Writer, report *lbReport, asJSON bool) error {
++	if asJSON {
++		data, err := json.MarshalIndent(report, "", "  ")
++		if err != nil {
++			return err
++		}
++		_, err = fmt.Fprintln(w, string(data))
++		return err
++	}
++	var b strings.Builder
++	header := func(title string) {
++		if b.Len() > 0 {
++			b.WriteString("\n")
++		}
++		b.WriteString(title + ":\n")
++	}
++	for _, group := range report.Balancers {
++		title := group.Tag
++		if group.Strategy != "" {
++			title += " " + group.Strategy
++		}
++		header(title)
++		for _, o := range group.Outbounds {
++			b.WriteString(formatLbOutbound(o) + "\n")
++		}
++	}
++	if report.Unassigned != nil {
++		header(lbNoBalancer)
++		for _, o := range *report.Unassigned {
++			b.WriteString(formatLbOutbound(o) + "\n")
++		}
++	}
++	_, err := io.WriteString(w, b.String())
++	return err
++}
++
++// formatLbOutbound returns the text line of an outbound
++func formatLbOutbound(o lbOutbound) string {
++	var b strings.Builder
++	b.WriteString(o.OutboundTag)
++	if !o.Status {
++		b.WriteString(" status=n/a")
++	} else {
++		fmt.Fprintf(&b, " alive=%t", o.Alive)
++		switch {
++		case o.Average != nil:
++			fmt.Fprintf(&b, " avg=%s dev=%s min=%s max=%s", lbMs(float64(*o.Average)),
++				lbMs(float64(*o.Deviation)), lbMs(float64(*o.Min)), lbMs(float64(*o.Max)))
++		case o.DelayMs != nil:
++			fmt.Fprintf(&b, " last=%s", lbMs(float64(*o.DelayMs)*float64(time.Millisecond)))
++		default:
++			b.WriteString(" RTT=n/a")
++		}
++	}
++	if o.Score != nil {
++		fmt.Fprintf(&b, " score=%s", lbMs(*o.Score))
++	} else {
++		b.WriteString(" score=n/a")
++	}
++	if o.Fail != nil {
++		fmt.Fprintf(&b, " fail=%d/%d", *o.Fail, *o.All)
++	}
++	for _, weight := range []struct {
++		name  string
++		value *float64
++	}{{"cost", o.Cost}, {"costPing", o.CostPing}, {"costDevi", o.CostDevi}} {
++		if weight.value != nil {
++			fmt.Fprintf(&b, " %s=%s", weight.name, strconv.FormatFloat(*weight.value, 'f', -1, 64))
++		}
++	}
++	return b.String()
++}
++
++// lbMs formats nanoseconds as milliseconds with three decimals, rounded to a
++// microsecond and without an exponent for huge values
++func lbMs(ns float64) string {
++	us := math.Round(ns / 1e3)
++	if us == 0 {
++		us = 0
++	}
++	digits := strconv.FormatFloat(us, 'f', 0, 64)
++	sign := ""
++	if strings.HasPrefix(digits, "-") {
++		sign, digits = "-", digits[1:]
++	}
++	if len(digits) < 4 {
++		digits = strings.Repeat("0", 4-len(digits)) + digits
++	}
++	return sign + digits[:len(digits)-3] + "." + digits[len(digits)-3:] + "ms"
++}
++
++// uniqueTags returns the tags without repeats in their order
++func uniqueTags(tags []string) []string {
++	seen := make(map[string]bool, len(tags))
++	ret := make([]string, 0, len(tags))
++	for _, tag := range tags {
++		if !seen[tag] {
++			seen[tag] = true
++			ret = append(ret, tag)
++		}
++	}
++	return ret
++}
++
++// sortedUniqueTags returns the tags without repeats in ascending order
++func sortedUniqueTags(tags []string) []string {
++	ret := uniqueTags(tags)
++	sort.Strings(ret)
++	return ret
++}
++
++// unknownTags returns the tags missing from known in the order of tags
++func unknownTags(tags, known []string) []string {
++	set := make(map[string]bool, len(known))
++	for _, tag := range known {
++		set[tag] = true
++	}
++	var ret []string
++	for _, tag := range tags {
++		if !set[tag] {
++			ret = append(ret, tag)
++		}
++	}
++	return ret
++}
+diff -ruN -x .git a/main/commands/all/api/balancer_list_test.go b/main/commands/all/api/balancer_list_test.go
+--- a/main/commands/all/api/balancer_list_test.go	1970-01-01 00:00:00.000000000 +0000
++++ b/main/commands/all/api/balancer_list_test.go	2026-11-24 14:13:51.838303377 +0000
+@@ -0,0 +1,477 @@
++package api
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"maps"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/xtls/xray-core/app/observatory"
++	observatoryService "github.com/xtls/xray-core/app/observatory/command"
++	routerService "github.com/xtls/xray-core/app/router/command"
++	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++)
++
++// fakeRoutingClient answers ListBalancers and GetBalancerInfo with fixed replies
++type fakeRoutingClient struct {
++	routerService.RoutingServiceClient
++	list      []string
++	listErr   error
++	balancers map[string]*routerService.BalancerMsg
++
++	listCalls int
++	infoCalls map[string]int
++}
++
++func (c *fakeRoutingClient) ListBalancers(ctx context.Context,
++	in *routerService.ListBalancersRequest, opts ...grpc.CallOption,
++) (*routerService.ListBalancersResponse, error) {
++	c.listCalls++
++	if c.listErr != nil {
++		return nil, c.listErr
++	}
++	return &routerService.ListBalancersResponse{Tags: c.list}, nil
++}
++
++func (c *fakeRoutingClient) GetBalancerInfo(ctx context.Context,
++	in *routerService.GetBalancerInfoRequest, opts ...grpc.CallOption,
++) (*routerService.GetBalancerInfoResponse, error) {
++	if c.infoCalls == nil {
++		c.infoCalls = make(map[string]int)
++	}
++	c.infoCalls[in.GetTag()]++
++	balancer, ok := c.balancers[in.GetTag()]
++	if !ok {
++		return nil, errors.New("app/router: cannot find tag")
++	}
++	return &routerService.GetBalancerInfoResponse{Balancer: balancer}, nil
++}
++
++// fakeObservatoryClient answers GetOutboundStatus with a fixed report
++type fakeObservatoryClient struct {
++	status []*observatory.OutboundStatus
++
++	statusCalls int
++}
++
++func (c *fakeObservatoryClient) GetOutboundStatus(ctx context.Context,
++	in *observatoryService.GetOutboundStatusRequest, opts ...grpc.CallOption,
++) (*observatoryService.GetOutboundStatusResponse, error) {
++	c.statusCalls++
++	return &observatoryService.GetOutboundStatusResponse{
++		Status: &observatory.ObservationResult{Status: c.status},
++	}, nil
++}
++
++func lbF(v float64) *float64 { return &v }
++
++func lbBurst(tag string, average, deviation, minimum, maximum time.Duration,
++	all, fail int64,
++) *observatory.OutboundStatus {
++	return &observatory.OutboundStatus{
++		OutboundTag: tag,
++		Alive:       all != fail,
++		Delay:       average.Milliseconds(),
++		HealthPing: &observatory.HealthPingMeasurementResult{
++			All:       all,
++			Fail:      fail,
++			Average:   int64(average),
++			Deviation: int64(deviation),
++			Min:       int64(minimum),
++			Max:       int64(maximum),
++		},
++	}
++}
++
++func lbPlain(tag string, alive bool, delay int64) *observatory.OutboundStatus {
++	return &observatory.OutboundStatus{OutboundTag: tag, Alive: alive, Delay: delay}
++}
++
++// lbTestBalancers returns a random balancer and a leastLoPi one sharing cg-vl-w
++func lbTestBalancers() map[string]*routerService.BalancerMsg {
++	return map[string]*routerService.BalancerMsg{
++		"rnd": {Strategy: "random", Candidates: []string{"x-free", "cg-vl-w"}},
++		"vl-w": {
++			Strategy:   "leastlopi",
++			Candidates: []string{"mh-vl-w", "idle-vl-w", "cg-vl-w", "cb-vl-w", "mh-vl-w"},
++			OutboundCosts: []*routerService.BalancerOutboundCost{
++				{OutboundTag: "cb-vl-w", CostPing: lbF(4096), CostDevi: lbF(4096)},
++				{OutboundTag: "cg-vl-w", CostPing: lbF(1), CostDevi: lbF(1)},
++				{OutboundTag: "idle-vl-w", CostPing: lbF(1), CostDevi: lbF(0)},
++				{OutboundTag: "mh-vl-w", CostPing: lbF(16), CostDevi: lbF(1)},
++			},
++		},
++	}
++}
++
++// lbTestStatus returns the observatory report of lbTestBalancers with two outbounds
++// out of the balancers and without idle-vl-w
++func lbTestStatus() []*observatory.OutboundStatus {
++	ms := time.Millisecond
++	return []*observatory.OutboundStatus{
++		lbPlain("dead-x", false, 99999999),
++		lbBurst("mh-vl-w", 150*ms, 45*ms, 101*ms, 230*ms, 10, 1),
++		lbPlain("out-x", true, 7),
++		lbBurst("cb-vl-w", 0, 0, 0, 0, 10, 10),
++		lbBurst("cg-vl-w", 1500*ms, 0, 1500*ms, 1500*ms, 10, 0),
++		lbPlain("x-free", true, 20),
++	}
++}
++
++const (
++	lbTestRnd = "rnd random:\n" +
++		"x-free alive=true last=20.000ms score=n/a\n" +
++		"cg-vl-w alive=true avg=1500.000ms dev=0.000ms min=1500.000ms max=1500.000ms " +
++		"score=n/a fail=0/10\n"
++	lbTestVlw = "vl-w leastlopi:\n" +
++		"mh-vl-w alive=true avg=150.000ms dev=45.000ms min=101.000ms max=230.000ms " +
++		"score=645.000ms fail=1/10 costPing=16 costDevi=1\n" +
++		"cg-vl-w alive=true avg=1500.000ms dev=0.000ms min=1500.000ms max=1500.000ms " +
++		"score=1500.000ms fail=0/10 costPing=1 costDevi=1\n" +
++		"cb-vl-w alive=false RTT=n/a score=n/a fail=10/10 costPing=4096 costDevi=4096\n" +
++		"idle-vl-w status=n/a score=n/a costPing=1 costDevi=0\n"
++	lbTestRndWarn = "warning: balancer rnd: strategy random has no weights: " +
++		"scores are not computed\n"
++	lbTestEqLine = " alive=true avg=100.000ms dev=0.000ms min=100.000ms max=100.000ms " +
++		"score=100.000ms"
++	lbTestJSON = `{
++  "balancers": [
++    {
++      "tag": "vl-w",
++      "strategy": "leastlopi",
++      "outbounds": [
++        {
++          "outboundTag": "mh-vl-w",
++          "alive": true,
++          "status": true,
++          "average": 150000000,
++          "deviation": 45000000,
++          "min": 101000000,
++          "max": 230000000,
++          "fail": 1,
++          "all": 10,
++          "score": 645000000,
++          "costPing": 16,
++          "costDevi": 1
++        },
++        {
++          "outboundTag": "idle-vl-w",
++          "alive": false,
++          "status": false,
++          "score": null,
++          "costPing": 1,
++          "costDevi": 0
++        }
++      ]
++    }
++  ],
++  "unassigned": [
++    {
++      "outboundTag": "out-x",
++      "alive": true,
++      "status": true,
++      "delayMs": 7,
++      "score": null
++    }
++  ]
++}
++`
++)
++
++func Test_collectBalancerList(t *testing.T) {
++	ms := time.Millisecond
++	unimplemented := status.Error(codes.Unimplemented, "unknown method ListBalancers")
++	eqCosts := func(tags ...string) []*routerService.BalancerOutboundCost {
++		var ret []*routerService.BalancerOutboundCost
++		for _, tag := range tags {
++			ret = append(ret, &routerService.BalancerOutboundCost{
++				OutboundTag: tag, CostPing: lbF(1), CostDevi: lbF(1),
++			})
++		}
++		return ret
++	}
++	type args struct {
++		rc     *fakeRoutingClient
++		oc     *fakeObservatoryClient
++		tags   []string
++		asJSON bool
++	}
++	tests := []struct {
++		name     string
++		args     args
++		want     string
++		wantWarn string
++		wantErr  string
++	}{
++		{
++			name: "all balancers and the outbounds out of them",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{"rnd", "vl-w"}, balancers: lbTestBalancers()},
++				oc: &fakeObservatoryClient{status: lbTestStatus()},
++			},
++			want: lbTestRnd + "\n" + lbTestVlw + "\n(no balancer):\n" +
++				"out-x alive=true last=7.000ms score=n/a\n" +
++				"dead-x alive=false RTT=n/a score=n/a\n",
++			wantWarn: lbTestRndWarn,
++		},
++		{
++			name: "tags in the order of the arguments once each",
++			args: args{
++				rc:   &fakeRoutingClient{list: []string{"rnd", "vl-w"}, balancers: lbTestBalancers()},
++				oc:   &fakeObservatoryClient{status: lbTestStatus()},
++				tags: []string{"vl-w", "rnd", "vl-w"},
++			},
++			want:     lbTestVlw + "\n" + lbTestRnd,
++			wantWarn: lbTestRndWarn,
++		},
++		{
++			name: "unknown tags",
++			args: args{
++				rc:   &fakeRoutingClient{list: []string{"rnd", "vl-w"}, balancers: lbTestBalancers()},
++				oc:   &fakeObservatoryClient{status: lbTestStatus()},
++				tags: []string{"vl-w", "nope", "zz"},
++			},
++			wantErr: "unknown balancer: nope, zz",
++		},
++		{
++			name: "ListBalancers unimplemented without tags",
++			args: args{
++				rc: &fakeRoutingClient{listErr: unimplemented, balancers: lbTestBalancers()},
++				oc: &fakeObservatoryClient{status: lbTestStatus()},
++			},
++			wantErr: "specify balancer tags as arguments",
++		},
++		{
++			name: "ListBalancers unimplemented with tags",
++			args: args{
++				rc:   &fakeRoutingClient{listErr: unimplemented, balancers: lbTestBalancers()},
++				oc:   &fakeObservatoryClient{status: lbTestStatus()},
++				tags: []string{"vl-w"},
++			},
++			want: lbTestVlw,
++		},
++		{
++			name: "ListBalancers unimplemented with an unknown tag",
++			args: args{
++				rc:   &fakeRoutingClient{listErr: unimplemented, balancers: lbTestBalancers()},
++				oc:   &fakeObservatoryClient{status: lbTestStatus()},
++				tags: []string{"nope"},
++			},
++			wantErr: "failed to get balancer nope",
++		},
++		{
++			name: "ListBalancers fails",
++			args: args{
++				rc: &fakeRoutingClient{
++					listErr:   status.Error(codes.Unavailable, "connection refused"),
++					balancers: lbTestBalancers(),
++				},
++				oc:   &fakeObservatoryClient{status: lbTestStatus()},
++				tags: []string{"vl-w"},
++			},
++			wantErr: "failed to list balancers",
++		},
++		{
++			name: "no strategy and no candidates, members from the weights",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{"mid", "old"}, balancers: map[string]*routerService.BalancerMsg{
++					"old": {},
++					"mid": {Strategy: "leastload", OutboundCosts: []*routerService.BalancerOutboundCost{
++						{OutboundTag: "out-x", Cost: lbF(2)},
++						{OutboundTag: "x-free", Cost: lbF(0)},
++					}},
++				}},
++				oc: &fakeObservatoryClient{status: []*observatory.OutboundStatus{
++					lbPlain("out-x", true, 7),
++					lbPlain("x-free", true, 20),
++				}},
++				tags: []string{"old", "mid"},
++			},
++			want: "old:\n\nmid leastload:\n" +
++				"x-free alive=true last=20.000ms score=0.000ms cost=0\n" +
++				"out-x alive=true last=7.000ms score=9.899ms cost=2\n",
++			wantWarn: "warning: balancer old reports neither candidates nor outbound costs\n" +
++				"warning: balancer old reports no strategy, its Xray API has no balancer " +
++				"weights: scores are not computed\n",
++		},
++		{
++			name: "equal scores go to the average, failed probes, probes and the tag",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{"eq"}, balancers: map[string]*routerService.BalancerMsg{
++					"eq": {
++						Strategy:      "leastlopi",
++						Candidates:    []string{"a", "b", "c", "d", "e", "g"},
++						OutboundCosts: eqCosts("a", "b", "c", "d", "e", "g"),
++					},
++				}},
++				oc: &fakeObservatoryClient{status: []*observatory.OutboundStatus{
++					lbBurst("a", 100*ms, 0, 100*ms, 100*ms, 10, 2),
++					lbBurst("b", 100*ms, 0, 100*ms, 100*ms, 10, 1),
++					lbBurst("c", 100*ms, 0, 100*ms, 100*ms, 12, 1),
++					lbBurst("d", 90*ms, 10*ms, 90*ms, 90*ms, 10, 0),
++					lbBurst("e", 100*ms, 0, 100*ms, 100*ms, 10, 2),
++					lbBurst("g", 100*ms+400, 0, 100*ms+400, 100*ms+400, 10, 0),
++				}},
++				tags: []string{"eq"},
++			},
++			want: "eq leastlopi:\n" +
++				"d alive=true avg=90.000ms dev=10.000ms min=90.000ms max=90.000ms " +
++				"score=100.000ms fail=0/10 costPing=1 costDevi=1\n" +
++				"c" + lbTestEqLine + " fail=1/12 costPing=1 costDevi=1\n" +
++				"b" + lbTestEqLine + " fail=1/10 costPing=1 costDevi=1\n" +
++				"a" + lbTestEqLine + " fail=2/10 costPing=1 costDevi=1\n" +
++				"e" + lbTestEqLine + " fail=2/10 costPing=1 costDevi=1\n" +
++				"g" + lbTestEqLine + " fail=0/10 costPing=1 costDevi=1\n",
++		},
++		{
++			name: "alive with all probes failed has no RTT and no score",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{"af"}, balancers: map[string]*routerService.BalancerMsg{
++					"af": {
++						Strategy:      "leastlopi",
++						Candidates:    []string{"z", "y"},
++						OutboundCosts: eqCosts("y", "z"),
++					},
++				}},
++				oc: &fakeObservatoryClient{status: []*observatory.OutboundStatus{
++					{
++						OutboundTag: "z",
++						Alive:       true,
++						HealthPing:  &observatory.HealthPingMeasurementResult{All: 3, Fail: 3},
++					},
++					lbBurst("y", 50*ms, 0, 50*ms, 50*ms, 3, 0),
++				}},
++				tags: []string{"af"},
++			},
++			want: "af leastlopi:\n" +
++				"y alive=true avg=50.000ms dev=0.000ms min=50.000ms max=50.000ms " +
++				"score=50.000ms fail=0/3 costPing=1 costDevi=1\n" +
++				"z alive=true RTT=n/a score=n/a fail=3/3 costPing=1 costDevi=1\n",
++		},
++		{
++			name: "leastLoad score out of the time.Duration range",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{"huge"}, balancers: map[string]*routerService.BalancerMsg{
++					"huge": {
++						Strategy:      "leastload",
++						Candidates:    []string{"one"},
++						OutboundCosts: []*routerService.BalancerOutboundCost{{OutboundTag: "one", Cost: lbF(1e32)}},
++					},
++				}},
++				oc:   &fakeObservatoryClient{status: []*observatory.OutboundStatus{lbPlain("one", true, 1)}},
++				tags: []string{"huge"},
++			},
++			want: "huge leastload:\n" +
++				"one alive=true last=1.000ms score=10000000000000000.000ms " +
++				"cost=100000000000000000000000000000000\n",
++			wantWarn: "warning: balancer huge: a leastLoad score is out of the int64 range " +
++				"of time.Duration: the server overflows it, so its order may differ\n",
++		},
++		{
++			name: "empty observatory report without balancers",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{}},
++				oc: &fakeObservatoryClient{},
++			},
++			want:     "(no balancer):\n",
++			wantWarn: "warning: the observatory at 127.0.0.1:8080 reported no outbounds\n",
++		},
++		{
++			name: "json",
++			args: args{
++				rc: &fakeRoutingClient{list: []string{"vl-w"}, balancers: map[string]*routerService.BalancerMsg{
++					"vl-w": {
++						Strategy:   "leastlopi",
++						Candidates: []string{"idle-vl-w", "mh-vl-w"},
++						OutboundCosts: []*routerService.BalancerOutboundCost{
++							{OutboundTag: "idle-vl-w", CostPing: lbF(1), CostDevi: lbF(0)},
++							{OutboundTag: "mh-vl-w", CostPing: lbF(16), CostDevi: lbF(1)},
++						},
++					},
++				}},
++				oc: &fakeObservatoryClient{status: []*observatory.OutboundStatus{
++					lbBurst("mh-vl-w", 150*ms, 45*ms, 101*ms, 230*ms, 10, 1),
++					lbPlain("out-x", true, 7),
++				}},
++				asJSON: true,
++			},
++			want: lbTestJSON,
++		},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			warn := &bytes.Buffer{}
++			got, err := collectBalancerList(context.Background(), tt.args.rc, tt.args.oc,
++				tt.args.tags, "127.0.0.1:8080", warn)
++			if got := tt.args.rc.listCalls; got != 1 {
++				t.Errorf("ListBalancers calls = %d, want 1", got)
++			}
++			if tt.wantErr != "" {
++				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
++					t.Fatalf("collectBalancerList() error = %v, want %q", err, tt.wantErr)
++				}
++				if got := tt.args.oc.statusCalls; got != 0 {
++					t.Errorf("GetOutboundStatus calls = %d, want 0 after an error", got)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("collectBalancerList() error = %v", err)
++			}
++			if got := tt.args.oc.statusCalls; got != 1 {
++				t.Errorf("GetOutboundStatus calls = %d, want 1", got)
++			}
++			wantInfo := map[string]int{}
++			if len(tt.args.tags) == 0 {
++				for _, tag := range tt.args.rc.list {
++					wantInfo[tag] = 1
++				}
++			}
++			for _, tag := range tt.args.tags {
++				wantInfo[tag] = 1
++			}
++			if !maps.Equal(tt.args.rc.infoCalls, wantInfo) {
++				t.Errorf("GetBalancerInfo calls = %v, want %v", tt.args.rc.infoCalls, wantInfo)
++			}
++			out := &bytes.Buffer{}
++			if err := writeBalancerList(out, got, tt.args.asJSON); err != nil {
++				t.Fatalf("writeBalancerList() error = %v", err)
++			}
++			if out.String() != tt.want {
++				t.Errorf("collectBalancerList() output = %q, want %q", out.String(), tt.want)
++			}
++			if gotWarn := warn.String(); gotWarn != tt.wantWarn {
++				t.Errorf("collectBalancerList() warnings = %q, want %q", gotWarn, tt.wantWarn)
++			}
++		})
++	}
++}
++
++func Test_lbMs(t *testing.T) {
++	type args struct {
++		ns float64
++	}
++	tests := []struct {
++		name string
++		args args
++		want string
++	}{
++		{name: "zero", args: args{ns: 0}, want: "0.000ms"},
++		{name: "under half a microsecond rounds down", args: args{ns: 1499}, want: "0.001ms"},
++		{name: "half a microsecond rounds up", args: args{ns: 1500}, want: "0.002ms"},
++		{name: "milliseconds", args: args{ns: 645e6}, want: "645.000ms"},
++		{name: "huge value without an exponent", args: args{ns: 1e22}, want: "10000000000000000.000ms"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			if got := lbMs(tt.args.ns); got != tt.want {
++				t.Errorf("lbMs() = %v, want %v", got, tt.want)
 +			}
 +		})
 +	}

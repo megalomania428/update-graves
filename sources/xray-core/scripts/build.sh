@@ -183,10 +183,6 @@ bin)
     step_end
     # jscpd:ignore-end
   done
-  step_begin 'balancer scores script'
-  cp -v "${GRAVES_SOURCE_DIR:?}/scripts/balancer-scores.sh" \
-    "${OUT_DIR}/xray-balancer-scores-${FILE_VERSION}.sh"
-  step_end
   ;;
 *)
   echo 'usage: build.sh <prepare|test|bin>' >&2
