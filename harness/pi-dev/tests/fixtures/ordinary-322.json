@@ -92,7 +92,7 @@
         "max_tokens": 1024,
         "thinking": {
           "type": "adaptive",
-          "display": "updates"
+          "display": "summarized"
         },
         "betas": [
           "claude-code-20250219",
@@ -208,7 +208,7 @@
         "max_tokens": 1024,
         "thinking": {
           "type": "adaptive",
-          "display": "updates"
+          "display": "summarized"
         },
         "betas": [
           "claude-code-20250219",
@@ -324,7 +324,7 @@
         "max_tokens": 1024,
         "thinking": {
           "type": "adaptive",
-          "display": "updates"
+          "display": "summarized"
         },
         "betas": [
           "oauth-2025-04-20",
@@ -440,7 +440,7 @@
         "max_tokens": 1024,
         "thinking": {
           "type": "adaptive",
-          "display": "updates"
+          "display": "summarized"
         },
         "betas": [
           "claude-code-20250219",
@@ -556,7 +556,7 @@
         "max_tokens": 1024,
         "thinking": {
           "type": "adaptive",
-          "display": "updates"
+          "display": "summarized"
         },
         "betas": [
           "claude-code-20250219",

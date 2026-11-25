@@ -290,7 +290,7 @@ export function applyFingerprintPayload (
     thinking.type === 'adaptive'
     ? {
         type: 'adaptive',
-        ...(capturedModel ? { display: 'updates' } : {}),
+        ...(capturedModel ? { display: 'summarized' } : {}),
         ...(replayingThinking
           ? {
               block_binding: isProviderPayload(thinking.block_binding)

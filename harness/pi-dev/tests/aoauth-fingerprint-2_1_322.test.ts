@@ -2522,7 +2522,7 @@ export async function runTests (
                       })
                   assert.deepEqual(body.thinking, {
                     type: 'adaptive',
-                    display: 'updates',
+                    display: 'summarized',
                     block_binding: {
                       prefix_mismatch_behavior: policy === 'missing'
                         ? 'drop_block'

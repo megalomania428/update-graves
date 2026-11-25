@@ -157,14 +157,14 @@ for (const [model, betas] of Object.entries(expectedBetas)) {
       ],
       thinking: {
         type: 'adaptive',
-        display: 'summarized',
+        display: 'updates',
         block_binding: { prefix_mismatch_behavior: 'drop_block' },
       },
     },
   }, context(model));
   const output = fingerprint.applyFingerprintPayload(moved, model);
   assert.deepEqual(output.betas, betas, `${model} betas`);
-  assert.deepEqual(output.thinking, { type: 'adaptive', display: 'updates' });
+  assert.deepEqual(output.thinking, { type: 'adaptive', display: 'summarized' });
   assert.equal(output.system[0].text,
     'x-anthropic-billing-header: cc_version=2.1.292.544; cc_entrypoint=cli;');
   assert.equal(output.system.length, 3);
