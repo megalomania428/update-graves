@@ -1,0 +1,10 @@
+{
+  "Globs": [
+    "**/.git/**",
+    "**/*_test.go",
+    "**/*.test.ts",
+    "**/megalinter-reports/**",
+    "**/harness/pi-dev/tests/fixtures/move-322.json",
+    "**/harness/pi-dev/tests/fixtures/legacy-322.json"
+  ]
+}

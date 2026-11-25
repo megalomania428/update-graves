@@ -126,10 +126,10 @@ func TestBuilder_Build(t *testing.T) {
 	if strings.Contains(env, "GRAVES_UPSTREAM_ASSET") {
 		t.Fatal("git upstream has no asset")
 	}
-	t.Setenv("HTTPS_PROXY", "http://proxy.test")
+	t.Setenv("HTTPS_PROXY", "http://proxy.test") // DevSkim: ignore DS137138
 	if !strings.Contains(
 		strings.Join(ProxyEnvironment(), "\n"),
-		"HTTPS_PROXY=http://proxy.test",
+		"HTTPS_PROXY=http://proxy.test", // DevSkim: ignore DS137138
 	) {
 		t.Fatal("proxy")
 	}
