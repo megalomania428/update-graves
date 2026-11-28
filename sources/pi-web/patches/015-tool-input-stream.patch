@@ -1,0 +1,2218 @@
+diff -ruN -x .git a/src/client/src/api/parsers.ts b/src/client/src/api/parsers.ts
+--- a/src/client/src/api/parsers.ts	2026-11-27 16:05:21.318512567 +0000
++++ b/src/client/src/api/parsers.ts	2026-11-27 17:31:59.677497219 +0000
+@@ -2,6 +2,7 @@
+ import { parseMachineStatusSnapshot, type MachineStatusSnapshot, type MachineStatusUiEvent } from "../../../shared/machineStatus";
+ import type { JsonValue, PiPackageInfo, PiPackageInstallableSuggestion, PiPackageMutationAction, PiPackageMutationResponse, PiPackageScope, PiPackagesResponse, SessionActivity, SessionStartupProgressEvent, SessionTreeForkResult, SessionTreeNavigateResult, SessionTreeNode, SessionTreeNodeKind, SessionTreeSnapshot, WorkspaceProviderDiagnostic, WorkspaceProviderDiagnosticCode, WorkspaceProviderResolution, WorkspaceProviderResolutionStatus, WorkspaceProviderTier } from "../../../shared/apiTypes";
+ 
++import type { ToolInputOperation, ToolInputPathSegment } from "../../../shared/apiTypes";
+ import { parseKnownPiWebCapabilities } from "../../../shared/capabilities";
+ import { parseDeprecatedAgentInputs } from "../../../shared/piWebStatusParsing";
+ import { PI_WEB_PLUGIN_RECOVERY_COMMANDS, pluginDisableRecoveryCommand } from "../../../shared/pluginRecoveryCommands";
+@@ -722,10 +723,14 @@
+       // The message payload is a projected Pi message; only its presence is
+       // guaranteed at this boundary.
+       return { type: "message.append", message: requirePresent(record, "message") };
++    case "assistant.start":
++      return { type: "assistant.start", message: requirePresent(record, "message") };
+     case "assistant.delta":
+-      return { type: "assistant.delta", text: requireString(record, "text"), ...optionalField("timestamp", optionalString(record, "timestamp")) };
++      return { type: "assistant.delta", text: requireString(record, "text"), ...optionalField("timestamp", optionalString(record, "timestamp")), ...optionalField("streamId", optionalString(record, "streamId")) };
+     case "assistant.thinking.delta":
+-      return { type: "assistant.thinking.delta", text: requireString(record, "text"), ...optionalField("timestamp", optionalString(record, "timestamp")) };
++      return { type: "assistant.thinking.delta", text: requireString(record, "text"), ...optionalField("timestamp", optionalString(record, "timestamp")), ...optionalField("streamId", optionalString(record, "streamId")) };
++    case "tool.input":
++      return parseToolInputEvent(record);
+     case "tool.start":
+       return {
+         type: "tool.start",
+@@ -843,6 +848,37 @@
+   return value;
+ }
+ 
++function parseToolInputEvent(record: Record<string, unknown>): Extract<SessionUiEvent, { type: "tool.input" }> {
++  return {
++    type: "tool.input",
++    streamId: requireString(record, "streamId"),
++    toolCallId: requireString(record, "toolCallId"),
++    toolName: requireString(record, "toolName"),
++    revision: requirePositiveSafeInteger(record, "revision"),
++    operation: parseToolInputOperation(record["operation"]),
++    ...optionalField("timestamp", optionalString(record, "timestamp")),
++  };
++}
++
++function parseToolInputOperation(value: unknown): ToolInputOperation {
++  const record = requireRecord(value);
++  if (record["op"] === "set") return { op: "set", args: requirePresent(record, "args") };
++  if (record["op"] !== "splice") throw new Error("Unsupported tool input operation");
++  return {
++    op: "splice",
++    path: arrayOf(parseToolInputPathSegment)(record["path"]),
++    offset: requireNonNegativeSafeInteger(record, "offset"),
++    text: requireString(record, "text"),
++    baseRevision: requireNonNegativeSafeInteger(record, "baseRevision"),
++  };
++}
++
++function parseToolInputPathSegment(value: unknown): ToolInputPathSegment {
++  if (typeof value === "string") return value;
++  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
++  throw new Error("Invalid tool input path segment");
++}
++
+ function optionalNumberOrNull(record: Record<string, unknown>, key: string): number | null | undefined {
+   const value = record[key];
+   if (value === undefined) return undefined;
+diff -ruN -x .git a/src/client/src/chatMessages.ts b/src/client/src/chatMessages.ts
+--- a/src/client/src/chatMessages.ts	2026-11-27 16:05:21.298512111 +0000
++++ b/src/client/src/chatMessages.ts	2026-11-27 17:31:28.696631282 +0000
+@@ -12,7 +12,9 @@
+ 
+ export function withMessageMeta(line: ChatLine, rawMessage: unknown): ChatLine {
+   const meta = normalizeMeta(rawMessage);
+-  return meta === undefined ? line : { ...line, meta };
++  const streamId = getString(rawMessage, "streamId");
++  if (meta === undefined && streamId === undefined) return line;
++  return { ...line, ...(streamId === undefined ? {} : { streamId }), ...(meta === undefined ? {} : { meta }) };
+ }
+ 
+ export function appendText(messages: ChatLine[], role: ChatLine["role"], text: string, timestamp?: string): ChatLine[] {
+@@ -219,9 +221,17 @@
+       const toolName = getString(part, "name") ?? "tool";
+       const args = getProperty(part, "arguments");
+       const toolCallId = getString(part, "id");
+-      const skillRead = toolName === "read" ? parseSkillReadPath(getString(args, "path")) : undefined;
++      const inputRevision = getNumber(part, "inputRevision");
++      const skillRead = toolName === "read" && inputRevision === undefined ? parseSkillReadPath(getString(args, "path")) : undefined;
+       if (skillRead !== undefined) return [{ type: "skillRead", ...skillRead, ...(toolCallId === undefined ? {} : { toolCallId }) }];
+-      return [{ type: "toolCall", ...(toolCallId === undefined ? {} : { toolCallId }), toolName, summary: summarizeArgs(args), ...(args === undefined ? {} : { args }) }];
++      return [{
++        type: "toolCall",
++        ...(toolCallId === undefined ? {} : { toolCallId }),
++        toolName,
++        summary: summarizeArgs(args),
++        ...(args === undefined ? {} : { args }),
++        ...(inputRevision === undefined ? {} : { inputRevision }),
++      }];
+     }
+     if (type === "image") {
+       const data = getString(part, "data");
+@@ -286,7 +296,11 @@
+ 
+   for (const line of lines) {
+     let passthroughParts: ChatPart[] = [];
+-    const metadata = { ...(line.source === undefined ? {} : { source: line.source }), ...(line.meta === undefined ? {} : { meta: line.meta }) };
++    const metadata = {
++      ...(line.streamId === undefined ? {} : { streamId: line.streamId }),
++      ...(line.source === undefined ? {} : { source: line.source }),
++      ...(line.meta === undefined ? {} : { meta: line.meta }),
++    };
+     // Pi starts a call after its answer ends; with several calls in one answer they share that start, so only a lone call gets it.
+     const callCount = line.parts.filter((part) => part.type === "toolCall" || part.type === "skillRead").length;
+     const loneCallStart = line.role === "assistant" && callCount === 1 ? line.meta?.completedAt : undefined;
+@@ -330,6 +344,7 @@
+     toolName: part.toolName,
+     summary: part.summary,
+     ...(part.args === undefined ? {} : { args: part.args }),
++    ...(part.inputRevision === undefined ? {} : { inputRevision: part.inputRevision }),
+     status: "pending",
+     ...(startedAt === undefined ? {} : { startedAt }),
+   };
+diff -ruN -x .git a/src/client/src/chatTranscript.toolInput.test.ts b/src/client/src/chatTranscript.toolInput.test.ts
+--- a/src/client/src/chatTranscript.toolInput.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/chatTranscript.toolInput.test.ts	2026-11-28 01:08:02.767158064 +0000
+@@ -0,0 +1,214 @@
++import { describe, expect, it } from "vitest";
++import type { ToolInputOperation } from "../../shared/apiTypes";
++import { normalizeMessages } from "./chatMessages";
++import { applyToolInputEvent, applyTranscriptEvent } from "./chatTranscript";
++import { ChatTranscriptStore } from "./chatTranscriptStore";
++import type { ChatLine } from "./components/shared";
++import type { SessionUiEvent } from "./sessionSocket";
++
++const streamId = "stream-1";
++
++function input(toolCallId: string, revision: number, operation: ToolInputOperation, toolName = "write"): Extract<SessionUiEvent, { type: "tool.input" }> {
++  return { type: "tool.input", streamId, toolCallId, toolName, revision, operation };
++}
++
++function apply(messages: ChatLine[], events: SessionUiEvent[]): ChatLine[] {
++  return events.reduce((next, event) => applyTranscriptEvent(next, event) ?? next, messages);
++}
++
++function card(toolCallId: string, toolName: string, summary: string, args: unknown, inputRevision: number): ChatLine {
++  return { role: "tool", streamId, parts: [{ type: "toolExecution", toolCallId, toolName, summary, args, status: "pending", inputRevision }] };
++}
++
++const earlier: ChatLine = { role: "assistant", parts: [{ type: "text", text: "Earlier answer" }] };
++
++describe("streamed tool input", () => {
++  const written = apply([], [
++    input("call-1", 1, { op: "set", args: {} }),
++    input("call-1", 2, { op: "set", args: { path: "a.txt", content: "one\n" } }),
++    input("call-1", 3, { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 2 }),
++    input("call-2", 1, { op: "set", args: { command: "ls" } }, "bash"),
++  ]);
++
++  it("builds one pending card per call from set and splice operations", () => {
++    expect(written).toEqual([
++      card("call-1", "write", "a.txt", { path: "a.txt", content: "one\ntwo" }, 3),
++      card("call-2", "bash", "ls", { command: "ls" }, 1),
++    ]);
++  });
++
++  it("drops repeated and older revisions", () => {
++    expect(applyTranscriptEvent(written, input("call-1", 3, { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 2 }))).toBe(written);
++    expect(applyTranscriptEvent(written, input("call-1", 2, { op: "set", args: {} }))).toBe(written);
++  });
++
++  it("reports a gap instead of guessing", () => {
++    expect(applyToolInputEvent(written, input("call-1", 5, { op: "splice", path: ["content"], offset: 0, text: "x", baseRevision: 4 })))
++      .toEqual({ messages: written, gap: true });
++    expect(applyToolInputEvent(written, input("call-9", 2, { op: "splice", path: ["content"], offset: 0, text: "x", baseRevision: 1 })))
++      .toEqual({ messages: written, gap: true });
++    expect(applyToolInputEvent(written, input("call-1", 4, { op: "splice", path: ["missing"], offset: 0, text: "x", baseRevision: 3 })))
++      .toEqual({ messages: written, gap: true });
++    expect(applyToolInputEvent(written, input("call-1", 9, { op: "set", args: { path: "b.txt" } })).gap).toBe(false);
++  });
++
++  it("leaves a card that already started alone", () => {
++    const started = apply(written, [{ type: "tool.start", toolName: "write", toolCallId: "call-1", summary: "a.txt", args: { path: "a.txt", content: "one\ntwo\n" } }]);
++    expect(applyTranscriptEvent(started, input("call-1", 4, { op: "set", args: { path: "b.txt" } }))).toBe(started);
++  });
++});
++
++describe("call ids repeated between answers", () => {
++  const earlierCard = (status: "running" | "pending"): ChatLine => ({
++    role: "tool",
++    streamId: "stream-0",
++    parts: [{ type: "toolExecution", toolCallId: "call-1", toolName: "write", summary: "old.txt", args: { path: "old.txt" }, status, inputRevision: 2 }],
++  });
++  const setEvent = input("call-1", 1, { op: "set", args: { path: "a.txt", content: "one\n" } });
++  const spliceEvent = input("call-1", 2, { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 1 });
++
++  it.each(["running", "pending"] as const)("grows the new answer's own card beside a %s card of the earlier answer", (status) => {
++    const before = earlierCard(status);
++    const first = applyToolInputEvent([before], setEvent);
++    const second = applyToolInputEvent(first.messages, spliceEvent);
++    expect([first.gap, second.gap]).toEqual([false, false]);
++    expect(second.messages).toEqual([before, card("call-1", "write", "a.txt", { path: "a.txt", content: "one\ntwo" }, 2)]);
++  });
++});
++
++describe("answers reconciled by identity", () => {
++  const final = {
++    role: "assistant",
++    content: [
++      { type: "thinking", thinking: "Plan" },
++      { type: "text", text: "Before" },
++      { type: "toolCall", id: "call-1", name: "write", arguments: { path: "a.txt", content: "x\n" } },
++      { type: "text", text: "After" },
++    ],
++    stopReason: "toolUse",
++    timestamp: 1_790_000_000_000,
++    completedAt: "2026-09-21T12:00:05.000Z",
++    streamId,
++  };
++  const live = apply([earlier], [
++    { type: "assistant.start", message: { role: "assistant", content: [], streamId } },
++    { type: "assistant.thinking.delta", text: "Plan", streamId },
++    { type: "assistant.delta", text: "Before", streamId },
++    input("call-1", 1, { op: "set", args: { path: "a.txt" } }),
++    { type: "assistant.delta", text: "After", streamId },
++  ]);
++
++  it("keeps text that follows a call below the call's card", () => {
++    expect(live).toEqual([
++      earlier,
++      { role: "assistant", streamId, parts: [{ type: "thinking", text: "Plan" }, { type: "text", text: "Before" }] },
++      card("call-1", "write", "a.txt", { path: "a.txt" }, 1),
++      { role: "assistant", streamId, parts: [{ type: "text", text: "After" }] },
++    ]);
++  });
++
++  it("replaces the live lines with the answer's history form without duplicates", () => {
++    const ended = apply(live, [{ type: "message.end", message: final }]);
++    expect(ended).toEqual([earlier, ...normalizeMessages([final]).map((line) => ({ ...line, streamId }))]);
++    expect(ended.filter((line) => line.parts.some((part) => part.type === "text" && part.text === "Before"))).toHaveLength(1);
++  });
++
++  it("keeps a started card's execution when the answer ends again", () => {
++    const ended = apply(live, [{ type: "message.end", message: final }]);
++    const started = apply(ended, [{ type: "tool.start", toolName: "write", toolCallId: "call-1", summary: "a.txt", args: { path: "a.txt", content: "x\n" } }]);
++    const again = apply(started, [{ type: "message.end", message: final }]);
++    expect(again.flatMap((line) => line.parts).filter((part) => part.type === "toolExecution"))
++      .toMatchObject([{ toolCallId: "call-1", status: "running", args: { path: "a.txt", content: "x\n" } }]);
++    expect(again).toHaveLength(ended.length);
++  });
++
++  it("does not consume an earlier answer when an answer ends empty, with or without identity", () => {
++    const empty = { role: "assistant", content: [], stopReason: "stop" };
++    expect(apply([earlier], [
++      { type: "assistant.start", message: { role: "assistant", content: [], streamId } },
++      { type: "message.end", message: { ...empty, streamId } },
++    ])).toEqual([earlier]);
++    expect(apply([earlier], [{ type: "message.end", message: empty }])).toEqual([earlier]);
++    expect(apply([earlier], [
++      { type: "assistant.thinking.delta", text: "hmm", streamId },
++      { type: "message.end", message: { ...empty, streamId } },
++    ])).toEqual([earlier]);
++  });
++
++  it("puts the error line of a failed answer after its cards and keeps an aborted call pending", () => {
++    const partial = [{ type: "text", text: "Partial" }, { type: "toolCall", id: "call-1", name: "write", arguments: { path: "a.txt" } }];
++    const streamed: SessionUiEvent[] = [
++      { type: "assistant.delta", text: "Partial", streamId },
++      input("call-1", 1, { op: "set", args: { path: "a.txt" } }),
++    ];
++    const failed = apply([], [...streamed, { type: "message.end", message: { role: "assistant", content: partial, stopReason: "error", errorMessage: "boom", streamId } }]);
++    expect(failed.map((line) => line.role)).toEqual(["assistant", "tool", "system"]);
++    expect(failed[2]?.parts).toEqual([{ type: "text", text: "Model response failed: boom" }]);
++    const aborted = apply([], [...streamed, { type: "message.end", message: { role: "assistant", content: partial, stopReason: "aborted", streamId } }]);
++    expect(aborted.map((line) => line.role)).toEqual(["assistant", "tool"]);
++    expect(aborted[1]?.parts).toMatchObject([{ type: "toolExecution", toolCallId: "call-1", status: "pending" }]);
++  });
++});
++
++describe("streamed skill reads", () => {
++  const skillPath = "/skills/demo/SKILL.md";
++  const reading = apply([], [input("call-r", 1, { op: "set", args: { path: skillPath } }, "read")]);
++  const skillLine: ChatLine = { role: "skill", parts: [{ type: "skillRead", name: "demo", path: skillPath, toolCallId: "call-r" }] };
++  const readStart: SessionUiEvent = { type: "tool.start", toolName: "read", toolCallId: "call-r", summary: skillPath, args: { path: skillPath } };
++  const readCall = { type: "toolCall", id: "call-r", name: "read", arguments: { path: skillPath } };
++
++  it("shows a pending read card while the path streams", () => {
++    expect(reading).toEqual([card("call-r", "read", skillPath, { path: skillPath }, 1)]);
++  });
++
++  it("keeps a snapshot's streamed skill read as a pending card", () => {
++    const store = new ChatTranscriptStore({ read: () => undefined, write: () => undefined });
++    expect(store.seedStreamingPartial([], { role: "assistant", content: [{ ...readCall, inputRevision: 1 }], streamId }))
++      .toEqual([card("call-r", "read", skillPath, { path: skillPath }, 1)]);
++  });
++
++  it("replaces the pending card with the skill line on message.end", () => {
++    const ended = apply(reading, [{ type: "message.end", message: { role: "assistant", content: [readCall], streamId } }]);
++    expect(ended).toEqual([{ ...skillLine, streamId }]);
++    expect(apply(ended, [readStart])).toEqual([{ ...skillLine, streamId }]);
++  });
++
++  it("removes the pending card by its call id on tool.start", () => {
++    expect(apply(reading, [readStart])).toEqual([skillLine]);
++  });
++
++  it("removes an untagged pending card by its call id on message.end", () => {
++    const untagged: ChatLine[] = [{ role: "tool", parts: [{ type: "toolExecution", toolCallId: "call-r", toolName: "read", summary: skillPath, args: { path: skillPath }, status: "pending" }] }];
++    expect(apply(untagged, [{ type: "message.end", message: { role: "assistant", content: [readCall] } }])).toEqual([skillLine]);
++  });
++
++  describe("with a pending card of an earlier answer under the same call id", () => {
++    const past: ChatLine = { ...card("call-r", "read", skillPath, { path: skillPath }, 1), streamId: "stream-0" };
++    const before = [past, ...reading];
++
++    it("removes only the new answer's card on tool.start", () => {
++      expect(apply(before, [readStart])).toEqual([past, skillLine]);
++    });
++
++    it("removes only the new answer's card on message.end without a matching stream", () => {
++      const untagged = reading.map(({ role, parts }): ChatLine => ({ role, parts }));
++      const ended = apply([past, ...untagged], [{ type: "message.end", message: { role: "assistant", content: [readCall], streamId: "stream-2" } }]);
++      expect(ended).toEqual([past, { ...skillLine, streamId: "stream-2" }]);
++    });
++
++    it("keeps the earlier card when the answer ends before its tool.start, as the SDK orders them", () => {
++      const ended: SessionUiEvent = { type: "message.end", message: { role: "assistant", content: [readCall], streamId: "stream-2" } };
++      const streamed = apply([past], [
++        { ...input("call-r", 1, { op: "set", args: { path: skillPath } }, "read"), streamId: "stream-2" },
++        ended,
++        readStart,
++      ]);
++      expect(streamed).toEqual([past, { ...skillLine, streamId: "stream-2" }]);
++    });
++
++    it("keeps the earlier card when the answer has no card of its own", () => {
++      const ended: SessionUiEvent = { type: "message.end", message: { role: "assistant", content: [readCall], streamId: "stream-2" } };
++      expect(apply([past], [ended, readStart])).toEqual([past, { ...skillLine, streamId: "stream-2" }]);
++    });
++  });
++});
+diff -ruN -x .git a/src/client/src/chatTranscript.ts b/src/client/src/chatTranscript.ts
+--- a/src/client/src/chatTranscript.ts	2026-11-27 16:05:21.302512202 +0000
++++ b/src/client/src/chatTranscript.ts	2026-11-28 01:04:49.382454206 +0000
+@@ -1,10 +1,12 @@
+ import type { SessionStreamSnapshot } from "./api";
+ import { appendText, appendThinking, askUserRecordFromToolDetails, normalizeMessage, normalizeMessages, previewFromDetails, summarizeArgs, textMessage } from "./chatMessages";
++import { applyToolInputSplice } from "../../shared/toolInputStream";
+ import type { ChatLine, ChatUsage, ToolExecutionPart } from "./components/shared";
+ import { appendShellChunk, finalizeShellMessage, shellStartMessage } from "./shellMessages";
+ import type { SessionUiEvent } from "./sessionSocket";
+ 
+ type ToolResultImage = Extract<ChatLine["parts"][number], { type: "image" }>;
++type ToolInputEvent = Extract<SessionUiEvent, { type: "tool.input" }>;
+ 
+ interface ToolResultPresentation {
+   images: ToolResultImage[];
+@@ -69,8 +71,13 @@
+ 
+ export function applyTranscriptEvent(messages: ChatLine[], event: SessionUiEvent): ChatLine[] | undefined {
+   if (event.type === "message.append") return appendNewMessage(messages, event.message);
+-  if (event.type === "assistant.delta") return appendText(messages, "assistant", event.text, event.timestamp);
+-  if (event.type === "assistant.thinking.delta") return appendThinking(messages, event.text, event.timestamp);
++  if (event.type === "assistant.delta") {
++    return appendAssistantStream(messages, event.streamId, (lines) => appendText(lines, "assistant", event.text, event.timestamp));
++  }
++  if (event.type === "assistant.thinking.delta") {
++    return appendAssistantStream(messages, event.streamId, (lines) => appendThinking(lines, event.text, event.timestamp));
++  }
++  if (event.type === "tool.input") return applyToolInputEvent(messages, event).messages;
+   if (event.type === "tool.start") return appendToolExecutionStart(messages, event);
+   if (event.type === "tool.update") return updateToolExecution(messages, event.toolCallId, (part) => mergeToolExecutionUpdate(part, event));
+   if (event.type === "tool.end") {
+@@ -98,17 +105,102 @@
+   const rawToolResult = toolResultFromRawMessage(rawMessage);
+   if (rawToolResult !== undefined) return finalizeToolExecution(messages, rawToolResult);
+ 
++  const streamId = getString(rawMessage, "streamId");
++  if (streamId !== undefined && messages.some((line) => line.streamId === streamId)) {
++    return replaceStreamLines(messages, rawMessage, streamId);
++  }
+   const ended = normalizeMessage(rawMessage);
+   if (ended.length === 0) return undefined;
++  const settled = withoutPendingCards(messages, skillReadCallIds(ended), { streamId });
+   const displayEnded = ended
+     .map((line) => line.role === "assistant" ? withoutToolCalls(line) : line)
+     .filter((line) => line.parts.length > 0);
+   // The answer's own lines first, then its call cards, then its error line – the history order.
+-  const answered = updateBeforeAnswerCards(messages, ended, (lines) => displayEnded.filter((line) => line.role !== "system").reduce((next, line) => applyFinalLine(next, line), lines));
++  const answered = updateBeforeAnswerCards(settled, ended, (lines) => displayEnded.filter((line) => line.role !== "system").reduce((next, line) => applyFinalLine(next, line), lines));
+   const withCards = withAnswerToolCards(answered, ended);
+   return displayEnded.filter((line) => line.role === "system").reduce((next, line) => applyFinalLine(next, line), withCards);
+ }
+ 
++/**
++ * A finished identified answer replaces all lines it streamed – text, thinking
++ * and live input cards, whatever came between them – with its history form at
++ * the place of its first line, so nothing is duplicated and text after a call
++ * stays below its card. A card that already started keeps its execution state
++ * and takes the final call.
++ */
++function replaceStreamLines(messages: ChatLine[], rawMessage: unknown, streamId: string): ChatLine[] {
++  const started = new Map<string, ToolExecutionPart>();
++  for (const line of messages) {
++    if (line.streamId !== streamId) continue;
++    for (const part of line.parts) {
++      if (part.type === "toolExecution" && part.toolCallId !== undefined && part.status !== "pending") {
++        started.set(part.toolCallId, part);
++      }
++    }
++  }
++  const final = normalizeMessages([rawMessage]).map((line): ChatLine => ({
++    ...line,
++    streamId,
++    parts: line.parts.map((part): ChatLine["parts"][number] => {
++      if (part.type !== "toolExecution" || part.toolCallId === undefined) return part;
++      const execution = started.get(part.toolCallId);
++      if (execution === undefined) return part;
++      return { ...execution, summary: part.summary, ...(part.args === undefined ? {} : { args: part.args }) };
++    }),
++  }));
++  const first = messages.findIndex((line) => line.streamId === streamId);
++  const next: ChatLine[] = [];
++  messages.forEach((line, index) => {
++    if (index === first) next.push(...final);
++    if (line.streamId !== streamId) next.push(line);
++  });
++  return next;
++}
++
++/**
++ * Drop the newest pending card of each given call that belongs to the answer
++ * being settled, and lines left without parts. `message.end` owns cards without
++ * a `streamId` or with its own; `tool.start` has no `streamId`, so it owns a
++ * card only when no later line shows the same call. Other pending cards with
++ * the same id belong to interrupted earlier answers and stay.
++ */
++function withoutPendingCards(
++  messages: ChatLine[],
++  toolCallIds: ReadonlySet<string>,
++  owner: "tool-start" | { streamId: string | undefined },
++): ChatLine[] {
++  const newest = new Map<string, { line: number; part: number }>();
++  const isCall = (part: ChatLine["parts"][number], id: string) =>
++    (part.type === "skillRead" || part.type === "toolExecution") && part.toolCallId === id;
++  messages.forEach((line, lineIndex) => {
++    if (owner !== "tool-start" && line.streamId !== undefined && line.streamId !== owner.streamId) return;
++    line.parts.forEach((part, partIndex) => {
++      if (part.type === "toolExecution" && part.status === "pending" && part.toolCallId !== undefined && toolCallIds.has(part.toolCallId)) {
++        newest.set(part.toolCallId, { line: lineIndex, part: partIndex });
++      }
++    });
++  });
++  if (owner === "tool-start") {
++    for (const [id, at] of newest) {
++      const later = messages.some((line, lineIndex) => lineIndex > at.line && line.parts.some((part) => isCall(part, id)));
++      if (later) newest.delete(id);
++    }
++  }
++  if (newest.size === 0) return messages;
++  const dropped = [...newest.values()];
++  return messages.flatMap((line, lineIndex) => {
++    const own = dropped.filter((at) => at.line === lineIndex);
++    if (own.length === 0) return [line];
++    const parts = line.parts.filter((_, partIndex) => !own.some((at) => at.part === partIndex));
++    return parts.length === 0 ? [] : [{ ...line, parts }];
++  });
++}
++
++function skillReadCallIds(lines: ChatLine[]): Set<string> {
++  return new Set(lines.flatMap((line) => line.parts.flatMap((part) =>
++    part.type === "skillRead" && part.toolCallId !== undefined ? [part.toolCallId] : [])));
++}
++
+ function applyFinalLine(messages: ChatLine[], displayEnded: ChatLine): ChatLine[] {
+   const skillReadIndexes = findMatchingSkillReadIndexes(messages, displayEnded);
+   if (skillReadIndexes.length > 0) return replaceSkillReadLines(messages, skillReadIndexes, displayEnded);
+@@ -227,7 +319,8 @@
+ function appendToolExecutionStart(messages: ChatLine[], event: Extract<SessionUiEvent, { type: "tool.start" }>): ChatLine[] {
+   const skillRead = event.toolName === "read" ? parseSkillReadPath(getString(event.args, "path")) : undefined;
+   if (skillRead !== undefined) {
+-    return appendLine(messages, { role: "skill", parts: [{ type: "skillRead", ...skillRead, ...(event.toolCallId === "" ? {} : { toolCallId: event.toolCallId }) }], ...(event.at === undefined ? {} : { meta: { timestamp: event.at } }) });
++    const settled = withoutPendingCards(messages, new Set([event.toolCallId]), "tool-start");
++    return appendLine(settled, { role: "skill", parts: [{ type: "skillRead", ...skillRead, ...(event.toolCallId === "" ? {} : { toolCallId: event.toolCallId }) }], ...(event.at === undefined ? {} : { meta: { timestamp: event.at } }) });
+   }
+   const started = startPendingToolExecution(messages, event);
+   if (started !== messages) return started;
+@@ -256,6 +349,92 @@
+   };
+ }
+ 
++/**
++ * Apply streamed tool-call input to the call's pending card, creating the card on
++ * a `set`. A `splice` applies only on top of the card's revision; `gap` reports a
++ * missing card or revision, which only a fresh snapshot repairs. Repeated or older
++ * revisions and cards that already started are left alone. Only cards of the event's
++ * own answer count, since a provider may repeat call ids between answers.
++ */
++export function applyToolInputEvent(messages: ChatLine[], event: ToolInputEvent): { messages: ChatLine[]; gap: boolean } {
++  if (event.toolCallId === "") return { messages, gap: false };
++  const { operation } = event;
++  const lineIndex = findInputLineIndex(messages, event);
++  const part = lineIndex < 0 ? undefined : messages[lineIndex]?.parts.find(
++    (candidate): candidate is ToolExecutionPart => candidate.type === "toolExecution" && candidate.toolCallId === event.toolCallId);
++  if (part === undefined) {
++    return operation.op === "set"
++      ? { messages: [...messages, inputCard(event, operation.args)], gap: false }
++      : { messages, gap: true };
++  }
++  const current = part.inputRevision ?? 0;
++  if (part.status !== "pending" || event.revision <= current) return { messages, gap: false };
++  const next = operation.op === "set"
++    ? { args: operation.args }
++    : operation.baseRevision === current
++      ? applyToolInputSplice(part.args, operation.path, operation.offset, operation.text)
++      : undefined;
++  if (next === undefined) return { messages, gap: true };
++  const line = messages[lineIndex];
++  if (line === undefined) return { messages, gap: false };
++  const updatedLine = {
++    ...line,
++    parts: line.parts.map((candidate) => candidate === part ? {
++      ...part,
++      toolName: event.toolName,
++      summary: summarizeArgs(next.args),
++      args: next.args,
++      inputRevision: event.revision,
++    } : candidate),
++  };
++  return { messages: [...messages.slice(0, lineIndex), updatedLine, ...messages.slice(lineIndex + 1)], gap: false };
++}
++
++function findInputLineIndex(messages: ChatLine[], event: ToolInputEvent): number {
++  for (let index = messages.length - 1; index >= 0; index--) {
++    const line = messages[index];
++    if (line?.streamId === event.streamId && line.parts.some((part) =>
++      part.type === "toolExecution" && part.toolCallId === event.toolCallId)) return index;
++  }
++  return -1;
++}
++
++function inputCard(event: ToolInputEvent, args: unknown): ChatLine {
++  const execution: ToolExecutionPart = {
++    type: "toolExecution",
++    toolCallId: event.toolCallId,
++    toolName: event.toolName,
++    summary: summarizeArgs(args),
++    args,
++    status: "pending",
++    inputRevision: event.revision,
++  };
++  return {
++    role: "tool",
++    parts: [execution],
++    streamId: event.streamId,
++    ...(event.timestamp === undefined ? {} : { meta: { timestamp: event.timestamp } }),
++  };
++}
++
++/**
++ * Live text and thinking of an identified answer extend its newest line when that
++ * is its text, or start a line right after its newest card, so text that follows a
++ * call stays below the call as in history. Without an identity the tail is extended.
++ */
++function appendAssistantStream(messages: ChatLine[], streamId: string | undefined, append: (lines: ChatLine[]) => ChatLine[]): ChatLine[] {
++  if (streamId === undefined) return append(messages);
++  let index = messages.length - 1;
++  while (index >= 0 && messages[index]?.streamId !== streamId) index -= 1;
++  const line = messages[index];
++  const target = line?.role === "assistant" ? [line] : [];
++  const appended = append(target);
++  if (appended === target) return messages;
++  const updated = appended.map((next) => ({ ...next, streamId }));
++  if (line === undefined) return [...messages, ...updated];
++  return [...messages.slice(0, index + 1 - target.length), ...updated, ...messages.slice(index + 1)];
++}
++
+ function finalizeToolExecution(messages: ChatLine[], result: ToolResultUpdate): ChatLine[] {
+   const { toolCallId, toolName, text, isError, content, details, presentation, endedAt, usage } = result;
+   const updated = updateToolExecution(messages, toolCallId, (part) => {
+diff -ruN -x .git a/src/client/src/chatTranscriptStore.ts b/src/client/src/chatTranscriptStore.ts
+--- a/src/client/src/chatTranscriptStore.ts	2026-11-27 16:05:21.278511655 +0000
++++ b/src/client/src/chatTranscriptStore.ts	2026-11-27 17:31:59.677497219 +0000
+@@ -1,6 +1,6 @@
+ import { normalizeMessages } from "./chatMessages";
+ import type { SessionStreamSnapshot } from "./api";
+-import { applyTranscriptEvent, seedRunningWork, seedStreamingPartial } from "./chatTranscript";
++import { applyToolInputEvent, applyTranscriptEvent, seedRunningWork, seedStreamingPartial } from "./chatTranscript";
+ import { mergeChatHistory, readChatHistoryCache, removeChatHistoryCache, writeChatHistoryCache, type RawMessagePage } from "./chatHistoryCache";
+ import type { ChatLine } from "./components/shared";
+ import type { SessionUiEvent } from "./sessionSocket";
+@@ -46,6 +46,11 @@
+     return applyTranscriptEvent(messages, event);
+   }
+ 
++  /** Apply streamed tool input and report a revision gap that needs a fresh snapshot. */
++  applyToolInput(messages: ChatLine[], event: Extract<SessionUiEvent, { type: "tool.input" }>): { messages: ChatLine[]; gap: boolean } {
++    return applyToolInputEvent(messages, event);
++  }
++
+   /**
+    * Seed the join-time in-flight partial assistant message on top of the
+    * committed history view. Returns a new in-memory message list; the raw
+diff -ruN -x .git a/src/client/src/components/shared.ts b/src/client/src/components/shared.ts
+--- a/src/client/src/components/shared.ts	2026-11-27 16:05:21.306512293 +0000
++++ b/src/client/src/components/shared.ts	2026-11-27 17:31:28.696631282 +0000
+@@ -48,6 +48,8 @@
+   toolName: string;
+   summary: string;
+   args?: unknown;
++  /** Revision of the streamed input `args` came from; only a pending card takes newer input. */
++  inputRevision?: number;
+   status: "pending" | "running" | "success" | "error";
+   resultText?: string;
+   content?: unknown;
+@@ -78,12 +80,14 @@
+   | { type: "skillInvocation"; name: string; location: string; content: string }
+   | { type: "skillRead"; name: string; path: string; toolCallId?: string }
+   | { type: "askUserRecord"; outcome: AskUserOutcome }
+-  | { type: "toolCall"; toolCallId?: string; toolName: string; summary: string; args?: unknown }
++  | { type: "toolCall"; toolCallId?: string; toolName: string; summary: string; args?: unknown; inputRevision?: number }
+   | ToolExecutionPart
+   | { type: "toolResult"; toolCallId?: string; toolName: string; text: string; isError: boolean; content?: unknown; details?: unknown }
+   | { type: "empty" };
+ 
+ export interface ChatLine {
++  /** Identity of one live assistant answer, kept on its lines and cards through finalization. */
++  streamId?: string;
+   role: "user" | "assistant" | "tool" | "system" | "bash" | "skill";
+   parts: ChatPart[];
+   source?: "compaction" | "branch_summary";
+diff -ruN -x .git a/src/client/src/controllers/sessionController.toolInput.test.ts b/src/client/src/controllers/sessionController.toolInput.test.ts
+--- a/src/client/src/controllers/sessionController.toolInput.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/controllers/sessionController.toolInput.test.ts	2026-11-27 19:50:18.043468145 +0000
+@@ -0,0 +1,193 @@
++import { describe, expect, it, vi } from "vitest";
++import type { ToolInputOperation } from "../../../shared/apiTypes";
++import { initialAppState } from "../appState";
++import { ChatTranscriptStore } from "../chatTranscriptStore";
++import type { SessionUiEvent } from "../sessionSocket";
++import { SessionController, type SessionNotificationSessionBridge } from "./sessionController";
++import { defaultApi, deferred, EmitSocket, emptyPage, oldSession, replacementSession, runPendingAnimationFrames, sessionLookupId, status, workspace, type AppState, type SessionStreamSnapshot } from "./sessionController.testSupport";
++
++const streamId = "stream-1";
++const idle = (): Promise<SessionStreamSnapshot> => Promise.resolve({ seq: 0, partial: null });
++const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
++
++function input(toolCallId: string, revision: number, operation: ToolInputOperation, seq: number): SessionUiEvent {
++  return { type: "tool.input", streamId, toolCallId, toolName: "write", revision, operation, seq };
++}
++
++function gap(toolCallId: string, revision: number, seq: number): SessionUiEvent {
++  return input(toolCallId, revision, { op: "splice", path: ["content"], offset: 0, text: "x", baseRevision: revision - 1 }, seq);
++}
++
++function setup(snapshots: (() => Promise<SessionStreamSnapshot>)[], notifications?: SessionNotificationSessionBridge) {
++  const socket = new EmitSocket();
++  let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [oldSession, replacementSession] };
++  let snapshotCalls = 0;
++  const controller = new SessionController(
++    () => state,
++    (patch) => { state = { ...state, ...patch }; },
++    () => undefined,
++    undefined,
++    {
++      socket,
++      ...(notifications === undefined ? {} : { notifications }),
++      transcripts: new ChatTranscriptStore({ read: () => undefined, write: () => undefined }),
++      api: {
++        ...defaultApi,
++        messages: () => Promise.resolve(emptyPage),
++        status: (session) => Promise.resolve(status(sessionLookupId(session))),
++        streamSnapshot: () => {
++          const next = snapshots[Math.min(snapshotCalls, snapshots.length - 1)] ?? idle;
++          snapshotCalls += 1;
++          return next();
++        },
++        thinkingLevels: () => Promise.resolve({ levels: [] }),
++      },
++    },
++  );
++  return { controller, socket, state: () => state, snapshotCalls: () => snapshotCalls };
++}
++
++describe("SessionController streamed tool input", () => {
++  it("applies tool input once per animation frame", async () => {
++    const h = setup([idle]);
++    await h.controller.selectSession(oldSession, { updateUrl: false });
++    const before = h.state().messages;
++    h.socket.emit(input("call-1", 1, { op: "set", args: {} }, 1));
++    h.socket.emit(input("call-1", 2, { op: "set", args: { path: "a.txt", content: "one\n" } }, 2));
++    h.socket.emit(input("call-1", 3, { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 2 }, 3));
++    expect(h.state().messages).toBe(before);
++    runPendingAnimationFrames();
++    expect(h.state().messages).toEqual([{ role: "tool", streamId, parts: [{ type: "toolExecution", toolCallId: "call-1", toolName: "write", summary: "a.txt", args: { path: "a.txt", content: "one\ntwo" }, status: "pending", inputRevision: 3 }] }]);
++  });
++
++  it("applies queued input before a message.end of the same frame", async () => {
++    const h = setup([idle]);
++    await h.controller.selectSession(oldSession, { updateUrl: false });
++    h.socket.emit(input("call-1", 1, { op: "set", args: { path: "a.txt", content: "one\n" } }, 1));
++    h.socket.emit(input("call-1", 2, { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 1 }, 2));
++    const final = { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "a.txt", content: "one\ntwo\n" } }], streamId };
++    h.socket.emit({ type: "message.end", message: final, seq: 3 });
++    expect(h.state().messages).toEqual([{ role: "tool", streamId, parts: [{ type: "toolExecution", toolCallId: "call-1", toolName: "write", summary: "a.txt", args: { path: "a.txt", content: "one\ntwo\n" }, status: "pending" }] }]);
++  });
++
++  it("asks once for the gaps of a frame and again for a gap after that snapshot finished", async () => {
++    const pending = deferred<SessionStreamSnapshot>();
++    const h = setup([idle, () => pending.promise, idle]);
++    await h.controller.selectSession(oldSession, { updateUrl: false });
++    expect(h.snapshotCalls()).toBe(1);
++    h.socket.emit(gap("call-1", 3, 1));
++    h.socket.emit(gap("call-2", 3, 2));
++    runPendingAnimationFrames();
++    await vi.waitFor(() => { expect(h.snapshotCalls()).toBe(2); });
++    h.socket.emit(gap("call-1", 4, 3));
++    runPendingAnimationFrames();
++    await tick();
++    expect(h.snapshotCalls()).toBe(2);
++    pending.resolve({ seq: 0, partial: null });
++    await tick();
++    h.socket.emit(gap("call-1", 5, 4));
++    runPendingAnimationFrames();
++    await vi.waitFor(() => { expect(h.snapshotCalls()).toBe(3); });
++  });
++
++  it("asks again after a failed gap snapshot only once a second passed, and the call's final set rebuilds its card", async () => {
++    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
++    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
++    try {
++      const h = setup([idle, () => Promise.reject(new Error("offline")), idle]);
++      await h.controller.selectSession(oldSession, { updateUrl: false });
++      h.socket.emit(gap("call-1", 3, 1));
++      runPendingAnimationFrames();
++      await vi.advanceTimersByTimeAsync(0);
++      expect(warn).toHaveBeenCalled();
++      expect(h.snapshotCalls()).toBe(2);
++      await vi.advanceTimersByTimeAsync(900);
++      h.socket.emit(gap("call-1", 4, 2));
++      h.socket.emit(gap("call-2", 4, 3));
++      runPendingAnimationFrames();
++      await vi.advanceTimersByTimeAsync(0);
++      expect(h.snapshotCalls()).toBe(2);
++      await vi.advanceTimersByTimeAsync(100);
++      h.socket.emit(gap("call-1", 5, 4));
++      runPendingAnimationFrames();
++      await vi.advanceTimersByTimeAsync(0);
++      expect(h.snapshotCalls()).toBe(3);
++      h.socket.emit(input("call-1", 9, { op: "set", args: { path: "a.txt" } }, 5));
++      runPendingAnimationFrames();
++      expect(h.state().messages).toEqual([{ role: "tool", streamId, parts: [{ type: "toolExecution", toolCallId: "call-1", toolName: "write", summary: "a.txt", args: { path: "a.txt" }, status: "pending", inputRevision: 9 }] }]);
++    } finally {
++      warn.mockRestore();
++      vi.useRealTimers();
++    }
++  });
++
++  it("ignores a gap snapshot that resolves after another session was selected", async () => {
++    const late = deferred<SessionStreamSnapshot>();
++    const h = setup([idle, () => late.promise, idle]);
++    await h.controller.selectSession(oldSession, { updateUrl: false });
++    h.socket.emit(gap("call-1", 3, 1));
++    runPendingAnimationFrames();
++    await vi.waitFor(() => { expect(h.snapshotCalls()).toBe(2); });
++    await h.controller.selectSession(replacementSession, { updateUrl: false });
++    late.resolve({ seq: 5, partial: { role: "assistant", content: [{ type: "text", text: "stale" }], streamId } });
++    await tick();
++    expect(h.state().selectedSession?.id).toBe(replacementSession.id);
++    expect(h.state().messages).toEqual([]);
++    h.socket.emit(gap("call-1", 3, 1));
++    runPendingAnimationFrames();
++    await vi.waitFor(() => { expect(h.snapshotCalls()).toBe(4); });
++  });
++
++  it("seeds a mid-stream snapshot and continues with newer input only", async () => {
++    const partial = {
++      role: "assistant",
++      content: [
++        { type: "text", text: "Before" },
++        { type: "toolCall", id: "call-1", name: "write", arguments: { path: "a.txt", content: "one\n" }, inputRevision: 2 },
++      ],
++      streamId,
++    };
++    const h = setup([() => Promise.resolve({ seq: 10, partial })]);
++    await h.controller.selectSession(oldSession, { updateUrl: false });
++    h.socket.emit(input("call-1", 2, { op: "set", args: { path: "a.txt", content: "stale" } }, 9));
++    h.socket.emit(input("call-1", 3, { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 2 }, 11));
++    h.socket.emit({ type: "assistant.delta", text: "After", streamId, seq: 12 });
++    runPendingAnimationFrames();
++    expect(h.state().messages).toEqual([
++      { role: "assistant", streamId, parts: [{ type: "text", text: "Before" }] },
++      { role: "tool", streamId, parts: [{ type: "toolExecution", toolCallId: "call-1", toolName: "write", summary: "a.txt", args: { path: "a.txt", content: "one\ntwo" }, status: "pending", inputRevision: 3 }] },
++      { role: "assistant", streamId, parts: [{ type: "text", text: "After" }] },
++    ]);
++    expect(h.snapshotCalls()).toBe(1);
++  });
++
++  it("applies a lower-seq snapshot of a restarted daemon and accepts its new events", async () => {
++    const h = setup([
++      () => Promise.resolve({ seq: 50, partial: null }),
++      () => Promise.resolve({ seq: 3, partial: null }),
++    ]);
++    await h.controller.selectSession(oldSession, { updateUrl: false });
++    await h.controller.refreshSelectedSession();
++    h.socket.emit(input("call-1", 1, { op: "set", args: { path: "a.txt" } }, 4));
++    runPendingAnimationFrames();
++    expect(h.state().messages).toHaveLength(1);
++  });
++
++  it("applies the snapshot without waiting for notifications", async () => {
++    const notificationsDone = deferred<undefined>();
++    const bridge: SessionNotificationSessionBridge = {
++      prepareSelectedSession: vi.fn(),
++      clearSelectedSession: vi.fn(),
++      refreshSelectedSession: () => notificationsDone.promise,
++      applyInboxEvent: vi.fn(),
++    };
++    const partial = { role: "assistant", content: [{ type: "text", text: "Live" }], streamId };
++    const h = setup([() => Promise.resolve({ seq: 1, partial })], bridge);
++    const selecting = h.controller.selectSession(oldSession, { updateUrl: false });
++    await vi.waitFor(() => {
++      expect(h.state().messages).toEqual([{ role: "assistant", streamId, parts: [{ type: "text", text: "Live" }] }]);
++    });
++    notificationsDone.resolve(undefined);
++    await selecting;
++  });
++});
+diff -ruN -x .git a/src/client/src/controllers/sessionController.ts b/src/client/src/controllers/sessionController.ts
+--- a/src/client/src/controllers/sessionController.ts	2026-11-27 16:05:21.322512657 +0000
++++ b/src/client/src/controllers/sessionController.ts	2026-11-27 19:50:18.043468145 +0000
+@@ -20,6 +20,8 @@
+ import { TrailingRefreshCoordinator } from "./trailingRefreshCoordinator";
+ 
+ const MESSAGE_PAGE_SIZE = 100;
++/** Minimum wait before missed tool input may ask for another snapshot after a failed one. */
++const TOOL_INPUT_GAP_RETRY_MS = 1000;
+ 
+ export interface SessionEventSocket {
+   connect(
+@@ -138,6 +140,10 @@
+   private pendingStatusBySession = new Map<string, SessionStatus>();
+   private pendingActivityBySession = new Map<string, SessionActivity>();
+   private pendingFrame: number | undefined;
++  /** Calls whose missed input revision already asked for the current snapshot refresh. */
++  private readonly toolInputGaps = new Set<string>();
++  /** Pending reset of the gap accounting after a failed refresh; gaps meanwhile ask for nothing. */
++  private toolInputGapReset: ReturnType<typeof setTimeout> | undefined;
+   private pendingSessionStartSeq = 0;
+   private pendingQueuedSendSeq = 0;
+   private readonly pendingSessionStarts = new Map<string, PendingSessionStart>();
+@@ -1177,12 +1183,17 @@
+         target, events: [],
+       };
+       this.selectedRefreshBuffer = buffer;
++      let notificationsRefresh: Promise<void> = Promise.resolve();
++      let failed = false;
+       try {
++        // Notifications run alongside the snapshot but must not delay either
++        // transcript display or buffered-event replay. The finally block awaits
++        // them on every exit, so refresh completion and errors include them.
++        notificationsRefresh = this.notifications?.refreshSelectedSession(target.session, target.machineId) ?? Promise.resolve();
++        notificationsRefresh.catch(() => undefined);
+         const [streamSnapshot, status] = await Promise.all([
+           this.api.streamSnapshot(target.session, target.machineId),
+           this.api.status(target.session, target.machineId),
+-          this.notifications?.refreshSelectedSession(target.session, target.machineId)
+-            ?? Promise.resolve(),
+         ]);
+         if (!this.isCurrentRefreshTarget(target)) return;
+         const page = streamSnapshot.messagePage ?? await this.api.messages(
+@@ -1207,13 +1218,21 @@
+           selectionSeq: target.selectionSeq,
+           partialJson: selectedRefreshPartialJson(streamSnapshot),
+         };
++      } catch (error: unknown) {
++        failed = true;
++        throw error;
+       } finally {
+         if (this.selectedRefreshBuffer === buffer) {
+           this.selectedRefreshBuffer = undefined;
+         }
+         if (this.isCurrentRefreshTarget(target)) {
++          // A success lets the next missed revision ask at once; after a failure
++          // the accounting resets later, so a steady outage is not retried every frame.
++          if (failed) this.scheduleToolInputGapReset();
++          else this.clearToolInputGaps();
+           for (const event of buffer.events) this.applyEvent(event);
+         }
++        await notificationsRefresh;
+       }
+     });
+   }
+@@ -1230,6 +1249,8 @@
+   private isUnchangedSelectedRefresh(target: SelectedSessionRefreshTarget, key: string, page: MessagePage, status: SessionStatus, streamSnapshot: SessionStreamSnapshot): boolean {
+     const last = this.lastAppliedSelectedRefresh;
+     if (last?.selectionSeq !== target.selectionSeq) return false;
++    // A restarted daemon starts a new sequence even if its history is identical.
++    if (streamSnapshot.seq < (this.streamWatermark?.seq ?? 0)) return false;
+     if (selectedRefreshPartialJson(streamSnapshot) !== last.partialJson) return false;
+     if (!isHistoryTailSlice(this.transcripts.rawHistoryPage(key), page)) return false;
+     if (JSON.stringify(status) !== JSON.stringify(this.getState().status)) return false;
+@@ -1880,8 +1901,19 @@
+       const events = this.pendingTranscriptEvents;
+       this.pendingTranscriptEvents = [];
+       let messages = this.getState().messages;
+-      for (const event of events) messages = this.transcripts.applyLiveEvent(messages, event) ?? messages;
++      let gap = false;
++      for (const event of events) {
++        if (event.type === "tool.input") {
++          const applied = this.transcripts.applyToolInput(messages, event);
++          messages = applied.messages;
++          if (applied.gap && this.markToolInputGap(event.toolCallId)) gap = true;
++        } else {
++          messages = this.transcripts.applyLiveEvent(messages, event) ?? messages;
++        }
++      }
+       if (messages !== this.getState().messages) this.setState({ messages });
++      // A missed revision is repaired by one shared snapshot, never by guessing.
++      if (gap) void this.refreshSelectedSession(undefined, { silent: true });
+     }
+     if (this.pendingActivityBySession.size > 0) {
+       const activities = Array.from(this.pendingActivityBySession.values());
+@@ -1899,11 +1931,30 @@
+     this.pendingTranscriptEvents = [];
+     this.pendingStatusBySession.clear();
+     this.pendingActivityBySession.clear();
++    this.clearToolInputGaps();
+     if (this.pendingFrame === undefined) return;
+     cancelAnimationFrame(this.pendingFrame);
+     this.pendingFrame = undefined;
+   }
+ 
++  private clearToolInputGaps(): void {
++    if (this.toolInputGapReset !== undefined) clearTimeout(this.toolInputGapReset);
++    this.toolInputGapReset = undefined;
++    this.toolInputGaps.clear();
++  }
++
++  private scheduleToolInputGapReset(): void {
++    if (this.toolInputGapReset !== undefined) clearTimeout(this.toolInputGapReset);
++    this.toolInputGapReset = setTimeout(() => { this.clearToolInputGaps(); }, TOOL_INPUT_GAP_RETRY_MS);
++  }
++
++  /** True only for the first gap of a call until its refresh succeeds or the retry window after a failure ends. */
++  private markToolInputGap(toolCallId: string): boolean {
++    if (this.toolInputGapReset !== undefined || this.toolInputGaps.has(toolCallId)) return false;
++    this.toolInputGaps.add(toolCallId);
++    return true;
++  }
++
+   // Watermark filter for join-time exactly-once application. An event is below
+   // the watermark when it belongs to the selected session's seeded snapshot
+   // (`seq <= watermark.seq`); such events are already reflected in the committed
+@@ -2064,7 +2115,8 @@
+ }
+ 
+ function isHighFrequencyTranscriptEvent(event: SessionUiEvent): boolean {
+-  return event.type === "assistant.delta" || event.type === "assistant.thinking.delta" || event.type === "shell.chunk";
++  return event.type === "assistant.delta" || event.type === "assistant.thinking.delta"
++    || event.type === "shell.chunk" || event.type === "tool.input";
+ }
+ 
+ function isSessionNotFoundError(error: unknown): boolean {
+diff -ruN -x .git a/src/client/src/sessionSocket.toolInput.test.ts b/src/client/src/sessionSocket.toolInput.test.ts
+--- a/src/client/src/sessionSocket.toolInput.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/src/sessionSocket.toolInput.test.ts	2026-11-27 17:33:45.800441022 +0000
+@@ -0,0 +1,43 @@
++import { describe, expect, it } from "vitest";
++import { parseSessionSocketEvent } from "./sessionSocket";
++
++const base = { type: "tool.input", streamId: "stream-1", toolCallId: "call-1", toolName: "write" };
++
++describe("streamed tool input frames", () => {
++  it("keeps validated operations and the transport seq", () => {
++    expect(parseSessionSocketEvent({
++      ...base, revision: 2, seq: 7, extra: true, timestamp: "2026-11-27T00:00:00.000Z",
++      operation: { op: "splice", path: ["questions", 0, "question"], offset: 3, text: "x", baseRevision: 1, extra: true },
++    })).toEqual({
++      ...base, revision: 2, seq: 7, timestamp: "2026-11-27T00:00:00.000Z",
++      operation: { op: "splice", path: ["questions", 0, "question"], offset: 3, text: "x", baseRevision: 1 },
++    });
++    expect(parseSessionSocketEvent({ ...base, revision: 1, seq: 3, operation: { op: "set", args: { path: "a.txt" } } }))
++      .toEqual({ ...base, revision: 1, seq: 3, operation: { op: "set", args: { path: "a.txt" } } });
++  });
++
++  it("drops malformed frames", () => {
++    const operations: unknown[] = [
++      { op: "merge", args: {} },
++      { op: "set" },
++      { op: "splice", path: ["a", -1], offset: 0, text: "", baseRevision: 0 },
++      { op: "splice", path: ["a", 1.5], offset: 0, text: "", baseRevision: 0 },
++      { op: "splice", path: "a", offset: 0, text: "", baseRevision: 0 },
++      { op: "splice", path: ["a"], offset: -1, text: "", baseRevision: 0 },
++      { op: "splice", path: ["a"], offset: 0, text: 1, baseRevision: 0 },
++    ];
++    for (const operation of operations) {
++      expect(parseSessionSocketEvent({ ...base, revision: 1, operation })).toBeUndefined();
++    }
++    expect(parseSessionSocketEvent({ ...base, revision: 0, operation: { op: "set", args: {} } })).toBeUndefined();
++    expect(parseSessionSocketEvent({ ...base, streamId: undefined, revision: 1, operation: { op: "set", args: {} } })).toBeUndefined();
++  });
++
++  it("keeps the answer identity of starts and deltas", () => {
++    expect(parseSessionSocketEvent({ type: "assistant.start", message: { role: "assistant", content: [], streamId: "stream-1" }, seq: 1 }))
++      .toEqual({ type: "assistant.start", message: { role: "assistant", content: [], streamId: "stream-1" }, seq: 1 });
++    expect(parseSessionSocketEvent({ type: "assistant.delta", text: "a", streamId: "stream-1", seq: 2 }))
++      .toEqual({ type: "assistant.delta", text: "a", streamId: "stream-1", seq: 2 });
++    expect(parseSessionSocketEvent({ type: "assistant.thinking.delta", text: "b", streamId: 5 })).toBeUndefined();
++  });
++});
+diff -ruN -x .git a/src/server/browserMessageProjection.ts b/src/server/browserMessageProjection.ts
+--- a/src/server/browserMessageProjection.ts	2026-11-27 16:05:20.590495982 +0000
++++ b/src/server/browserMessageProjection.ts	2026-11-27 17:30:43.583364386 +0000
+@@ -26,7 +26,9 @@
+ }
+ 
+ export function projectBrowserSessionEvent(event: SessionUiEvent): SessionUiEvent {
+-  if (event.type !== "message.end" || event.message === undefined) return event;
++  if ((event.type !== "message.end" && event.type !== "assistant.start") || event.message === undefined) {
++    return event;
++  }
+   const message = projectBrowserMessage(event.message);
+   return message === event.message ? event : { ...event, message };
+ }
+diff -ruN -x .git a/src/server/sessions/piSessionService.lifecycle.test.ts b/src/server/sessions/piSessionService.lifecycle.test.ts
+--- a/src/server/sessions/piSessionService.lifecycle.test.ts	2026-11-27 16:05:21.306512293 +0000
++++ b/src/server/sessions/piSessionService.lifecycle.test.ts	2026-11-27 19:55:11.738550283 +0000
+@@ -1520,15 +1520,12 @@
+ 
+   it("projects the in-flight partial and matches the event watermark mid-stream", async () => {
+     const hub = new CapturingSessionEventHub();
+-    const streamingMessage = {
+-      role: "assistant",
+-      content: [
+-        { type: "thinking", thinking: "weighing options", thinkingSignature: "opaque" },
+-        { type: "text", text: "partial answer" },
+-        { type: "toolCall", id: "call-1", name: "edit", arguments: { path: "a.ts" } },
+-      ],
+-    };
+-    const fake = fakeRuntime("snap-live", { state: { streamingMessage } });
++    const content: unknown[] = [];
++    const message = { role: "assistant", content };
++    const update = (assistantMessageEvent: Record<string, unknown>) => ({
++      type: "message_update", message, assistantMessageEvent: { ...assistantMessageEvent, partial: message },
++    });
++    const fake = fakeRuntime("snap-live");
+     const service = new PiSessionService(hub, {
+       agentDir: TEST_AGENT_DIR,
+       modelRuntime: testModelRuntime,
+@@ -1538,6 +1535,13 @@
+     });
+     try {
+       await service.start("/workspace");
++      fake.emit({ type: "message_start", message });
++      content[0] = { type: "thinking", thinking: "weighing options", thinkingSignature: "opaque" };
++      fake.emit(update({ type: "thinking_delta", contentIndex: 0, delta: "weighing options" }));
++      content[1] = { type: "text", text: "partial answer" };
++      fake.emit(update({ type: "text_delta", contentIndex: 1, delta: "partial answer" }));
++      content[2] = { type: "toolCall", id: "call-1", name: "edit", arguments: { path: "a.ts" }, partialJson: '{"path":"a.ts"}', index: 2 };
++      fake.emit(update({ type: "toolcall_start", contentIndex: 2 }));
+       // Advance the per-session watermark to a known value.
+       hub.setSeq("snap-live", 5);
+ 
+@@ -1549,11 +1553,15 @@
+         content: [
+           { type: "thinking", thinking: "weighing options" },
+           { type: "text", text: "partial answer" },
+-          { type: "toolCall", id: "call-1", name: "edit", arguments: { path: "a.ts" } },
++          { type: "toolCall", id: "call-1", name: "edit", arguments: { path: "a.ts" }, inputRevision: 1 },
+         ],
++        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- `expect.any` yields `any`; the stream id is only checked for presence.
++        streamId: expect.any(String),
+       });
++      expect(JSON.stringify(snapshot.partial)).not.toContain("opaque");
++      expect(JSON.stringify(snapshot.partial)).not.toContain("partialJson");
+       // The runtime message is not mutated by the browser projection.
+-      expect(streamingMessage.content[0]).toHaveProperty("thinkingSignature", "opaque");
++      expect(content[0]).toHaveProperty("thinkingSignature", "opaque");
+     } finally {
+       await service.dispose();
+     }
+@@ -2024,19 +2032,31 @@
+   it("freezes extension JSON details and partials without structuredClone restrictions", async () => {
+     const f = fixture("atomic-json-copy");
+     const details = { nested: { text: "old" }, callback: () => undefined };
+-    const partialText = { type: 'text', text: 'old' };
+-    const partial = { role: 'assistant', content: [partialText] };
++    const content: unknown[] = [];
++    const message = { role: 'assistant', content };
++    const textDelta = (delta: string) => ({
++      type: "message_update", message,
++      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
++    });
+     try {
+       await f.service.start("/workspace");
+       f.fake.session.isStreaming = true;
+-      f.stream.streamingMessage = partial;
++      f.fake.emit({ type: "message_start", message });
++      content[0] = { type: 'text', text: 'old' };
++      f.fake.emit(textDelta("old"));
+       f.fake.emit({ type: "tool_execution_start", toolCallId: "A", toolName: "custom", args: {} });
+       f.fake.emit({ type: "tool_execution_update", toolCallId: "A", toolName: "custom", partialResult: { content: [{ type: "text", text: "x" }], details } });
+       const snapshot = await f.service.streamSnapshot(f.ref);
+       details.nested.text = "new";
+-      partialText.text = 'new';
++      content[0] = { type: 'text', text: 'old new' };
++      f.fake.emit(textDelta(" new"));
+       expect(snapshot.tools?.[0]?.details).toEqual({ nested: { text: "old" } });
+-      expect(snapshot.partial).toEqual({ role: "assistant", content: [{ type: "text", text: "old" }] });
++      expect(snapshot.partial).toEqual({
++        role: "assistant",
++        content: [{ type: "text", text: "old" }],
++        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- `expect.any` yields `any`; the stream id is only checked for presence.
++        streamId: expect.any(String),
++      });
+     } finally {
+       await f.service.dispose();
+     }
+diff -ruN -x .git a/src/server/sessions/piSessionService.messages.test.ts b/src/server/sessions/piSessionService.messages.test.ts
+--- a/src/server/sessions/piSessionService.messages.test.ts	2026-11-27 16:05:21.310512384 +0000
++++ b/src/server/sessions/piSessionService.messages.test.ts	2026-11-27 19:55:11.734550186 +0000
+@@ -71,13 +71,13 @@
+     });
+ 
+     it("annotates the join-time stream snapshot partial with the current thinking level", async () => {
+-      const streamingMessage = {
+-        role: "assistant",
+-        provider: "openai",
+-        model: "gpt-4.1",
+-        content: [{ type: "thinking", thinking: "hmm", thinkingSignature: "provider-signature" }],
+-      };
+-      const { service } = messagesService([], { thinkingLevel: "xhigh", state: { streamingMessage } });
++      const { fake, service } = messagesService([], { thinkingLevel: "xhigh" });
++      await service.status(sessionRef("session-1")); // bring the session online so it publishes events
++      const content: unknown[] = [];
++      const message = { role: "assistant", provider: "openai", model: "gpt-4.1", content };
++      fake.emit({ type: "message_start", message });
++      content[0] = { type: "thinking", thinking: "hmm", thinkingSignature: "provider-signature" };
++      fake.emit({ type: "message_update", message, assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm", partial: message } });
+ 
+       const snapshot = await service.streamSnapshot(sessionRef("session-1"));
+ 
+@@ -87,7 +87,10 @@
+         model: "gpt-4.1",
+         content: [{ type: "thinking", thinking: "hmm" }],
+         thinkingLevel: "xhigh",
++        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- `expect.any` yields `any`; the stream id is only checked for presence.
++        streamId: expect.any(String),
+       });
++      expect(JSON.stringify(snapshot.partial)).not.toContain("provider-signature");
+       await service.dispose();
+     });
+   });
+diff -ruN -x .git a/src/server/sessions/piSessionService.toolInput.test.ts b/src/server/sessions/piSessionService.toolInput.test.ts
+--- a/src/server/sessions/piSessionService.toolInput.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/server/sessions/piSessionService.toolInput.test.ts	2026-11-27 19:49:48.030745228 +0000
+@@ -0,0 +1,331 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { SessionUiEvent } from "../../shared/apiTypes.js";
++import { PiSessionService, type PiAgentSession } from "./piSessionService.js";
++import { CapturingSessionEventHub, fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime } from "./piSessionService.testSupport.js";
++
++const TEST_AGENT_DIR = "/tmp/pi-web-test-agent";
++
++async function onlineService(patch: Parameters<typeof fakeRuntime>[1] = {}) {
++  const fake = fakeRuntime("session-1", patch);
++  let rebindSession: ((session: PiAgentSession) => Promise<void>) | undefined;
++  fake.runtime.setRebindSession = (callback) => { rebindSession = callback; };
++  const events = new CapturingSessionEventHub();
++  const service = new PiSessionService(events, {
++    agentDir: TEST_AGENT_DIR,
++    modelRuntime: testModelRuntime,
++    createAgentRuntime: runtimeCreator(fake.runtime),
++    sessionManager: sessionGateway([sessionRecord("session-1")]),
++    heartbeatIntervalMs: 60_000,
++  });
++  await service.status(sessionRef("session-1")); // bring the session online so it publishes events
++  events.sessionEvents.length = 0;
++  events.globalEvents.length = 0;
++  const replaceRuntime = async (replacement: ReturnType<typeof fakeRuntime>) => {
++    Object.defineProperty(fake.runtime, "session", { configurable: true, value: replacement.session });
++    await rebindSession?.(replacement.session);
++  };
++  return { fake, service, replaceRuntime, published: () => events.sessionEvents.map(({ event }) => event) };
++}
++
++/** An assistant message whose content blocks the SDK replaces in place, as pi-ai does. */
++function assistantStream() {
++  const content: unknown[] = [];
++  const message = { role: "assistant", provider: "fake", model: "fake-model", content };
++  return {
++    start: () => ({ type: "message_start", message }),
++    update: (assistantMessageEvent: Record<string, unknown>) => ({
++      type: "message_update", message, assistantMessageEvent: { ...assistantMessageEvent, partial: message },
++    }),
++    end: () => ({ type: "message_end", message }),
++    text: (index: number, text: string) => { content[index] = { type: "text", text }; },
++    toolCall: (index: number, id: string, name: string, args: unknown) => {
++      content[index] = { type: "toolCall", id, name, arguments: args, partialJson: JSON.stringify(args), index };
++    },
++  };
++}
++
++function streamIdOf(message: unknown): string | undefined {
++  if (typeof message !== "object" || message === null || !("streamId" in message)) return undefined;
++  return typeof message.streamId === "string" ? message.streamId : undefined;
++}
++
++function firstStreamId(events: SessionUiEvent[]): string {
++  const start = events.find((event) => event.type === "assistant.start");
++  const streamId = start?.type === "assistant.start" ? streamIdOf(start.message) : undefined;
++  if (streamId === undefined) throw new Error("no assistant.start with a streamId");
++  return streamId;
++}
++
++function toolInputs(events: SessionUiEvent[]) {
++  return events.flatMap((event) => event.type === "tool.input" ? [event] : []);
++}
++
++function activityLabels(events: SessionUiEvent[]): string[] {
++  return events.flatMap((event) => event.type === "activity.update" ? [event.activity.label] : []);
++}
++
++describe("PiSessionService streamed tool input", () => {
++  afterEach(() => { vi.useRealTimers(); });
++
++  it("publishes a set on start and end and splices while one string grows", async () => {
++    const { fake, service, published } = await onlineService();
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    stream.toolCall(0, "call-1", "write", {});
++    fake.emit(stream.update({ type: "toolcall_start", contentIndex: 0 }));
++    stream.toolCall(0, "call-1", "write", { path: "a.txt", content: "one\n" });
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 0, delta: "fragment" }));
++    stream.toolCall(0, "call-1", "write", { path: "a.txt", content: "one\ntwo" });
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 0, delta: "two" }));
++    const final = { type: "toolCall", id: "call-1", name: "write", arguments: { path: "a.txt", content: "one\ntwo\n" } };
++    fake.emit(stream.update({ type: "toolcall_end", contentIndex: 0, toolCall: final }));
++
++    const call = { type: "tool.input", streamId: firstStreamId(published()), toolCallId: "call-1", toolName: "write" };
++    expect(toolInputs(published())).toEqual([
++      { ...call, revision: 1, operation: { op: "set", args: {} } },
++      { ...call, revision: 2, operation: { op: "set", args: { path: "a.txt", content: "one\n" } } },
++      { ...call, revision: 3, operation: { op: "splice", path: ["content"], offset: 4, text: "two", baseRevision: 2 } },
++      { ...call, revision: 4, operation: { op: "set", args: { path: "a.txt", content: "one\ntwo\n" } } },
++    ]);
++    expect(published().some((event) => event.type === "pi.event")).toBe(false);
++    await service.dispose();
++  });
++
++  it("publishes nothing for a chunk that leaves the parsed arguments unchanged", async () => {
++    const { fake, service, published } = await onlineService();
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    stream.toolCall(0, "call-1", "read", {});
++    fake.emit(stream.update({ type: "toolcall_start", contentIndex: 0 }));
++    stream.toolCall(0, "call-1", "read", { path: "a" });
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 0, delta: "{\"path\":\"a" }));
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 0, delta: "" }));
++    stream.toolCall(0, "call-1", "read", { path: "ab" });
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 0, delta: "b" }));
++
++    expect(toolInputs(published()).map((event) => event.revision)).toEqual([1, 2, 3]);
++    expect(toolInputs(published()).at(-1)?.operation)
++      .toEqual({ op: "splice", path: ["path"], offset: 1, text: "b", baseRevision: 2 });
++    await service.dispose();
++  });
++
++  it("cuts back a string tail the partial parser rebuilt", async () => {
++    const { fake, service, published } = await onlineService();
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    stream.toolCall(0, "call-1", "write", { content: "a\\" });
++    fake.emit(stream.update({ type: "toolcall_start", contentIndex: 0 }));
++    stream.toolCall(0, "call-1", "write", { content: "a\n" });
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 0, delta: "n" }));
++
++    expect(toolInputs(published()).at(-1)?.operation)
++      .toEqual({ op: "splice", path: ["content"], offset: 1, text: "\n", baseRevision: 1 });
++    await service.dispose();
++  });
++
++  it("follows SDK state that runs ahead of the events and snapshots only what was published", async () => {
++    const { fake, service, published } = await onlineService();
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    stream.text(0, "Hello world");
++    fake.emit(stream.update({ type: "text_delta", contentIndex: 0, delta: "Hello" }));
++    stream.toolCall(1, "call-1", "write", { path: "a.txt", content: "one\ntwo\n" });
++    fake.emit(stream.update({ type: "toolcall_start", contentIndex: 1 }));
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 1, delta: "{" }));
++
++    const snapshot = await service.streamSnapshot(sessionRef("session-1"));
++
++    expect(toolInputs(published()).map((event) => event.revision)).toEqual([1]);
++    expect(snapshot.partial).toEqual({
++      role: "assistant",
++      provider: "fake",
++      model: "fake-model",
++      content: [
++        { type: "text", text: "Hello" },
++        { type: "toolCall", id: "call-1", name: "write", arguments: { path: "a.txt", content: "one\ntwo\n" }, inputRevision: 1 },
++      ],
++      streamId: firstStreamId(published()),
++    });
++    await service.dispose();
++  });
++
++  it("carries one identity per answer on its start, deltas and end", async () => {
++    const { fake, service, published } = await onlineService();
++    const first = assistantStream();
++    fake.emit(first.start());
++    first.text(0, "Hi");
++    fake.emit(first.update({ type: "text_delta", contentIndex: 0, delta: "Hi" }));
++    fake.emit(first.end());
++    fake.emit({ type: "message_end", message: { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [], isError: false } });
++    fake.emit(assistantStream().start());
++
++    const events = published();
++    const starts = events.flatMap((event) => event.type === "assistant.start" ? [streamIdOf(event.message)] : []);
++    const deltas = events.flatMap((event) => event.type === "assistant.delta" ? [event.streamId] : []);
++    const ends = events.flatMap((event) => event.type === "message.end" ? [streamIdOf(event.message)] : []);
++    expect(starts).toHaveLength(2);
++    expect(typeof starts[0]).toBe("string");
++    expect(starts[1]).not.toBe(starts[0]);
++    expect(deltas).toEqual([starts[0]]);
++    expect(ends).toEqual([starts[0], undefined]);
++    await service.dispose();
++  });
++
++  it("drops the published answer once it ends or the run ends", async () => {
++    const { fake, service } = await onlineService();
++    const first = assistantStream();
++    fake.emit(first.start());
++    first.text(0, "Hi");
++    fake.emit(first.update({ type: "text_delta", contentIndex: 0, delta: "Hi" }));
++    expect((await service.streamSnapshot(sessionRef("session-1"))).partial).not.toBeNull();
++    fake.emit(first.end());
++    expect((await service.streamSnapshot(sessionRef("session-1"))).partial).toBeNull();
++    const second = assistantStream();
++    fake.emit(second.start());
++    fake.emit({ type: "agent_end", messages: [] });
++    expect((await service.streamSnapshot(sessionRef("session-1"))).partial).toBeNull();
++    await service.dispose();
++  });
++
++  it("publishes activity only when it changes and names the tool being prepared", async () => {
++    const { fake, service, published } = await onlineService();
++    // A running agent keeps its activity; an idle fake would add an "idle" reset.
++    fake.session.isStreaming = true;
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    for (const delta of ["a", "b", "c"]) {
++      stream.text(0, delta);
++      fake.emit(stream.update({ type: "text_delta", contentIndex: 0, delta }));
++    }
++    stream.toolCall(1, "call-1", "write", {});
++    fake.emit(stream.update({ type: "toolcall_start", contentIndex: 1 }));
++    stream.toolCall(1, "call-1", "write", { path: "a" });
++    fake.emit(stream.update({ type: "toolcall_delta", contentIndex: 1, delta: "x" }));
++    fake.emit(stream.update({ type: "toolcall_end", contentIndex: 1, toolCall: { type: "toolCall", id: "call-1", name: "write", arguments: { path: "a" } } }));
++
++    const activities = published().flatMap((event) => event.type === "activity.update" ? [[event.activity.label, event.activity.detail]] : []);
++    expect(activities).toEqual([
++      ["message started", undefined],
++      ["receiving response", undefined],
++      ["preparing tool input", "write"],
++    ]);
++    await service.dispose();
++  });
++
++  it("does not repeat idle activity when the delayed check after agent_end fires", async () => {
++    vi.useFakeTimers();
++    const { fake, service, published } = await onlineService();
++    fake.emit({ type: "agent_end", messages: [] });
++    const idleBefore = activityLabels(published()).filter((label) => label === "idle").length;
++    const statusesBefore = published().filter((event) => event.type === "status.update").length;
++    vi.advanceTimersByTime(250);
++
++    expect(activityLabels(published()).filter((label) => label === "idle")).toHaveLength(idleBefore);
++    expect(published().filter((event) => event.type === "status.update").length).toBeGreaterThan(statusesBefore);
++    await service.dispose();
++    vi.useRealTimers();
++  });
++
++  it("keeps a run that starts before the delayed check after agent_end running", async () => {
++    vi.useFakeTimers();
++    const { fake, service, published } = await onlineService();
++    fake.emit({ type: "agent_end", messages: [] });
++    fake.session.isStreaming = true;
++    fake.emit({ type: "agent_start" });
++    const countAfterStart = activityLabels(published()).length;
++    vi.advanceTimersByTime(250);
++
++    const labels = activityLabels(published());
++    expect(labels.at(-1)).toBe("agent running");
++    expect(labels.slice(countAfterStart)).not.toContain("idle");
++    await service.dispose();
++    vi.useRealTimers();
++  });
++
++  it("publishes idle when a late event changed the activity of a session without active work", async () => {
++    vi.useFakeTimers();
++    const { fake, service, published } = await onlineService();
++    fake.emit({ type: "agent_end", messages: [] });
++    fake.session.isStreaming = false;
++    fake.emit({ type: "turn_end" });
++    expect(activityLabels(published()).at(-1)).toBe("turn complete");
++    vi.advanceTimersByTime(250);
++
++    expect(activityLabels(published()).at(-1)).toBe("idle");
++    await service.dispose();
++    vi.useRealTimers();
++  });
++
++  it("publishes nothing from the delayed check after agent_end once the runtime was replaced", async () => {
++    vi.useFakeTimers();
++    const { fake, service, replaceRuntime, published } = await onlineService();
++    fake.emit({ type: "agent_end", messages: [] });
++    const replacement = fakeRuntime("session-1");
++    await replaceRuntime(replacement);
++    replacement.session.isStreaming = true;
++    replacement.emit({ type: "agent_start" });
++    const countBefore = published().length;
++    vi.advanceTimersByTime(250);
++
++    expect(published().slice(countBefore).filter((event) => event.type === "activity.update" || event.type === "status.update")).toEqual([]);
++    expect(activityLabels(published()).at(-1)).toBe("agent running");
++    await service.dispose();
++    vi.useRealTimers();
++  });
++
++  it("keeps status updates off content progress", async () => {
++    const { fake, service, published } = await onlineService();
++    const statuses = () => published().filter((event) => event.type === "status.update").length;
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    const afterStart = statuses();
++    stream.text(0, "a");
++    fake.emit(stream.update({ type: "text_delta", contentIndex: 0, delta: "a" }));
++    fake.emit({ type: "tool_execution_update", toolCallId: "call-1", toolName: "bash", partialResult: { content: [] } });
++    fake.emit({ type: "bash_execution_update", chunk: "x" });
++    expect(statuses()).toBe(afterStart);
++    fake.emit(stream.end());
++    expect(statuses()).toBe(afterStart + 1);
++    await service.dispose();
++  });
++
++  it("publishes fresh statistics once the run goes idle", async () => {
++    const entries: unknown[] = [];
++    const { fake, service, published } = await onlineService({
++      sessionManager: fakeSessionManager("/workspace", { getEntries: () => entries }),
++    });
++    const stream = assistantStream();
++    fake.emit(stream.start());
++    stream.text(0, "Hi");
++    fake.emit(stream.update({ type: "text_delta", contentIndex: 0, delta: "Hi" }));
++    fake.emit(stream.end());
++    // The SDK appends the answer right after its message_end listeners return.
++    entries.push({ type: "message", message: { role: "assistant", content: [], usage: { input: 3, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 8, reasoning: 2 } } });
++    fake.emit({ type: "agent_end", messages: [] });
++
++    const statuses = published().flatMap((event) => event.type === "status.update" ? [event.status] : []);
++    expect(statuses.at(-1)?.tokens).toMatchObject({ total: 8, reasoning: 2 });
++    await service.dispose();
++  });
++
++  it("keeps a published prompt echo in snapshots until history records it", async () => {
++    const branch: unknown[] = [];
++    let release: () => void = () => undefined;
++    const running = new Promise<void>((resolve) => { release = resolve; });
++    const { service } = await onlineService({
++      sessionManager: fakeSessionManager("/workspace", { getBranch: () => [...branch] }),
++      prompt: () => running,
++    });
++
++    await service.prompt(sessionRef("session-1"), "hello");
++    const before = await service.streamSnapshot(sessionRef("session-1"));
++    branch.push({ type: "message", message: { role: "user", content: "hello" } });
++    const after = await service.streamSnapshot(sessionRef("session-1"));
++
++    expect(before.messagePage?.messages).toEqual([{ role: "user", content: "hello" }]);
++    expect(after.messagePage?.messages).toEqual([{ role: "user", content: "hello" }]);
++    release();
++    await running;
++    await service.dispose();
++  });
++});
+diff -ruN -x .git a/src/server/sessions/piSessionService.ts b/src/server/sessions/piSessionService.ts
+--- a/src/server/sessions/piSessionService.ts	2026-11-27 16:05:21.326512749 +0000
++++ b/src/server/sessions/piSessionService.ts	2026-11-27 19:49:44.662664112 +0000
+@@ -1,3 +1,4 @@
++import { randomUUID } from "node:crypto";
+ import { statSync } from "node:fs";
+ import { join } from "node:path";
+ import { readFile, writeFile } from "node:fs/promises";
+@@ -30,6 +31,7 @@
+ import type { ClientArchiveSessionsResponse, ClientCommand, ClientCommandResult, ClientMessagePage, ClientSession, ClientSessionCleanupExecuteResponse, ClientSessionCleanupPreviewResponse, ClientSessionModel, ClientSessionModelCatalogEntry, ClientSessionStatus, ClientSessionTreeForkRequest, ClientSessionTreeForkResult, ClientSessionTreeNavigateRequest, ClientSessionTreeNavigateResult, ClientThinkingLevel, SessionRunningShell, SessionRunningTool, SessionStreamSnapshot, SessionUiEvent } from "../types.js";
+ import { projectBrowserMessage, projectBrowserMessageResponse } from "../browserMessageProjection.js";
+ import { pageMessagesAtSafeBoundary } from "./messagePaging.js";
++import { PublishedAssistantStream } from "./publishedAssistantStream.js";
+ import type { SessionEventHub } from "../realtime/sessionEventHub.js";
+ import { BUILTIN_COMMANDS } from "./builtinCommands.js";
+ import { SessionCommandService } from "./sessionCommandService.js";
+@@ -1225,6 +1227,11 @@
+   private readonly runningTools = new WeakMap<PiAgentSession, Map<string, SessionRunningTool>>();
+   /** User `!` commands per runtime still running or finished but not yet in history, replayed by `streamSnapshot`. */
+   private readonly runningShells = new WeakMap<PiAgentSession, SessionRunningShell[]>();
++  /** User messages echoed before the SDK appends them; join snapshots keep them until then. */
++  private readonly pendingPromptEchoes = new WeakMap<PiAgentSession, { userIndex: number; message: ReturnType<typeof userMessage> }[]>();
++  /** The answer being streamed, as its published events built it: the join snapshot's `partial`. */
++  private readonly publishedAssistantPartials = new WeakMap<PiAgentSession, PublishedAssistantStream>();
++  private readonly assistantStreamIds = new WeakMap<PiAgentSession, string>();
+   private readonly snapshotGenerations = new WeakMap<PiAgentSession, number>();
+   private readonly shellFinalizations = new WeakMap<PiAgentSession, Map<
+     SessionRunningShell,
+@@ -2368,12 +2375,13 @@
+   }
+ 
+   /**
+-   * Join-time snapshot of the in-flight assistant stream. The `seq` watermark and
+-   * the partial are read together in one synchronous tick (no await between the
+-   * `currentSeq` read and the `state.streamingMessage` read) so a joining client
+-   * can seed the partial and then apply only buffered live events with
+-   * `seq > snapshot.seq`. The partial is browser-projected to strip thinking
+-   * signatures; it is `null` when no assistant message is mid-stream.
++   * Join-time snapshot of the in-flight assistant stream. The `seq` watermark,
++   * the history page and the partial are read together in one synchronous tick,
++   * so a joining client can seed them and then apply only buffered live events
++   * with `seq > snapshot.seq`. The partial is the answer as its published events
++   * built it, never the SDK message that may already be ahead of them; it is
++   * `null` when no assistant message is mid-stream. Published prompt echoes stay
++   * in the page until the SDK appends their user message.
+    */
+   async streamSnapshot(ref: PiSessionRef): Promise<SessionStreamSnapshot> {
+     const target = { ...ref };
+@@ -2408,14 +2416,19 @@
+       if (!current()) continue;
+       // No await below: history, watermark and replay records form one version.
+       this.pruneRecordedShells(session);
++      const messages = historyMessagesFromEntries(branch);
++      const userCount = messages.filter((message) => isRecord(message) && message["role"] === "user").length;
++      const echoes = (this.pendingPromptEchoes.get(session) ?? []).filter((echo) => echo.userIndex >= userCount);
++      messages.push(...echoes.map((echo) => echo.message));
+       const messagePage = projectBrowserMessageResponse(pageMessagesAtSafeBoundary(
+-        historyMessagesFromEntries(branch), { limit: 100 },
++        messages, { limit: 100 },
+       ));
+-      const streamingMessage = session.state.streamingMessage;
+-      const partial = getString(streamingMessage, "role") !== "assistant"
++      const published = this.publishedAssistantPartials.get(session);
++      const partial = published === undefined
+         ? null
+-        : annotateAssistantThinkingLevel(
+-          projectBrowserMessage(streamingMessage), session.thinkingLevel,
++        : annotateAssistantStreamId(
++          annotateAssistantThinkingLevel(published.message(), session.thinkingLevel),
++          this.assistantStreamIds.get(session),
+         );
+       const tools = [...(this.runningTools.get(session)?.values() ?? [])];
+       const shells = this.runningShells.get(session) ?? [];
+@@ -2619,9 +2632,25 @@
+ 
+   private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true): Promise<void> {
+     this.publishActivity(session, behavior === "steer" ? "steering queued" : behavior === "followUp" ? "message queued" : "prompt accepted", "active");
+-    if (behavior === undefined && echoUserMessage) this.events.publish(session.sessionId, { type: "message.append", message: userMessage(text, images) });
++    const echoes = this.pendingPromptEchoes.get(session) ?? [];
++    const userCount = historyMessagesFromEntries(session.sessionManager.getBranch()).filter((message) => isRecord(message) && message["role"] === "user").length;
++    const echo = behavior === undefined && echoUserMessage
++      ? { userIndex: Math.max(userCount, ...echoes.map((pending) => pending.userIndex + 1)), message: userMessage(text, images) }
++      : undefined;
++    if (echo !== undefined) {
++      // SDK input hooks may await before appending the user message. Keep the
++      // already-published echo visible in snapshots until that append occurs.
++      this.pendingPromptEchoes.set(session, [...echoes, echo]);
++      this.events.publish(session.sessionId, { type: "message.append", message: echo.message });
++    }
+     const promptOptions = buildPromptOptions(behavior, images);
+-    const promptPromise = this.runSessionEntryMutation(session, "send a prompt", () => session.prompt(text, promptOptions)).catch((error: unknown) => {
++    const promptPromise = this.runSessionEntryMutation(session, "send a prompt", () => session.prompt(text, promptOptions)).finally(() => {
++      if (echo !== undefined) {
++        const remaining = (this.pendingPromptEchoes.get(session) ?? []).filter((pending) => pending !== echo);
++        if (remaining.length === 0) this.pendingPromptEchoes.delete(session);
++        else this.pendingPromptEchoes.set(session, remaining);
++      }
++    }).catch((error: unknown) => {
+       const message = error instanceof Error ? error.message : String(error);
+       this.publishActivity(session, "error", "error", message);
+       this.events.publish(session.sessionId, { type: "session.error", message });
+@@ -3993,6 +4022,8 @@
+   private bindRuntime(active: ActiveSession<PiSessionRuntime>, session: PiAgentSession = active.runtime.session): void {
+     this.bumpSnapshotGeneration(session);
+     active.unsubscribe();
++    this.publishedAssistantPartials.delete(session);
++    this.assistantStreamIds.delete(session);
+     for (const [sessionId, candidate] of this.active.entries()) {
+       if (candidate === active) {
+         this.active.delete(sessionId);
+@@ -4005,9 +4036,7 @@
+       if (eventType === "session_info_changed") {
+         this.publishSessionName(session);
+       } else {
+-        const clientEvent = toClientEvent(event, session.thinkingLevel);
+-        this.events.publish(session.sessionId, clientEvent);
+-        this.trackRunningTool(session, clientEvent);
++        this.publishSessionEvent(session, event, eventType);
+       }
+       this.pruneRecordedShells(session);
+       this.publishActivityForEvent(session, event);
+@@ -4021,13 +4050,66 @@
+       if (eventType === "agent_end") this.abortRunScopedExtensionDialogs(session.sessionId);
+       if (eventType === "compaction_end") this.scheduleCompactionQueueDrain(session.sessionId);
+       if (eventType === "agent_start" || eventType === "agent_end") this.scheduleCompactionQueueDrain(session.sessionId);
+-      this.publishStatus(session);
++      // Content progress is delivered above; it does not change operational status.
++      if (eventType !== "message_update" && eventType !== "tool_execution_update" && eventType !== "bash_execution_update") {
++        this.publishStatus(session);
++      }
+       this.updateSubsessionTracking(session);
+     });
+     this.active.set(session.sessionId, active);
+   }
+ 
+   /**
++   * Publish one SDK event and record what it published in the same tick: the
++   * answer identity, the published answer for join snapshots and tool progress.
++   * Streamed tool-call input goes out as `tool.input`, never as an empty `pi.event`.
++   */
++  private publishSessionEvent(session: PiAgentSession, event: unknown, eventType: string | undefined): void {
++    const message = getProperty(event, "message");
++    const assistant = getString(message, "role") === "assistant";
++    if (eventType === "message_start" && assistant) {
++      this.assistantStreamIds.set(session, randomUUID());
++      this.publishedAssistantPartials.set(session, PublishedAssistantStream.start(message));
++    }
++    const streamId = this.assistantStreamIds.get(session);
++    const update = getProperty(event, "assistantMessageEvent");
++    const updateType = eventType === "message_update" ? getString(update, "type") : undefined;
++    if (updateType === "toolcall_start" || updateType === "toolcall_delta" || updateType === "toolcall_end") {
++      this.publishToolInput(session, event, updateType, streamId);
++    } else {
++      const clientEvent = toClientEvent(event, session.thinkingLevel, streamId);
++      const published = this.publishedAssistantPartials.get(session);
++      const contentIndex = getNumber(update, "contentIndex") ?? 0;
++      if (clientEvent.type === "assistant.delta") published?.appendText(contentIndex, clientEvent.text);
++      if (clientEvent.type === "assistant.thinking.delta") published?.appendThinking(contentIndex, clientEvent.text);
++      this.events.publish(session.sessionId, clientEvent);
++      this.trackRunningTool(session, clientEvent);
++    }
++    if ((eventType === "message_end" && assistant) || eventType === "agent_end") {
++      this.publishedAssistantPartials.delete(session);
++      this.assistantStreamIds.delete(session);
++    }
++  }
++
++  /** Publish the change of one streamed call's parsed arguments, or nothing when it did not change. */
++  private publishToolInput(
++    session: PiAgentSession,
++    event: unknown,
++    updateType: "toolcall_start" | "toolcall_delta" | "toolcall_end",
++    streamId: string | undefined,
++  ): void {
++    const published = this.publishedAssistantPartials.get(session);
++    const update = getProperty(event, "assistantMessageEvent");
++    const contentIndex = getNumber(update, "contentIndex");
++    if (published === undefined || streamId === undefined || contentIndex === undefined) return;
++    const partialBlock = arrayItem(getProperty(getProperty(update, "partial"), "content"), contentIndex);
++    const block = updateType === "toolcall_end" ? getProperty(update, "toolCall") ?? partialBlock : partialBlock;
++    const input = published.updateToolInput(contentIndex, block, updateType === "toolcall_delta");
++    if (input === undefined) return;
++    this.events.publish(session.sessionId, { type: "tool.input", streamId, ...input, ...streamedMessageStart(event) });
++  }
++
++  /**
+    * Mirror `tool.*` events published in the same tick, so `streamSnapshot` can
+    * hand a joining client the progress its watermark marks as already seen.
+    * Merge progress like the live client; retain finals until the SDK appends them.
+@@ -4336,31 +4418,51 @@
+     return (this.sessionEntryMutationCounts.get(session) ?? 0) > 0;
+   }
+ 
++  /** Event-driven activity changes only with its phase, label or detail; heartbeats refresh `at`. */
+   private publishActivityForEvent(session: PiAgentSession, event: unknown): void {
+     const eventType = getString(event, "type");
+     if (eventType === undefined) return;
+-    if (eventType === "agent_start") { this.publishActivity(session, "agent running", "active"); return; }
++    const publish = (label: string, phase: "active" | "idle" | "error", detail?: string) => {
++      const current = this.activities.get(session.sessionId);
++      if (current?.phase === phase && current.label === label && current.detail === detail) return;
++      this.publishActivity(session, label, phase, detail);
++    };
++    if (eventType === "agent_start") { publish("agent running", "active"); return; }
+     if (eventType === "agent_end") {
+-      this.publishActivity(session, "idle", "idle");
++      publish("idle", "idle");
+       setTimeout(() => {
+-        this.publishActivity(session, "idle", "idle");
++        // A replaced runtime must not publish over its successor under the same id.
++        if (!this.isCurrentActiveSession(session)) return;
++        // A queued run may start within the delay; never overwrite its activity.
++        if (!this.hasActiveWork(session)) publish("idle", "idle");
+         this.publishStatus(session);
+       }, 250);
+       return;
+     }
+-    if (eventType === "turn_end") { this.publishActivity(session, "turn complete", "idle"); return; }
+-    if (eventType === "message_start") { this.publishActivity(session, "message started", "active"); return; }
+-    if (eventType === "message_end") { this.publishActivity(session, "message complete", "idle"); return; }
+-    if (eventType === "message_update") { this.publishActivity(session, "receiving response", "active"); return; }
+-    if (eventType === "tool_execution_start") { this.publishActivity(session, "running tool", "active", getString(event, "toolName")); return; }
++    if (eventType === "turn_end") { publish("turn complete", "idle"); return; }
++    if (eventType === "message_start") { publish("message started", "active"); return; }
++    if (eventType === "message_end") { publish("message complete", "idle"); return; }
++    if (eventType === "message_update") {
++      const update = getProperty(event, "assistantMessageEvent");
++      const updateType = getString(update, "type");
++      if (updateType === "toolcall_start") {
++        const content = getProperty(getProperty(update, "partial"), "content");
++        const block = arrayItem(content, getNumber(update, "contentIndex") ?? -1);
++        publish("preparing tool input", "active", getString(block, "name"));
++      } else if (updateType !== "toolcall_delta" && updateType !== "toolcall_end") {
++        publish("receiving response", "active");
++      }
++      return;
++    }
++    if (eventType === "tool_execution_start") { publish("running tool", "active", getString(event, "toolName")); return; }
+     if (eventType === "tool_execution_end") {
+       const isError = getBoolean(event, "isError") === true;
+-      this.publishActivity(session, isError ? "tool failed" : "tool complete", isError ? "error" : "idle", getString(event, "toolName"));
++      publish(isError ? "tool failed" : "tool complete", isError ? "error" : "idle", getString(event, "toolName"));
+       return;
+     }
+-    if (eventType === "bash_execution_start") { this.publishActivity(session, "running bash", "active"); return; }
+-    if (eventType === "bash_execution_end") { this.publishActivity(session, "bash complete", "idle"); return; }
+-    if (this.hasActiveWork(session)) this.publishActivity(session, eventType.replaceAll("_", " "), "active");
++    if (eventType === "bash_execution_start") { publish("running bash", "active"); return; }
++    if (eventType === "bash_execution_end") { publish("bash complete", "idle"); return; }
++    if (this.hasActiveWork(session)) publish(eventType.replaceAll("_", " "), "active");
+   }
+ 
+   /**
+@@ -4974,6 +5076,12 @@
+   return { ...message, thinkingLevel };
+ }
+ 
++function annotateAssistantStreamId(message: unknown, streamId?: string): unknown {
++  return streamId !== undefined && getString(message, "role") === "assistant" && isRecord(message)
++    ? { ...message, streamId }
++    : message;
++}
++
+ /**
+  * Attach when an assistant answer finished: the session entry time in history,
+  * the `message_end` time live. Pi keeps only the start in `timestamp`.
+@@ -5132,14 +5240,23 @@
+   return "";
+ }
+ 
+-function toClientEvent(event: unknown, thinkingLevel?: string): SessionUiEvent {
++function toClientEvent(event: unknown, thinkingLevel?: string, streamId?: string): SessionUiEvent {
+   const eventType = getString(event, "type");
++  if (eventType === "message_start" && getString(getProperty(event, "message"), "role") === "assistant") {
++    return {
++      type: "assistant.start",
++      message: annotateAssistantStreamId(
++        annotateAssistantThinkingLevel(projectBrowserMessage(getProperty(event, "message")), thinkingLevel), streamId,
++      ),
++    };
++  }
++  const streamIdentity = streamId === undefined ? {} : { streamId };
+   const assistantMessageEvent = getProperty(event, "assistantMessageEvent");
+   if (eventType === "message_update" && getString(assistantMessageEvent, "type") === "text_delta") {
+-    return { type: "assistant.delta", text: getString(assistantMessageEvent, "delta") ?? "", ...streamedMessageStart(event) };
++    return { type: "assistant.delta", text: getString(assistantMessageEvent, "delta") ?? "", ...streamedMessageStart(event), ...streamIdentity };
+   }
+   if (eventType === "message_update" && getString(assistantMessageEvent, "type") === "thinking_delta") {
+-    return { type: "assistant.thinking.delta", text: getString(assistantMessageEvent, "delta") ?? "", ...streamedMessageStart(event) };
++    return { type: "assistant.thinking.delta", text: getString(assistantMessageEvent, "delta") ?? "", ...streamedMessageStart(event), ...streamIdentity };
+   }
+   if (eventType === "tool_execution_start") {
+     const args = getProperty(event, "args");
+@@ -5158,7 +5275,12 @@
+   if (eventType === "message_end") {
+     const message = getProperty(event, "message");
+     if (message === undefined) return { type: "message.end" };
+-    return { type: "message.end", message: withAssistantCompletedAt(annotateAssistantThinkingLevel(message, thinkingLevel), new Date().toISOString()) };
++    return {
++      type: "message.end",
++      message: annotateAssistantStreamId(
++        withAssistantCompletedAt(annotateAssistantThinkingLevel(message, thinkingLevel), new Date().toISOString()), streamId,
++      ),
++    };
+   }
+   return { type: "pi.event", eventType: eventType ?? "unknown" };
+ }
+@@ -5257,6 +5379,19 @@
+   return typeof property === "boolean" ? property : undefined;
+ }
+ 
++function getNumber(value: unknown, key: string): number | undefined {
++  const property = getProperty(value, key);
++  return typeof property === "number" && Number.isFinite(property) ? property : undefined;
++}
++
++function arrayItem(value: unknown, index: number): unknown {
++  return isUnknownArray(value) ? value[index] : undefined;
++}
++
++function isUnknownArray(value: unknown): value is unknown[] {
++  return Array.isArray(value);
++}
++
+ function stringifyPrimitive(value: unknown): string {
+   if (value == null) return "";
+   if (typeof value === "string") return value;
+diff -ruN -x .git a/src/server/sessions/publishedAssistantStream.ts b/src/server/sessions/publishedAssistantStream.ts
+--- a/src/server/sessions/publishedAssistantStream.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/server/sessions/publishedAssistantStream.ts	2026-11-27 17:30:35.199128115 +0000
+@@ -0,0 +1,126 @@
++import type { ToolInputOperation } from "../../shared/apiTypes.js";
++import { applyToolInputSplice, diffToolInput } from "../../shared/toolInputStream.js";
++
++interface ToolInputState {
++  type: "toolCall";
++  toolCallId: string;
++  toolName: string;
++  revision: number;
++  args: unknown;
++}
++
++type PublishedBlock =
++  | { type: "text"; text: string }
++  | { type: "thinking"; thinking: string }
++  | ToolInputState;
++
++/** A `tool.input` event without its stream identity and time. */
++export interface ToolInputUpdate {
++  toolCallId: string;
++  toolName: string;
++  revision: number;
++  operation: ToolInputOperation;
++}
++
++/**
++ * One assistant answer as its live events showed it to clients: text and
++ * thinking accumulated from published deltas, tool-call arguments from published
++ * `tool.input` operations. The SDK message can already hold later chunks while an
++ * event waits for extension hooks, and it carries provider-only fields, so the
++ * join snapshot uses this copy instead.
++ */
++export class PublishedAssistantStream {
++  private readonly blocks = new Map<number, PublishedBlock>();
++
++  private constructor(private readonly head: Record<string, unknown>) {}
++
++  /** Keep the `message_start` fields; its content is not published live, so it is dropped. */
++  static start(message: unknown): PublishedAssistantStream {
++    const entries = isRecord(message) ? Object.entries(message) : [];
++    return new PublishedAssistantStream(Object.fromEntries(entries.flatMap(([key, value]) => {
++      const copy = key === "content" ? undefined : jsonCopy(value);
++      return copy === undefined ? [] : [[key, copy] as const];
++    })));
++  }
++
++  appendText(contentIndex: number, text: string): void {
++    const block = this.blocks.get(contentIndex);
++    const previous = block?.type === "text" ? block.text : "";
++    this.blocks.set(contentIndex, { type: "text", text: previous + text });
++  }
++
++  appendThinking(contentIndex: number, thinking: string): void {
++    const block = this.blocks.get(contentIndex);
++    const previous = block?.type === "thinking" ? block.thinking : "";
++    this.blocks.set(contentIndex, { type: "thinking", thinking: previous + thinking });
++  }
++
++  /**
++   * Record the parsed arguments of the call at `contentIndex` and return what to
++   * publish. Call start and end always publish a `set`; a chunk publishes a
++   * `splice` when one string changed, a `set` for any other change and nothing
++   * when the parse is unchanged. Revisions of a block only grow.
++   */
++  updateToolInput(contentIndex: number, block: unknown, chunk: boolean): ToolInputUpdate | undefined {
++    const toolCallId = getString(block, "id") ?? "";
++    if (toolCallId === "") return undefined;
++    const toolName = getString(block, "name") ?? "";
++    const args = getProperty(block, "arguments") ?? {};
++    const previous = this.blocks.get(contentIndex);
++    const revision = (previous?.type === "toolCall" ? previous.revision : 0) + 1;
++    const current = previous?.type === "toolCall" && previous.toolCallId === toolCallId
++      && previous.toolName === toolName ? previous : undefined;
++    if (chunk && current !== undefined) {
++      const change = diffToolInput(current.args, args);
++      if (change === undefined) return undefined;
++      const spliced = change.op === "splice"
++        ? applyToolInputSplice(current.args, change.path, change.offset, change.text)
++        : undefined;
++      if (change.op === "splice" && spliced !== undefined) {
++        this.blocks.set(contentIndex, { type: "toolCall", toolCallId, toolName, revision, args: spliced.args });
++        const { path, offset, text } = change;
++        return {
++          toolCallId, toolName, revision,
++          operation: { op: "splice", path, offset, text, baseRevision: current.revision },
++        };
++      }
++    }
++    const copy = jsonCopy(args) ?? {};
++    this.blocks.set(contentIndex, { type: "toolCall", toolCallId, toolName, revision, args: copy });
++    return { toolCallId, toolName, revision, operation: { op: "set", args: copy } };
++  }
++
++  /** The published answer as an SDK-shaped assistant message with each call's input revision. */
++  message(): Record<string, unknown> {
++    const content = [...this.blocks.entries()]
++      .sort(([left], [right]) => left - right)
++      .map(([, block]) => block.type === "toolCall"
++        ? {
++          type: "toolCall", id: block.toolCallId, name: block.toolName,
++          arguments: block.args, inputRevision: block.revision,
++        }
++        : block);
++    return { ...this.head, content };
++  }
++}
++
++function jsonCopy(value: unknown): unknown {
++  const stringify: (input: unknown) => string | undefined = JSON.stringify;
++  const json = stringify(value);
++  if (json === undefined) return undefined;
++  const parsed: unknown = JSON.parse(json);
++  return parsed;
++}
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null;
++}
++
++function getProperty(value: unknown, key: string): unknown {
++  return isRecord(value) ? value[key] : undefined;
++}
++
++function getString(value: unknown, key: string): string | undefined {
++  const property = getProperty(value, key);
++  return typeof property === "string" ? property : undefined;
++}
+diff -ruN -x .git a/src/shared/apiTypes.ts b/src/shared/apiTypes.ts
+--- a/src/shared/apiTypes.ts	2026-11-27 16:05:21.310512384 +0000
++++ b/src/shared/apiTypes.ts	2026-11-27 17:30:43.583364386 +0000
+@@ -1331,7 +1331,11 @@
+  */
+ export interface SessionStreamSnapshot {
+   seq: number;
+-  /** Browser-projected in-flight `AssistantMessage`, or `null` when idle. */
++  /**
++   * The in-flight answer as its published events built it: stream identity and
++   * each tool call's `inputRevision` included, provider-only fields excluded.
++   * `null` when idle.
++   */
+   partial: unknown;
+   /**
+    * Progress of running tools, plus published finals not yet recorded in
+@@ -1376,6 +1380,18 @@
+   | { type: "tree"; tree: SessionTreeSnapshot }
+   | { type: "unsupported"; message: string };
+ 
++/** One step to a streamed tool-call string: an own object key or an array index. */
++export type ToolInputPathSegment = string | number;
++
++/**
++ * Change of streamed tool-call arguments. `set` replaces them; `splice` cuts the
++ * string at `path` to `offset` UTF-16 code units and appends `text`, valid only
++ * on top of `baseRevision`.
++ */
++export type ToolInputOperation =
++  | { op: "set"; args: unknown }
++  | { op: "splice"; path: ToolInputPathSegment[]; offset: number; text: string; baseRevision: number };
++
+ /**
+  * Transport-level per-session sequence stamp. `SessionEventHub.publish` assigns a
+  * monotonic `seq` to every per-session event as it is serialized to the socket.
+@@ -1386,8 +1402,18 @@
+ 
+ type SessionUiEventBody =
+   | { type: "message.append"; message: unknown }
+-  | { type: "assistant.delta"; text: string; timestamp?: string }
+-  | { type: "assistant.thinking.delta"; text: string; timestamp?: string }
++  | { type: "assistant.start"; message: unknown }
++  | { type: "assistant.delta"; text: string; timestamp?: string; streamId?: string }
++  | { type: "assistant.thinking.delta"; text: string; timestamp?: string; streamId?: string }
++  | {
++    type: "tool.input";
++    streamId: string;
++    toolCallId: string;
++    toolName: string;
++    revision: number;
++    operation: ToolInputOperation;
++    timestamp?: string;
++  }
+   | { type: "tool.start"; toolName: string; toolCallId: string; summary: string; args?: unknown; at?: string }
+   | { type: "tool.update"; toolName: string; toolCallId: string; text: string; content?: unknown; details?: unknown }
+   | { type: "tool.end"; toolName: string; toolCallId: string; text: string; isError: boolean; content?: unknown; details?: unknown; at?: string }
+diff -ruN -x .git a/src/shared/toolInputStream.test.ts b/src/shared/toolInputStream.test.ts
+--- a/src/shared/toolInputStream.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/shared/toolInputStream.test.ts	2026-11-27 17:33:01.367212437 +0000
+@@ -0,0 +1,86 @@
++import { describe, expect, it } from "vitest";
++import { applyToolInputSplice, diffToolInput } from "./toolInputStream";
++
++describe("diffToolInput", () => {
++  it("reports no change for equal arguments", () => {
++    expect(diffToolInput({ path: "a", content: "x" }, { path: "a", content: "x" })).toBeUndefined();
++  });
++
++  it("splices the tail of the only changed string", () => {
++    expect(diffToolInput({ path: "a.ts", content: "line 1\n" }, { path: "a.ts", content: "line 1\nline 2" }))
++      .toEqual({ op: "splice", path: ["content"], offset: 7, text: "line 2" });
++  });
++
++  it("cuts back to the common prefix when the parser rebuilt the tail", () => {
++    expect(diffToolInput({ content: "a\\" }, { content: "a\n" }))
++      .toEqual({ op: "splice", path: ["content"], offset: 1, text: "\n" });
++  });
++
++  it("splices a string nested in arrays and objects", () => {
++    const previous = { questions: [{ question: "First?" }, { question: "Sec" }] };
++    const next = { questions: [{ question: "First?" }, { question: "Second?" }] };
++    expect(diffToolInput(previous, next))
++      .toEqual({ op: "splice", path: ["questions", 1, "question"], offset: 3, text: "ond?" });
++  });
++
++  it("counts offsets in UTF-16 code units", () => {
++    expect(diffToolInput({ text: "😀a" }, { text: "😀b" }))
++      .toEqual({ op: "splice", path: ["text"], offset: 2, text: "b" });
++    expect(diffToolInput({ text: "a\uD83D" }, { text: "a😀" }))
++      .toEqual({ op: "splice", path: ["text"], offset: 2, text: "\uDE00" });
++  });
++
++  it("sets the whole arguments on any other change", () => {
++    expect(diffToolInput({ path: "a" }, { path: "a", content: "" }))
++      .toEqual({ op: "set", args: { path: "a", content: "" } });
++    expect(diffToolInput({ a: "x", b: "y" }, { a: "x1", b: "y1" }))
++      .toEqual({ op: "set", args: { a: "x1", b: "y1" } });
++    expect(diffToolInput({ items: ["a"] }, { items: ["a", ""] }))
++      .toEqual({ op: "set", args: { items: ["a", ""] } });
++    expect(diffToolInput({ count: 1 }, { count: 12 })).toEqual({ op: "set", args: { count: 12 } });
++  });
++});
++
++describe("applyToolInputSplice", () => {
++  it("cuts the target at the offset and appends without touching the input", () => {
++    const args = { questions: [{ question: "Sec" }], other: "keep" };
++    expect(applyToolInputSplice(args, ["questions", 0, "question"], 2, "cond?"))
++      .toEqual({ args: { questions: [{ question: "Second?" }], other: "keep" } });
++    expect(args.questions[0]?.question).toBe("Sec");
++  });
++
++  it("reproduces every splice diffToolInput reports", () => {
++    const pairs: [unknown, unknown][] = [
++      [{ content: "abc\\" }, { content: "abc\n" }],
++      [{ text: "a\uD83D" }, { text: "a😀" }],
++      [{ list: [{ v: "x" }] }, { list: [{ v: "xyz" }] }],
++    ];
++    for (const [previous, next] of pairs) {
++      const change = diffToolInput(previous, next);
++      if (change?.op !== "splice") throw new Error("expected a splice");
++      expect(applyToolInputSplice(previous, change.path, change.offset, change.text)).toEqual({ args: next });
++    }
++  });
++
++  it("rejects paths and offsets that leave own data", () => {
++    const args: unknown = JSON.parse('{"__proto__":{"polluted":"no"},"list":["a"],"text":"t"}');
++    expect(applyToolInputSplice(args, ["toString"], 0, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["missing"], 0, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["list", 1], 0, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["list", "0"], 0, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["list"], 0, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["text"], 2, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["text"], -1, "x")).toBeUndefined();
++    expect(applyToolInputSplice(args, ["text"], 0.5, "x")).toBeUndefined();
++  });
++
++  it("writes an own __proto__ key as data without touching any prototype", () => {
++    const args: unknown = JSON.parse('{"__proto__":{"polluted":"no"}}');
++    const expected: unknown = JSON.parse('{"__proto__":{"polluted":"yes"}}');
++    const result = applyToolInputSplice(args, ["__proto__", "polluted"], 0, "yes");
++    expect(result).toEqual({ args: expected });
++    expect(Object.getPrototypeOf(result?.args)).toBe(Object.prototype);
++    const probe: Record<string, unknown> = {};
++    expect(probe["polluted"]).toBeUndefined();
++  });
++});
+diff -ruN -x .git a/src/shared/toolInputStream.ts b/src/shared/toolInputStream.ts
+--- a/src/shared/toolInputStream.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/shared/toolInputStream.ts	2026-11-27 17:30:35.199128115 +0000
+@@ -0,0 +1,124 @@
++import type { ToolInputPathSegment } from "./apiTypes.js";
++
++/** How streamed tool-call arguments changed: replaced whole, or one string rewritten. */
++export type ToolInputChange =
++  | { op: "set"; args: unknown }
++  | { op: "splice"; path: ToolInputPathSegment[]; offset: number; text: string };
++
++interface StringChange {
++  path: ToolInputPathSegment[];
++  previous: string;
++  next: string;
++}
++
++type Comparison = "equal" | "structural" | StringChange;
++
++/**
++ * Compare published arguments with a newer parse. A change confined to one string
++ * becomes a `splice` from the longest common prefix, so a tail the partial-JSON
++ * parser rebuilt is cut back instead of appended twice; any other change is a
++ * `set`. Offsets count UTF-16 code units, like `String.length`.
++ */
++export function diffToolInput(previous: unknown, next: unknown): ToolInputChange | undefined {
++  const comparison = compareValues(previous, next, []);
++  if (comparison === "equal") return undefined;
++  if (comparison === "structural") return { op: "set", args: next };
++  const offset = commonPrefixLength(comparison.previous, comparison.next);
++  return { op: "splice", path: comparison.path, offset, text: comparison.next.slice(offset) };
++}
++
++/**
++ * Cut the string at `path` in a copy of `args` to `offset` and append `text`.
++ * Only own keys of plain objects and in-range array indexes are followed, and
++ * copies get own data properties, so a key like `__proto__` never reaches or
++ * replaces a prototype. `undefined` when the path, target or offset does not fit.
++ */
++export function applyToolInputSplice(
++  args: unknown,
++  path: readonly ToolInputPathSegment[],
++  offset: number,
++  text: string,
++): { args: unknown } | undefined {
++  return spliceAt(args, path, 0, offset, text);
++}
++
++function spliceAt(
++  value: unknown,
++  path: readonly ToolInputPathSegment[],
++  depth: number,
++  offset: number,
++  text: string,
++): { args: unknown } | undefined {
++  if (depth === path.length) {
++    if (typeof value !== "string" || !Number.isSafeInteger(offset)) return undefined;
++    if (offset < 0 || offset > value.length) return undefined;
++    return { args: value.slice(0, offset) + text };
++  }
++  const segment = path[depth];
++  if (typeof segment === "number") {
++    if (!isUnknownArray(value) || !Number.isSafeInteger(segment)) return undefined;
++    if (segment < 0 || segment >= value.length) return undefined;
++    const child = spliceAt(value[segment], path, depth + 1, offset, text);
++    if (child === undefined) return undefined;
++    const copy = [...value];
++    copy[segment] = child.args;
++    return { args: copy };
++  }
++  if (segment === undefined || !isPlainRecord(value) || !Object.hasOwn(value, segment)) {
++    return undefined;
++  }
++  const child = spliceAt(value[segment], path, depth + 1, offset, text);
++  if (child === undefined) return undefined;
++  const copy: Record<string, unknown> = { ...value };
++  Object.defineProperty(copy, segment, {
++    value: child.args, enumerable: true, writable: true, configurable: true,
++  });
++  return { args: copy };
++}
++
++function compareValues(previous: unknown, next: unknown, path: ToolInputPathSegment[]): Comparison {
++  if (typeof previous === "string" && typeof next === "string") {
++    return previous === next ? "equal" : { path, previous, next };
++  }
++  if (isUnknownArray(previous) && isUnknownArray(next)) {
++    if (previous.length !== next.length) return "structural";
++    return compareChildren(previous.map((value, index) => [index, value, next[index]] as const), path);
++  }
++  if (isPlainRecord(previous) && isPlainRecord(next)) {
++    const keys = Object.keys(previous);
++    const nextKeys = Object.keys(next);
++    if (keys.length !== nextKeys.length) return "structural";
++    if (keys.some((key, index) => key !== nextKeys[index])) return "structural";
++    return compareChildren(keys.map((key) => [key, previous[key], next[key]] as const), path);
++  }
++  return Object.is(previous, next) ? "equal" : "structural";
++}
++
++function compareChildren(
++  children: readonly (readonly [ToolInputPathSegment, unknown, unknown])[],
++  path: ToolInputPathSegment[],
++): Comparison {
++  let change: StringChange | undefined;
++  for (const [segment, previous, next] of children) {
++    const comparison = compareValues(previous, next, [...path, segment]);
++    if (comparison === "equal") continue;
++    if (comparison === "structural" || change !== undefined) return "structural";
++    change = comparison;
++  }
++  return change ?? "equal";
++}
++
++function commonPrefixLength(left: string, right: string): number {
++  const limit = Math.min(left.length, right.length);
++  let index = 0;
++  while (index < limit && left.charCodeAt(index) === right.charCodeAt(index)) index += 1;
++  return index;
++}
++
++function isUnknownArray(value: unknown): value is unknown[] {
++  return Array.isArray(value);
++}
++
++function isPlainRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
