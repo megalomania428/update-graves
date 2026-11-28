@@ -22,6 +22,8 @@ Node with pnpm, the Rust toolchain, the cargo registry, the pnpm store, the Taur
 ### `patches/common`
 
 - `001-version-no-updater` – set version `0.35.5-p000` and disable the self-update check and download of the application
+- `002-local-subscription` – use offline Enterprise capabilities and remove local subscription gates in the frontend, MCP, REST API, profiles, fingerprints, launch settings and sync.
+  - Subscription refreshes no longer query the cloud. Real sign-in, team roles, service credentials and server-side limits remain independent of this local override.
 
 ### `patches/windows`
 
