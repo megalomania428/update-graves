@@ -28,7 +28,7 @@ targets:
     steps: &steps
       - bash scripts/build.sh
   - name: win-prt
-    patches: &windows-patches [patches/common, patches/windows]
+    patches: &windows-patches [patches/windows, patches/common]
     cache: &windows-cache
       <<: *cache
       key_files:
