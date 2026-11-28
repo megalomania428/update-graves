@@ -1,0 +1,333 @@
+diff -ruN -x .git a/src-tauri/src/mcp_server.rs b/src-tauri/src/mcp_server.rs
+--- a/src-tauri/src/mcp_server.rs	2026-11-28 09:21:39.600452277 +0000
++++ b/src-tauri/src/mcp_server.rs	2026-11-28 09:24:01.983875243 +0000
+@@ -9944,13 +9944,6 @@
+   }
+ 
+   async fn handle_list_extensions(&self) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let mgr = crate::extension_manager::EXTENSION_MANAGER.lock().unwrap();
+     let extensions = mgr.list_extensions().map_err(|e| McpError {
+       code: -32000,
+@@ -9961,13 +9954,6 @@
+   }
+ 
+   async fn handle_list_extension_groups(&self) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let mgr = crate::extension_manager::EXTENSION_MANAGER.lock().unwrap();
+     let groups = mgr.list_groups().map_err(|e| McpError {
+       code: -32000,
+@@ -9981,13 +9967,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let path = arguments
+       .get("path")
+       .and_then(|v| v.as_str())
+@@ -10025,13 +10004,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let extension_id = arguments
+       .get("extension_id")
+       .and_then(|v| v.as_str())
+@@ -10082,13 +10054,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let name = arguments
+       .get("name")
+       .and_then(|v| v.as_str())
+@@ -10110,13 +10075,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let group_id = arguments
+       .get("group_id")
+       .and_then(|v| v.as_str())
+@@ -10153,13 +10111,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let (group_id, extension_id) = Self::group_and_extension_ids(arguments)?;
+     let mgr = crate::extension_manager::EXTENSION_MANAGER.lock().unwrap();
+     let group = mgr
+@@ -10176,13 +10127,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let (group_id, extension_id) = Self::group_and_extension_ids(arguments)?;
+     let mgr = crate::extension_manager::EXTENSION_MANAGER.lock().unwrap();
+     let group = mgr
+@@ -10219,13 +10163,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let extension_id = arguments
+       .get("extension_id")
+       .and_then(|v| v.as_str())
+@@ -10249,13 +10186,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let group_id = arguments
+       .get("group_id")
+       .and_then(|v| v.as_str())
+@@ -10282,13 +10212,6 @@
+     &self,
+     arguments: &serde_json::Value,
+   ) -> Result<serde_json::Value, McpError> {
+-    if !CLOUD_AUTH.has_active_paid_subscription().await {
+-      return Err(McpError {
+-        code: -32000,
+-        message: "Extension management requires an active Pro subscription".to_string(),
+-        data: None,
+-      });
+-    }
+     let profile_id = arguments
+       .get("profile_id")
+       .and_then(|v| v.as_str())
+diff -ruN -x .git a/src-tauri/src/profile/manager.rs b/src-tauri/src/profile/manager.rs
+--- a/src-tauri/src/profile/manager.rs	2026-11-28 09:21:39.604452373 +0000
++++ b/src-tauri/src/profile/manager.rs	2026-11-28 09:24:01.647867122 +0000
+@@ -1872,27 +1872,6 @@
+ 
+     let config = merge_submitted_wayfern_config(profile.wayfern_config.as_ref(), config);
+ 
+-    let stored = profile.wayfern_config.as_ref();
+-    let fingerprint_changed = config.fingerprint.is_some()
+-      && config.fingerprint.as_ref() != stored.and_then(|c| c.fingerprint.as_ref());
+-    let overrides_changed = config.identity_overrides.is_some()
+-      && config.identity_overrides.as_ref() != stored.and_then(|c| c.identity_overrides.as_ref());
+-    if (fingerprint_changed || overrides_changed)
+-      && !CLOUD_AUTH.can_use_cross_os_fingerprints().await
+-    {
+-      return Err(crate::backend_error("FINGERPRINT_REQUIRES_PRO").into());
+-    }
+-    // Only a new claim is checked: a profile created on another OS keeps the
+-    // claim it arrived with, and editing anything else must not refuse it.
+-    let os_changed = config.os != stored.and_then(|c| c.os.clone());
+-    if os_changed
+-      && !CLOUD_AUTH
+-        .is_fingerprint_os_allowed(config.os.as_deref())
+-        .await
+-    {
+-      return Err(crate::backend_error("FINGERPRINT_REQUIRES_PRO").into());
+-    }
+-
+     // Update the Wayfern configuration
+     if profile
+       .wayfern_config
+diff -ruN -x .git a/src-tauri/src/wayfern_manager.rs b/src-tauri/src/wayfern_manager.rs
+--- a/src-tauri/src/wayfern_manager.rs	2026-11-28 09:21:39.640453233 +0000
++++ b/src-tauri/src/wayfern_manager.rs	2026-11-28 09:24:01.647867122 +0000
+@@ -96,15 +96,9 @@
+ 
+ impl WayfernConfig {
+   pub async fn checked_launch_args(&self) -> Result<Vec<String>, String> {
+-    let has_args = self.launch_args.iter().any(|arg| !arg.trim().is_empty());
+-    let allowed = !has_args
+-      || crate::cloud_auth::CLOUD_AUTH
+-        .can_use_browser_automation()
+-        .await;
+-    validate_launch_args(&self.launch_args, allowed)
++    validate_launch_args(&self.launch_args)
+   }
+ 
+-  /// For imports: keep only arguments this account may store, or none.
+   pub async fn sanitize_launch_args(&mut self) {
+     match self.checked_launch_args().await {
+       Ok(args) => self.launch_args = args,
+@@ -266,7 +260,7 @@
+   serde_json::json!({ "code": code, "params": { "argument": name } }).to_string()
+ }
+ 
+-fn validate_launch_args(args: &[String], allowed: bool) -> Result<Vec<String>, String> {
++fn validate_launch_args(args: &[String]) -> Result<Vec<String>, String> {
+   let args: Vec<&str> = args
+     .iter()
+     .map(|arg| arg.trim())
+@@ -275,9 +269,6 @@
+   if args.is_empty() {
+     return Ok(Vec::new());
+   }
+-  if !allowed {
+-    return Err(crate::backend_error("WAYFERN_LAUNCH_ARGS_REQUIRES_PRO"));
+-  }
+   if args.len() > MAX_LAUNCH_ARGS
+     || args
+       .iter()
+@@ -4400,7 +4391,7 @@
+       "--disable-features=OverlayScrollbar,TranslateUI".to_string(),
+     ];
+     assert_eq!(
+-      validate_launch_args(&args, true).unwrap(),
++      validate_launch_args(&args).unwrap(),
+       vec![
+         "--disable-gpu",
+         "--autoplay-policy=no-user-gesture-required",
+@@ -4411,15 +4402,12 @@
+   }
+ 
+   #[test]
+-  fn launch_args_need_automation_but_clearing_them_does_not() {
+-    assert!(validate_launch_args(&[], false).unwrap().is_empty());
+-    assert!(validate_launch_args(&["  ".to_string()], false)
+-      .unwrap()
+-      .is_empty());
+-    let error = validate_launch_args(&["--disable-gpu".to_string()], false).unwrap_err();
++  fn launch_args_do_not_require_automation() {
++    assert!(validate_launch_args(&[]).unwrap().is_empty());
++    assert!(validate_launch_args(&["  ".to_string()]).unwrap().is_empty());
+     assert_eq!(
+-      code_and_argument(&error).0,
+-      "WAYFERN_LAUNCH_ARGS_REQUIRES_PRO"
++      validate_launch_args(&["--disable-gpu".to_string()]).unwrap(),
++      vec!["--disable-gpu"]
+     );
+   }
+ 
+@@ -4443,7 +4431,7 @@
+       "--disable-blink-features=AutomationControlled",
+       "--enable-automation",
+     ] {
+-      let error = validate_launch_args(&[arg.to_string()], true).unwrap_err();
++      let error = validate_launch_args(&[arg.to_string()]).unwrap_err();
+       let (code, argument) = code_and_argument(&error);
+       assert_eq!(code, "WAYFERN_LAUNCH_ARG_NOT_ALLOWED", "{arg}");
+       assert_eq!(argument, arg.split('=').next().unwrap());
+@@ -4473,7 +4461,7 @@
+       "--lang=de",
+       "--disk-cache-dir=/tmp/cache",
+     ] {
+-      let error = validate_launch_args(&[arg.to_string()], true).unwrap_err();
++      let error = validate_launch_args(&[arg.to_string()]).unwrap_err();
+       let (code, argument) = code_and_argument(&error);
+       assert_eq!(code, "WAYFERN_LAUNCH_ARG_RESERVED", "{arg}");
+       assert_eq!(argument, arg.split('=').next().unwrap());
+@@ -4493,7 +4481,7 @@
+       "--value=one\ntwo",
+       "--value=one\0two",
+     ] {
+-      let error = validate_launch_args(&[arg.to_string()], true).unwrap_err();
++      let error = validate_launch_args(&[arg.to_string()]).unwrap_err();
+       assert!(error.contains("WAYFERN_LAUNCH_ARG_INVALID"), "{arg:?}");
+     }
+     for arg in [
+@@ -4509,7 +4497,7 @@
+       "--enable-features=Name<Trial",
+       "--enable-features=Name:param/value",
+     ] {
+-      let error = validate_launch_args(&[arg.to_string()], true).unwrap_err();
++      let error = validate_launch_args(&[arg.to_string()]).unwrap_err();
+       assert_eq!(
+         code_and_argument(&error).0,
+         "WAYFERN_LAUNCH_ARG_VALUE_INVALID",
+@@ -4521,12 +4509,12 @@
+   #[test]
+   fn launch_args_are_limited_in_count_and_length() {
+     let many = vec!["--disable-gpu".to_string(); MAX_LAUNCH_ARGS + 1];
+-    let error = validate_launch_args(&many, true).unwrap_err();
++    let error = validate_launch_args(&many).unwrap_err();
+     assert_eq!(code_and_argument(&error).0, "WAYFERN_LAUNCH_ARGS_LIMIT");
+     let long = format!("--disable-features={}", "A".repeat(MAX_LAUNCH_ARG_CHARS));
+-    let error = validate_launch_args(&[long], true).unwrap_err();
++    let error = validate_launch_args(&[long]).unwrap_err();
+     assert_eq!(code_and_argument(&error).0, "WAYFERN_LAUNCH_ARGS_LIMIT");
+-    assert!(validate_launch_args(&vec!["--mute-audio".to_string(); MAX_LAUNCH_ARGS], true).is_ok());
++    assert!(validate_launch_args(&vec!["--mute-audio".to_string(); MAX_LAUNCH_ARGS]).is_ok());
+   }
+ 
+   #[test]
+@@ -4535,16 +4523,13 @@
+       "--user-data-dir=/tmp/profile".to_string(),
+       "--disable-features=AsyncDns,Prefetch".to_string(),
+     ];
+-    let custom = validate_launch_args(
+-      &[
+-        "--disable-features=OverlayScrollbar,CustomFeature".to_string(),
+-        "--disable-features=AnotherFeature".to_string(),
+-        "--enable-features=EnabledFeature".to_string(),
+-        "--enable-features=OtherEnabledFeature".to_string(),
+-        "--disable-gpu".to_string(),
+-      ],
+-      true,
+-    )
++    let custom = validate_launch_args(&[
++      "--disable-features=OverlayScrollbar,CustomFeature".to_string(),
++      "--disable-features=AnotherFeature".to_string(),
++      "--enable-features=EnabledFeature".to_string(),
++      "--enable-features=OtherEnabledFeature".to_string(),
++      "--disable-gpu".to_string(),
++    ])
+     .unwrap();
+     apply_launch_args(&mut args, &custom);
+     assert_eq!(
