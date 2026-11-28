@@ -49,6 +49,8 @@ jobs:
         run: bash sources/donut/tests/host-test.sh
       - name: pi-dev tests
         run: harness/pi-dev/tests/run-tests.sh
+      - name: split planner script tests
+        run: bash harness/pi-dev/skills/spawn-split-plan2/tests/scripts.sh --podman
   linters:
     name: linters
     # jscpd:ignore-start

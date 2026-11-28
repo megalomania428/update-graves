@@ -24,6 +24,7 @@ export PYTHONDONTWRITEBYTECODE=1
 mkdir -p -- "${HOME}" "${TMPDIR}"
 passed=0
 failed=0
+fixture=write_plan
 fail() {
   echo "$1" >&2
   exit 1
@@ -185,10 +186,12 @@ task_doc() {
   } >"${file}"
 }
 write_tree() {
-  mkdir -p -- "${tmp}/tree/src"
+  mkdir -p -- "${tmp}/tree/src" "${tmp}/tree/docs"
   printf 'x = 1\n' >"${tmp}/tree/src/tool.py"
+  printf '# Tool\n' >"${tmp}/tree/README.md"
+  printf '# Guide\n' >"${tmp}/tree/docs/guide.md"
   git -C "${tmp}/tree" -c init.defaultBranch=master init --quiet
-  git -C "${tmp}/tree" add src/tool.py
+  git -C "${tmp}/tree" add src/tool.py README.md docs/guide.md
   git -C "${tmp}/tree" -c user.name=test -c user.email=test@example.com \
     -c commit.gpgsign=false commit --quiet --message source
 }
@@ -294,6 +297,103 @@ JSON
 JSON
   sed -i "s/@SHA256@/${source_digest}/" "${tmp}/inventory.json"
 }
+write_chain() {
+  local dir="${tmp}/plan" base
+  write_plan
+  base="$(git -C "${tmp}/tree" rev-parse HEAD)"
+  rm -- "${dir}/02-store.md" "${dir}/03-util.md" "${dir}/04-integrate.md"
+  cat >"${dir}/plan.json" <<'JSON'
+{
+  "version": 1,
+  "mode": "split",
+  "source": {
+    "path": "src/tool.py",
+    "language": "python",
+    "sha256": "@SHA256@"
+  },
+  "target": {"language": "python", "root": "src/tool_parts"},
+  "base": "@BASE@",
+  "skip": ["legacy"],
+  "tasks": [
+    {
+      "id": "01-skeleton",
+      "wave": 0,
+      "depends_on": [],
+      "create": [
+        "src/tool_parts/__init__.py",
+        "src/tool_parts/store.py",
+        "src/tool_parts/util.py"
+      ],
+      "modify": [],
+      "delete": [],
+      "symbols": ["Options", "MISSING"],
+      "stubs": ["src/tool_parts/store.py", "src/tool_parts/util.py"]
+    },
+    {
+      "id": "02-fixtures",
+      "wave": 0,
+      "depends_on": ["01-skeleton"],
+      "create": ["tests/fixtures/"],
+      "modify": ["src/tool_parts/__init__.py"],
+      "delete": [],
+      "symbols": [],
+      "stubs": []
+    },
+    {
+      "id": "03-store",
+      "wave": 1,
+      "depends_on": ["01-skeleton", "02-fixtures"],
+      "create": ["tests/test_store.py"],
+      "modify": ["src/tool_parts/store.py"],
+      "delete": [],
+      "symbols": ["put", "Options.load"],
+      "stubs": []
+    },
+    {
+      "id": "04-util",
+      "wave": 1,
+      "depends_on": ["01-skeleton", "02-fixtures"],
+      "create": ["tests/test_util.py"],
+      "modify": ["src/tool_parts/util.py"],
+      "delete": [],
+      "symbols": ["helper"],
+      "stubs": []
+    },
+    {
+      "id": "05-integrate",
+      "wave": 2,
+      "depends_on": ["01-skeleton", "02-fixtures", "03-store", "04-util"],
+      "create": [],
+      "modify": ["src/tool.py"],
+      "delete": [],
+      "symbols": ["main", "if_statement@25"],
+      "stubs": []
+    },
+    {
+      "id": "06-finish",
+      "wave": 2,
+      "depends_on": ["01-skeleton", "02-fixtures", "03-store", "04-util", "05-integrate"],
+      "create": [],
+      "modify": ["tests/fixtures/calls.jsonl"],
+      "delete": [],
+      "symbols": [],
+      "stubs": []
+    }
+  ]
+}
+JSON
+  sed -i -e "s/@BASE@/${base}/" -e "s/@SHA256@/${source_digest}/" "${dir}/plan.json"
+  printf '%s\n' '# Overview' '01-skeleton.md 02-fixtures.md 03-store.md 04-util.md' \
+    '05-integrate.md 06-finish.md' >"${dir}/00-overview.md"
+  task_doc "${dir}/02-fixtures.md" $'- tests/fixtures/\n- src/tool_parts/__init__.py' ''
+  task_doc "${dir}/03-store.md" $'- src/tool_parts/store.py\n- tests/test_store.py' \
+    $'- put src/tool.py:22-23\n- Options.load src/tool.py:4-6'
+  task_doc "${dir}/04-util.md" $'- src/tool_parts/util.py\n- tests/test_util.py' \
+    '- helper src/tool.py:12-13'
+  task_doc "${dir}/05-integrate.md" '- src/tool.py' \
+    $'- main src/tool.py:18-20\n- if_statement@25 src/tool.py:25-26'
+  task_doc "${dir}/06-finish.md" '- tests/fixtures/calls.jsonl' ''
+}
 edit_plan() {
   python3 - "${tmp}/plan/plan.json" "$1" <<'PY'
 import json
@@ -333,6 +433,68 @@ valid_plan() {
   validate --inventory "${tmp}/inventory.json" --tree "${tmp}/tree" ||
     fail "valid plan rejected with inventory: $(<"${tmp}/err")"
 }
+valid_chain() {
+  write_chain
+  validate || fail "valid chain rejected: $(<"${tmp}/err")"
+  [[ "$(<"${tmp}/out")" == 'ok: 6 tasks (waves 2/2/2)' ]] || fail 'wrong success line'
+  validate --inventory "${tmp}/inventory.json" --tree "${tmp}/tree" ||
+    fail "valid chain rejected with inventory: $(<"${tmp}/err")"
+}
+directory_change() {
+  write_chain
+  edit_plan "tasks['06-finish']['delete'] = ['$1']"
+  task_doc "${tmp}/plan/06-finish.md" "- tests/fixtures/calls.jsonl"$'\n'"- $1" ''
+  validate --tree "${tmp}/tree" || fail "directory change rejected: $(<"${tmp}/err")"
+}
+quoted_path() {
+  write_chain
+  edit_plan "tasks['06-finish']['modify'] = ['$1']"
+  task_doc "${tmp}/plan/06-finish.md" "- \`$1\`" ''
+  validate || fail "quoted path rejected: $(<"${tmp}/err")"
+}
+own_mention() {
+  local path='tests/fixtures/calls.jsonl'
+  write_chain
+  task_doc "${tmp}/plan/06-finish.md" "- ${path} «${path}», *${path}*, \`${path}:1\`" ''
+  validate || fail "own path before punctuation rejected: $(<"${tmp}/err")"
+}
+recreated_path() {
+  write_chain
+  edit_plan "tasks['02-fixtures']['delete'] = ['docs']; \
+tasks['05-integrate']['create'] = ['docs/new.md']; \
+tasks['06-finish']['modify'].append('docs/new.md')"
+  task_doc "${tmp}/plan/02-fixtures.md" \
+    $'- tests/fixtures/\n- src/tool_parts/__init__.py\n- docs' ''
+  task_doc "${tmp}/plan/05-integrate.md" $'- src/tool.py\n- docs/new.md' \
+    $'- main src/tool.py:18-20\n- if_statement@25 src/tool.py:25-26'
+  task_doc "${tmp}/plan/06-finish.md" $'- tests/fixtures/calls.jsonl\n- docs/new.md' ''
+  validate --tree "${tmp}/tree" || fail "recreated path rejected: $(<"${tmp}/err")"
+}
+early_stub_change() {
+  local parts tree=()
+  if [[ -n "${3:-}" ]]; then
+    rm -rf -- "${tmp}/tree"
+    write_tree
+    mkdir -p -- "${tmp}/tree/$1"
+    printf 'legacy\n' >"${tmp}/tree/$1/legacy.txt"
+    git -C "${tmp}/tree" add "$1/legacy.txt"
+    git -C "${tmp}/tree" -c user.name=test -c user.email=test@example.com \
+      -c commit.gpgsign=false commit --quiet --amend --no-edit
+    tree=(--tree "${tmp}/tree")
+  fi
+  write_chain
+  edit_plan "tasks['01-skeleton']['create'] = ['tests/fixtures/']; \
+tasks['01-skeleton']['$2'] = ['$1']; tasks['01-skeleton']['stubs'] = []; \
+tasks['02-fixtures']['create'] = ['src/tool_parts/__init__.py', \
+'src/tool_parts/store.py', 'src/tool_parts/util.py']; \
+tasks['02-fixtures']['modify'] = []; \
+tasks['02-fixtures']['stubs'] = ['src/tool_parts/store.py', 'src/tool_parts/util.py']"
+  task_doc "${tmp}/plan/01-skeleton.md" $'- tests/fixtures/\n- '"$1" \
+    $'- Options src/tool.py:3-10\n- MISSING src/tool.py:1-1'
+  parts='- src/tool_parts/__init__.py'$'\n''- src/tool_parts/store.py'
+  task_doc "${tmp}/plan/02-fixtures.md" "${parts}"$'\n- src/tool_parts/util.py' ''
+  validate ${tree[@]+"${tree[@]}"} || fail "early stub change rejected: $(<"${tmp}/err")"
+}
 stale_source() {
   local rc=0
   write_plan
@@ -347,7 +509,7 @@ stale_source() {
 invalid_plan() {
   local code="$1" expected="$2" rc=0
   shift 2
-  write_plan
+  "${fixture}"
   edit_plan "${code}"
   validate "$@" || rc=$?
   [[ "${rc}" -eq 1 ]] || fail "returned ${rc}, expected 1"
@@ -363,6 +525,16 @@ invalid_inventory() {
   [[ "${rc}" -eq 1 ]] || fail "returned ${rc}, expected 1"
   grep -qF -- "error: ${expected}" "${tmp}/err" ||
     fail "missing error '${expected}' in: $(<"${tmp}/err")"
+}
+foreign_mention() {
+  local code="$1" file="$2" files="$3" symbols="$4" expected="$5" rc=0
+  write_chain
+  edit_plan "${code}"
+  task_doc "${tmp}/plan/${file}" "${files}" "${symbols}"
+  validate || rc=$?
+  [[ "${rc}" -eq 1 ]] || fail "returned ${rc}, expected 1"
+  grep -qF -- "error: ${file}: section Входит mentions ${expected} outside" \
+    "${tmp}/err" || fail "missing mention error in: $(<"${tmp}/err")"
 }
 plan_files() {
   local setting="$1" expected="$2" rc=0
@@ -1013,6 +1185,12 @@ if [[ "${failed}" -eq 0 ]]; then
     'src/tool_parts/store.py: shared by wave 1 tasks 02-store, 03-util'
     "tasks['02-store']['modify'].append('src/tool.py')"
     '02-store: wave 1 must not touch src/tool.py'
+    "tasks['02-store']['create'].append('src/tool.py/cfg')"
+    '02-store: wave 1 must not touch src/tool.py'
+    "tasks['02-store']['modify'].append('src/tool.py/cfg')"
+    '02-store: wave 1 must not touch src/tool.py'
+    "tasks['02-store']['delete'].append('src/tool.py/cfg')"
+    '02-store: wave 1 must not touch src/tool.py'
     "tasks['03-util']['create'].append('src/tool_parts/__init__.py')"
     '03-util: creates src/tool_parts/__init__.py, which wave 0 already handles'
     "tasks['03-util']['depends_on'] = ['02-store']"
@@ -1026,7 +1204,7 @@ if [[ "${failed}" -eq 0 ]]; then
     "tasks['03-util']['symbols'] = []"
     '03-util: wave 1 needs symbols'
     "tasks['04-integrate']['modify'] = []"
-    '04-integrate: mode split needs src/tool.py in modify or delete'
+    'mode split: exactly one wave 2 task must change src/tool.py, got none'
     "tasks['01-skeleton']['stubs'].append('src/tool_parts/extra.py')"
     '01-skeleton: stub src/tool_parts/extra.py is not in create'
     "tasks['03-util']['modify'] = []"
@@ -1038,7 +1216,9 @@ if [[ "${failed}" -eq 0 ]]; then
     "plan['version'] = 1.0"
     'version: must be 1, got 1.0'
     "plan['tasks'][1]['wave'] = 2"
-    'tasks: need waves 1/at least 1/1, got 1/1/2'
+    'tasks: waves must not decrease along the id order'
+    "plan['tasks'] = [task for task in plan['tasks'] if task['wave'] != 1]"
+    'tasks: need at least one task in each wave, got 1/0/1'
     "plan['tasks'][1]['id'] = '01-store'"
     'tasks: number 01 is used more than once'
     "plan['mode'] = 'port'"
@@ -1062,6 +1242,177 @@ if [[ "${failed}" -eq 0 ]]; then
   port_code="plan['mode'] = 'port'; plan['target']['language'] = 'rust'"
   run 'validate-plan rejects port touching source' invalid_plan "${port_code}" \
     '04-integrate: mode port must not touch src/tool.py'
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan valid chain' valid_chain
+  rm -rf -- "${tmp}/plan"
+  fixture=write_chain
+  invalid=(
+    "tasks['01-skeleton']['create'].append('src/tool.py/cfg')"
+    '01-skeleton: wave 0 must not touch src/tool.py'
+    "tasks['01-skeleton']['modify'].append('src/tool.py/cfg')"
+    '01-skeleton: wave 0 must not touch src/tool.py'
+    "tasks['01-skeleton']['delete'].append('src/tool.py/cfg')"
+    '01-skeleton: wave 0 must not touch src/tool.py'
+    "tasks['02-fixtures']['depends_on'] = []"
+    '02-fixtures: depends_on must list 01-skeleton'
+    "tasks['03-store']['depends_on'] = ['01-skeleton']"
+    '03-store: depends_on must list 01-skeleton, 02-fixtures'
+    "tasks['02-fixtures']['create'].append('src/tool_parts/extra.py'); \
+tasks['02-fixtures']['stubs'] = ['src/tool_parts/extra.py']"
+    'wave 0: exactly one task must list stubs, got 01-skeleton, 02-fixtures'
+    "tasks['02-fixtures']['create'].append('src/tool_parts/extra.py'); \
+tasks['01-skeleton']['stubs'].append('src/tool_parts/extra.py')"
+    '01-skeleton: stub src/tool_parts/extra.py is not in create'
+    "tasks['02-fixtures']['modify'].append('src/tool_parts/store.py')"
+    '02-fixtures: changes stub src/tool_parts/store.py of 01-skeleton'
+    "tasks['02-fixtures']['modify'] = []; \
+tasks['02-fixtures']['delete'] = ['src/tool_parts']"
+    '02-fixtures: changes stub src/tool_parts/util.py of 01-skeleton'
+    "tasks['02-fixtures']['modify'].append('src/tool_parts/store.py/child.py')"
+    '02-fixtures: changes stub src/tool_parts/store.py of 01-skeleton'
+    "tasks['02-fixtures']['delete'].append('src/tool_parts/store.py/child.py')"
+    '02-fixtures: changes stub src/tool_parts/store.py of 01-skeleton'
+    "tasks['01-skeleton']['create'] = ['src/tool_parts/__init__.py', \
+'src/tool_parts/util.py', 'src/tool_parts/store.py/']"
+    '01-skeleton: stub src/tool_parts/store.py is not in create'
+    "tasks['06-finish']['create'] = ['tests/test_store.py']"
+    "06-finish: create tests/test_store.py overlaps tests/test_store.py created by \
+03-store"
+    "tasks['06-finish']['create'] = ['tests/fixtures/new.json']"
+    "06-finish: create tests/fixtures/new.json overlaps tests/fixtures/ created by \
+02-fixtures"
+    "tasks['02-fixtures']['create'].append('tests/fixtures/extra.json')"
+    '02-fixtures: tests/fixtures/ and tests/fixtures/extra.json overlap in the same task'
+    "tasks['03-store']['create'].append('tests/test_store.py/child.py')"
+    "03-store: tests/test_store.py and tests/test_store.py/child.py overlap in the same \
+task"
+    "tasks['06-finish']['delete'] = ['src']"
+    "mode split: exactly one wave 2 task must change src/tool.py, got 05-integrate, \
+06-finish"
+    "tasks['06-finish']['create'] = ['tests/test_store.py/extra.py']"
+    "06-finish: create tests/test_store.py/extra.py overlaps tests/test_store.py \
+created by 03-store"
+    "tasks['03-store']['create'].append('tests/fixtures/store.json')"
+    '03-store: creates tests/fixtures/store.json, which wave 0 already handles'
+    "tasks['05-integrate']['modify'] = []"
+    'mode split: exactly one wave 2 task must change src/tool.py, got none'
+    "tasks['06-finish']['modify'].append('src/tool.py')"
+    "mode split: exactly one wave 2 task must change src/tool.py, got 05-integrate, \
+06-finish"
+    "plan['mode'] = 'port'; plan['target']['language'] = 'rust'; \
+tasks['05-integrate']['modify'] = []; tasks['06-finish']['modify'].append('src/tool.py')"
+    '06-finish: mode port must not touch src/tool.py'
+    "plan['mode'] = 'port'; plan['target']['language'] = 'rust'; \
+tasks['05-integrate']['modify'] = []; \
+tasks['06-finish']['create'].append('src/tool.py/cfg')"
+    '06-finish: mode port must not touch src/tool.py'
+    "plan['mode'] = 'port'; plan['target']['language'] = 'rust'; \
+tasks['05-integrate']['modify'] = []; \
+tasks['06-finish']['modify'].append('src/tool.py/cfg')"
+    '06-finish: mode port must not touch src/tool.py'
+    "plan['mode'] = 'port'; plan['target']['language'] = 'rust'; \
+tasks['05-integrate']['modify'] = []; \
+tasks['06-finish']['delete'].append('src/tool.py/cfg')"
+    '06-finish: mode port must not touch src/tool.py'
+    "tasks['06-finish']['modify'] = ['tests/fixtures/']"
+    "06-finish: modify: not a normalized relative path: 'tests/fixtures/'"
+    "tasks['05-integrate']['delete'] = ['src/tool_parts/']"
+    "05-integrate: delete: not a normalized relative path: 'src/tool_parts/'"
+  )
+  for ((i = 0; i < ${#invalid[@]}; i += 2)); do
+    run "validate-plan rejects chain ${invalid[i]}" invalid_plan "${invalid[i]}" \
+      "${invalid[i + 1]}"
+    rm -rf -- "${tmp}/plan"
+  done
+  for action in modify delete; do
+    run "validate-plan rejects ${action} under stub file with tree" invalid_plan \
+      "tasks['02-fixtures']['${action}'].append('src/tool_parts/store.py/child.py')" \
+      '02-fixtures: changes stub src/tool_parts/store.py of 01-skeleton' \
+      --tree "${tmp}/tree"
+    rm -rf -- "${tmp}/plan"
+  done
+  for action in modify delete; do
+    run "validate-plan accepts ${action} of future stub directory before owner" \
+      early_stub_change src/tool_parts "${action}"
+    rm -rf -- "${tmp}/plan"
+    run "validate-plan accepts ${action} of future stub directory at base with tree" \
+      early_stub_change src/tool_parts "${action}" tree
+    rm -rf -- "${tmp}/plan" "${tmp}/tree"
+  done
+  run 'validate-plan rejects change absent at base' invalid_plan \
+    "tasks['05-integrate']['modify'].append('src/absent.py')" \
+    '05-integrate: changes src/absent.py, which is not at base or in depends_on' \
+    --tree "${tmp}/tree"
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects create at base' invalid_plan \
+    "tasks['02-fixtures']['create'].append('README.md')" \
+    '02-fixtures: creates README.md, which is already at base' --tree "${tmp}/tree"
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects create under file at base' invalid_plan \
+    "tasks['06-finish']['create'] = ['README.md/notes.md']" \
+    '06-finish: creates README.md/notes.md under file README.md at base' \
+    --tree "${tmp}/tree"
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects change under created file' invalid_plan \
+    "tasks['06-finish']['modify'].append('tests/test_store.py/child.py')" \
+    "06-finish: changes tests/test_store.py/child.py, which is not at base or in \
+depends_on" --tree "${tmp}/tree"
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects change of emptied directory' invalid_plan \
+    "tasks['05-integrate']['delete'] = ['docs/guide.md']; \
+tasks['06-finish']['modify'].append('docs')" \
+    '06-finish: changes docs, which is not at base or in depends_on' --tree "${tmp}/tree"
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts directory change at base' directory_change docs
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts delete of created directory' directory_change src/tool_parts
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts path created after delete' recreated_path
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts own path before punctuation' own_mention
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts quoted path in foreign directory' quoted_path \
+    'tests/fixtures/call list.jsonl'
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts quoted path with foreign path after a space' quoted_path \
+    'tests/fixtures/calls src/tool.py'
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan accepts quoted path starting with foreign path' quoted_path \
+    'src/tool.py notes.md'
+  rm -rf -- "${tmp}/plan"
+  fixture=write_plan
+  store_symbols=$'- put src/tool.py:22-23\n- Options.load src/tool.py:4-6'
+  run 'validate-plan rejects foreign directory' foreign_mention 'pass' 03-store.md \
+    $'- src/tool_parts/store.py\n- tests/test_store.py see tests/fixtures/store.json' \
+    "${store_symbols}" tests/fixtures/
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects quoted foreign command' foreign_mention 'pass' 03-store.md \
+    $'- src/tool_parts/store.py\n- tests/test_store.py runs `cat tests/fixtures/a`' \
+    "${store_symbols}" tests/fixtures/
+  rm -rf -- "${tmp}/plan"
+  fixtures_files=$'- tests/fixtures/ runs `tests/fixtures/gen && cat src/tool.py`\n'
+  run 'validate-plan rejects foreign path after own path' foreign_mention 'pass' \
+    02-fixtures.md "${fixtures_files}- src/tool_parts/__init__.py" '' src/tool.py
+  rm -rf -- "${tmp}/plan"
+  own_path='tests/fixtures/calls.jsonl'
+  for glue in ',' ';' '(' '|'; do
+    run "validate-plan rejects foreign path glued to own path by ${glue}" \
+      foreign_mention 'pass' 06-finish.md \
+      "- ${own_path} uses ${own_path}${glue}tests/fixtures/x" '' tests/fixtures/
+    rm -rf -- "${tmp}/plan"
+  done
+  run 'validate-plan rejects backslash foreign path' foreign_mention 'pass' 03-store.md \
+    $'- src/tool_parts/store.py\n- tests/test_store.py uses tests\\fixtures\\a.' \
+    "${store_symbols}" tests/fixtures/
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects foreign directory before a period' foreign_mention 'pass' \
+    03-store.md $'- src/tool_parts/store.py\n- tests/test_store.py uses tests/fixtures.' \
+    "${store_symbols}" tests/fixtures/
+  rm -rf -- "${tmp}/plan"
+  run 'validate-plan rejects path under foreign entry' foreign_mention \
+    "tasks['06-finish']['delete'] = ['docs']" 05-integrate.md \
+    '- src/tool.py see docs/guide.md' \
+    $'- main src/tool.py:18-20\n- if_statement@25 src/tool.py:25-26' docs
   rm -rf -- "${tmp}/plan"
   run 'validate-plan rejects unowned declaration' invalid_plan \
     "tasks['04-integrate']['symbols'] = []" 'declaration main has no owner' \
